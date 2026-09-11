@@ -12,7 +12,7 @@ alter table public.profiles enable row level security;
 
 -- 3. Create RLS Policies
 create policy "Public profiles are viewable by everyone." on profiles
-  for select using (true);
+  for select to authenticated using (true);
 
 create policy "Users can insert their own profile." on profiles
   for insert with check ((select auth.uid()) = id);
