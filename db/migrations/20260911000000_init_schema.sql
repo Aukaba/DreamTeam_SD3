@@ -1,3 +1,5 @@
+-- migrate:up
+
 -- 1. Create a table for public profiles
 create table public.profiles (
   id uuid references auth.users on delete cascade not null primary key,
@@ -39,3 +41,8 @@ $$ language plpgsql security definer set search_path = public;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
+
+-- migrate:down
+drop trigger if exists on_auth_user_created on auth.users;
+drop function if exists public.handle_new_user();
+drop table if exists public.profiles;
