@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'map_screen.dart';
 
 Future<void> main() async {
   await dotenv.load(fileName: ".env");
@@ -38,6 +39,9 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        title: const Text('Todos'),
+      ),
       body: FutureBuilder(
         future: _future,
         builder: (context, snapshot) {
@@ -55,6 +59,16 @@ class _HomePageState extends State<HomePage> {
             }),
           );
         },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (context) => const MapScreen()),
+          );
+        },
+        tooltip: 'Open Map',
+        child: const Icon(Icons.map),
       ),
     );
   }
