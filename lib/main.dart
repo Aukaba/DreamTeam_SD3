@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'map_screen.dart';
+import 'Authentication/auth_service.dart';
+import 'Authentication/sign_in_screen.dart';
 
 Future<void> main() async {
   await dotenv.load(fileName: ".env");
@@ -17,46 +19,57 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
-      title: 'Todos',
-      home: HomePage(),
+    return MaterialApp(
+      title: 'App',
+      home: StreamBuilder<AuthState>(
+        stream: AuthService().authStateChanges,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          }
+          final session = snapshot.data?.session;
+          if (session != null) {
+            return const HomePage();
+          }
+          return const HomePage(showAuthButton: true); // Show home page with auth button when logged out
+        },
+      ),
     );
   }
 }
 
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
-
-  @override
-  State<HomePage> createState() => _HomePageState();
-}
-
-class _HomePageState extends State<HomePage> {
-  final _future = Supabase.instance.client.from('todos').select();
+class HomePage extends StatelessWidget {
+  final bool showAuthButton;
+  
+  const HomePage({super.key, this.showAuthButton = false});
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Todos'),
+        title: const Text('Home'),
+        actions: [
+          if (!showAuthButton)
+            IconButton(
+              icon: const Icon(Icons.logout),
+              onPressed: () async {
+                await AuthService().signOut();
+              },
+            ),
+        ],
       ),
-      body: FutureBuilder(
-        future: _future,
-        builder: (context, snapshot) {
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final todos = snapshot.data!;
-          return ListView.builder(
-            itemCount: todos.length,
-            itemBuilder: ((context, index) {
-              final todo = todos[index];
-              return ListTile(
-                title: Text(todo['name']),
-              );
-            }),
-          );
-        },
+      body: Center(
+        child: showAuthButton 
+          ? ElevatedButton(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const SignInScreen()),
+                );
+              },
+              child: const Text('Go to Authentication'),
+            )
+          : const Text('Welcome! You are logged in.'),
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () {
