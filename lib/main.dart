@@ -7,7 +7,7 @@ Future<void> main() async {
   await dotenv.load(fileName: ".env");
   await Supabase.initialize(
     url: dotenv.env['SUPABASE_URL']!,
-    anonKey: dotenv.env['SUPABASE_ANON_KEY']!,
+    publishableKey: dotenv.env['SUPABASE_ANON_KEY']!,
   );
   runApp(const MyApp());
 }
@@ -32,9 +32,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final _future = Supabase.instance.client
-      .from('todos')
-      .select();
+  final _future = Supabase.instance.client.from('todos').select();
 
   @override
   Widget build(BuildContext context) {
