@@ -7,6 +7,7 @@ import 'signup_page.dart';
 import 'reset_password_page.dart';
 import 'user_screens/user_home_screen.dart';
 import 'Authentication/auth_service.dart';
+import 'Authentication/auth_error_handler.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -48,9 +49,26 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _signIn() async {
-    if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+
+    if (email.isEmpty) {
       setState(() {
-        _errorMessage = 'Please fill in all fields';
+        _errorMessage = 'Please enter your email address.';
+      });
+      return;
+    }
+
+    if (!AuthErrorHandler.isValidEmail(email)) {
+      setState(() {
+        _errorMessage = 'Please enter a valid email address.';
+      });
+      return;
+    }
+
+    if (password.isEmpty) {
+      setState(() {
+        _errorMessage = 'Please enter your password.';
       });
       return;
     }
@@ -62,8 +80,8 @@ class _LoginPageState extends State<LoginPage> {
 
     try {
       final response = await _authService.signIn(
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
+        email: email,
+        password: password,
       );
 
       if (response.user != null) {
@@ -90,18 +108,18 @@ class _LoginPageState extends State<LoginPage> {
           } else {
             // Handle other roles if needed
             setState(() {
-              _errorMessage = 'Unauthorized role: $role';
+              _errorMessage = 'Access denied. Your account does not have permission to log in.';
             });
           }
         }
       } else {
         setState(() {
-          _errorMessage = 'Login failed. Please check your credentials.';
+          _errorMessage = 'Sign in failed. Please check your credentials and try again.';
         });
       }
     } catch (e) {
       setState(() {
-        _errorMessage = 'An error occurred: ${e.toString()}';
+        _errorMessage = AuthErrorHandler.getErrorMessage(e);
       });
     } finally {
       if (mounted) {
@@ -417,14 +435,33 @@ class _LoginPageState extends State<LoginPage> {
                 if (_errorMessage != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 16),
-                    child: Text(
-                      _errorMessage!,
-                      style: GoogleFonts.poppins(
-                        color: Colors.red,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w400,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFEE2E2),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFFCA5A5)),
                       ),
-                      textAlign: TextAlign.center,
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.error_outline_rounded,
+                            color: Color(0xFFDC2626),
+                            size: 20,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              _errorMessage!,
+                              style: GoogleFonts.poppins(
+                                color: const Color(0xFF991B1B),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 const SizedBox(height: 24),

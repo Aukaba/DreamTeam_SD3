@@ -4,6 +4,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login_page.dart';
 import 'Authentication/auth_service.dart';
+import 'Authentication/auth_error_handler.dart';
 
 class ResetPasswordPage extends StatefulWidget {
   const ResetPasswordPage({super.key});
@@ -65,9 +66,17 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
   }
 
   Future<void> _sendResetEmail() async {
-    if (_emailController.text.isEmpty) {
+    final email = _emailController.text.trim();
+    if (email.isEmpty) {
       setState(() {
-        _errorMessage = 'Please enter your email';
+        _errorMessage = 'Please enter your email address.';
+      });
+      return;
+    }
+
+    if (!AuthErrorHandler.isValidEmail(email)) {
+      setState(() {
+        _errorMessage = 'Please enter a valid email address.';
       });
       return;
     }
@@ -79,14 +88,14 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
     });
 
     try {
-      await _authService.resetPassword(email: _emailController.text.trim());
+      await _authService.resetPassword(email: email);
       setState(() {
         _successMessage = 'Password reset email sent! Please check your inbox and click the link to reset your password.';
         _emailSent = true;
       });
     } catch (e) {
       setState(() {
-        _errorMessage = 'An error occurred: ${e.toString()}';
+        _errorMessage = AuthErrorHandler.getErrorMessage(e);
       });
     } finally {
       if (mounted) {
@@ -98,16 +107,33 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
   }
 
   Future<void> _updatePassword() async {
-    if (_newPasswordController.text.isEmpty || _confirmPasswordController.text.isEmpty) {
+    final newPassword = _newPasswordController.text;
+    final confirmPassword = _confirmPasswordController.text;
+
+    if (newPassword.isEmpty) {
       setState(() {
-        _errorMessage = 'Please fill in all fields';
+        _errorMessage = 'Please enter your new password.';
       });
       return;
     }
 
-    if (_newPasswordController.text != _confirmPasswordController.text) {
+    if (newPassword.length < 6) {
       setState(() {
-        _errorMessage = 'Passwords do not match';
+        _errorMessage = 'Password must be at least 6 characters long.';
+      });
+      return;
+    }
+
+    if (confirmPassword.isEmpty) {
+      setState(() {
+        _errorMessage = 'Please confirm your new password.';
+      });
+      return;
+    }
+
+    if (newPassword != confirmPassword) {
+      setState(() {
+        _errorMessage = 'Passwords do not match. Please verify and try again.';
       });
       return;
     }
@@ -120,14 +146,14 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
 
     try {
       await _supabase.auth.updateUser(
-        UserAttributes(password: _newPasswordController.text.trim()),
+        UserAttributes(password: newPassword.trim()),
       );
       setState(() {
         _successMessage = 'Password updated successfully! You can now log in with your new password.';
       });
     } catch (e) {
       setState(() {
-        _errorMessage = 'An error occurred: ${e.toString()}';
+        _errorMessage = AuthErrorHandler.getErrorMessage(e);
       });
     } finally {
       if (mounted) {
@@ -452,27 +478,65 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                 if (_errorMessage != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 16),
-                    child: Text(
-                      _errorMessage!,
-                      style: GoogleFonts.poppins(
-                        color: Colors.red,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w400,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFEE2E2),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFFCA5A5)),
                       ),
-                      textAlign: TextAlign.center,
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.error_outline_rounded,
+                            color: Color(0xFFDC2626),
+                            size: 20,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              _errorMessage!,
+                              style: GoogleFonts.poppins(
+                                color: const Color(0xFF991B1B),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 if (_successMessage != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 16),
-                    child: Text(
-                      _successMessage!,
-                      style: GoogleFonts.poppins(
-                        color: Colors.green,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w400,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFDCFCE7),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFF86EFAC)),
                       ),
-                      textAlign: TextAlign.center,
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.check_circle_outline_rounded,
+                            color: Color(0xFF16A34A),
+                            size: 20,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              _successMessage!,
+                              style: GoogleFonts.poppins(
+                                color: const Color(0xFF166534),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 const SizedBox(height: 24),
