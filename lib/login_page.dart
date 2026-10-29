@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'signup_page.dart';
 import 'reset_password_page.dart';
+import 'user_screens/user_home_screen.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -299,7 +300,12 @@ class _LoginPageState extends State<LoginPage> {
                 // Login button
                 GestureDetector(
                   onTap: () {
-                    // Handle login
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const UserHomeScreen(),
+                      ),
+                    );
                   },
                   child: Container(
                     width: double.infinity,
