@@ -13,6 +13,9 @@ dependencies:
   flutter_dotenv: ^5.1.0
   flutter_map: ^7.0.2
   latlong2: ^0.9.1
+  google_fonts: ^6.2.1
+  flutter_svg: ^2.0.10
+  shared_preferences: ^2.2.2
 
 dev_dependencies:
   flutter_test:
@@ -23,3 +26,15 @@ flutter:
   uses-material-design: true
   assets:
     - .env
+    - assets/
+    - assets/image/
+
+  fonts:
+    - family: Poppins
+      fonts:
+        - asset: assets/fonts/Poppins-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Poppins-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Poppins-SemiBold.ttf
+          weight: 600
