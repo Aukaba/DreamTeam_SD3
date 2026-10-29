@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../map_screen.dart';
+import '../widgets/report_hazard_modal.dart';
 
 class UserHomeScreen extends StatefulWidget {
   const UserHomeScreen({super.key});
@@ -135,7 +137,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
         borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withValues(alpha: 0.05),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -175,7 +177,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                           borderRadius: BorderRadius.circular(20),
                           boxShadow: [
                             BoxShadow(
-                              color: Colors.black.withOpacity(0.06),
+                              color: Colors.black.withValues(alpha: 0.06),
                               blurRadius: 6,
                               offset: const Offset(0, 2),
                             ),
@@ -243,7 +245,12 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                 // Open Map button
                 GestureDetector(
                   onTap: () {
-                    // Navigate to Map
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const MapScreen(),
+                      ),
+                    );
                   },
                   child: const Row(
                     mainAxisSize: MainAxisSize.min,
@@ -290,7 +297,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
             color: Colors.transparent,
             child: InkWell(
               onTap: () {
-                // Handle Report hazard
+                showReportHazardModal(context);
               },
               borderRadius: BorderRadius.circular(26),
               child: Ink(
@@ -300,7 +307,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                   borderRadius: BorderRadius.circular(26),
                   boxShadow: [
                     BoxShadow(
-                      color: _primaryNavy.withOpacity(0.2),
+                      color: _primaryNavy.withValues(alpha: 0.2),
                       blurRadius: 10,
                       offset: const Offset(0, 4),
                     ),
@@ -370,7 +377,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                   ),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.04),
+                      color: Colors.black.withValues(alpha: 0.04),
                       blurRadius: 8,
                       offset: const Offset(0, 3),
                     ),
@@ -473,7 +480,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
+            color: Colors.black.withValues(alpha: 0.04),
             blurRadius: 10,
             offset: const Offset(0, 3),
           ),
@@ -621,7 +628,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
+            color: Colors.black.withValues(alpha: 0.04),
             blurRadius: 10,
             offset: const Offset(0, 3),
           ),
@@ -681,7 +688,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
         color: Colors.white,
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withValues(alpha: 0.05),
             blurRadius: 10,
             offset: const Offset(0, -3),
           ),
@@ -754,15 +761,15 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
 // -----------------------------------------------------------------------------
 class _RouteNavIcon extends StatelessWidget {
   final Color color;
-  final double size;
 
-  const _RouteNavIcon({required this.color, this.size = 24});
+
+  const _RouteNavIcon({required this.color});
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: size,
-      height: size,
+      width: 24,
+      height: 24,
       child: CustomPaint(
         painter: _RouteNavPainter(color: color),
       ),
@@ -827,7 +834,7 @@ class _MapCanvasPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     // Subtle road lines
     final roadPaint = Paint()
-      ..color = Colors.white.withOpacity(0.85)
+      ..color = Colors.white.withValues(alpha: 0.85)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 9.0
       ..strokeCap = StrokeCap.round

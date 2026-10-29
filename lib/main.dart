@@ -20,17 +20,17 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    return const MaterialApp(
       title: 'App',
       debugShowCheckedModeBanner: false,
-      home: const LoginPage(),
+      home: LoginPage(),
     );
   }
 }
 
 class HomePage extends StatelessWidget {
   final bool showAuthButton;
-  
+
   const HomePage({super.key, this.showAuthButton = false});
 
   @override
@@ -38,7 +38,7 @@ class HomePage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Home'),
-        actions: [
+        actions: const [
           // if (!showAuthButton)
           //   IconButton(
           //     icon: const Icon(Icons.logout),
@@ -50,8 +50,8 @@ class HomePage extends StatelessWidget {
       ),
       body: Center(
         child: showAuthButton
-          ? const Text('Welcome to DreamTeam SD3')
-          : const Text('Welcome! You are logged in.'),
+            ? const Text('Welcome to DreamTeam SD3')
+            : const Text('Welcome! You are logged in.'),
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () {
