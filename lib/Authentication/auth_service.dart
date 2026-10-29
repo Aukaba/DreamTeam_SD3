@@ -10,10 +10,15 @@ class AuthService {
   User? get currentUser => _supabase.auth.currentUser;
 
   // Sign up
-  Future<AuthResponse> signUp({required String email, required String password}) async {
+  Future<AuthResponse> signUp({
+    required String email,
+    required String password,
+    Map<String, dynamic>? data,
+  }) async {
     return await _supabase.auth.signUp(
       email: email,
       password: password,
+      data: data,
     );
   }
 

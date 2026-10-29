@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../map_screen.dart';
 import '../widgets/report_hazard_modal.dart';
+import '../Authentication/auth_service.dart';
+import '../login_page.dart';
 
 class UserHomeScreen extends StatefulWidget {
   const UserHomeScreen({super.key});
@@ -11,6 +13,8 @@ class UserHomeScreen extends StatefulWidget {
 
 class _UserHomeScreenState extends State<UserHomeScreen> {
   int _currentNavIndex = 0;
+  DateTime? _lastBackPressedAt;
+  final AuthService _authService = AuthService();
 
   // Color Palette Constants
   static const Color _bgWarm = Color(0xFFF8F7F4);
@@ -24,77 +28,159 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: _bgWarm,
-      body: SingleChildScrollView(
-        physics: const BouncingScrollPhysics(),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // 1. Inline Scrollable Header
-            _buildScrollableHeader(),
+    return WillPopScope(
+      onWillPop: () async {
+        final now = DateTime.now();
+        if (_lastBackPressedAt == null ||
+            now.difference(_lastBackPressedAt!) > const Duration(seconds: 2)) {
+          _lastBackPressedAt = now;
+          return false;
+        }
+        // Show logout dialog on second back press
+        await _showLogoutDialog();
+        return false; // Never allow back to proceed after logout
+      },
+      child: Scaffold(
+        backgroundColor: _bgWarm,
+        body: SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // 1. Inline Scrollable Header
+              _buildScrollableHeader(),
 
-            // 2. Main Scrollable Content pulled up snugly against the wave
-            Transform.translate(
-              offset: const Offset(0, -36),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Greeting & Subtitle
-                    const Text(
-                      'GOOD MORNING',
-                      style: TextStyle(
-                        fontFamily: 'Poppins',
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: _secondaryGrey,
-                        letterSpacing: 1.4,
+              // 2. Main Scrollable Content pulled up snugly against the wave
+              Transform.translate(
+                offset: const Offset(0, -36),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Greeting & Subtitle
+                      const Text(
+                        'GOOD MORNING',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: _secondaryGrey,
+                          letterSpacing: 1.4,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      'Stay safe out there.',
-                      style: TextStyle(
-                        fontFamily: 'Poppins',
-                        fontSize: 24,
-                        fontWeight: FontWeight.w600,
-                        color: _primaryNavy,
-                        letterSpacing: -0.4,
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Stay safe out there.',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 24,
+                          fontWeight: FontWeight.w600,
+                          color: _primaryNavy,
+                          letterSpacing: -0.4,
+                        ),
                       ),
-                    ),
 
-                    const SizedBox(height: 16),
+                      const SizedBox(height: 16),
 
-                    // 3. Live Map Card
-                    _buildLiveMapCard(),
+                      // 3. Live Map Card
+                      _buildLiveMapCard(),
 
-                    const SizedBox(height: 16),
+                      const SizedBox(height: 16),
 
-                    // 4. Action Buttons
-                    _buildActionButtons(),
+                      // 4. Action Buttons
+                      _buildActionButtons(),
 
-                    const SizedBox(height: 24),
+                      const SizedBox(height: 24),
 
-                    // 5. Recent Hazards Section
-                    _buildRecentHazardsSection(),
+                      // 5. Recent Hazards Section
+                      _buildRecentHazardsSection(),
 
-                    const SizedBox(height: 24),
+                      const SizedBox(height: 24),
 
-                    // 6. Hazards by Type Section
-                    _buildHazardsByTypeSection(),
+                      // 6. Hazards by Type Section
+                      _buildHazardsByTypeSection(),
 
-                    const SizedBox(height: 40),
-                  ],
+                      const SizedBox(height: 40),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
+        bottomNavigationBar: _buildBottomNavigationBar(),
       ),
-      bottomNavigationBar: _buildBottomNavigationBar(),
     );
+  }
+
+  Future<bool> _showLogoutDialog() async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: _cardBg,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        title: Text(
+          'Log out?',
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            fontSize: 18,
+            fontWeight: FontWeight.w600,
+            color: _primaryNavy,
+          ),
+        ),
+        content: Text(
+          'Are you sure you want to log out?',
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            fontSize: 14,
+            fontWeight: FontWeight.w400,
+            color: _secondaryGrey,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(
+              'Cancel',
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                color: _secondaryGrey,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () async {
+              // Dismiss dialog first
+              Navigator.pop(context);
+              // Then sign out and navigate
+              await _authService.signOut();
+              if (mounted) {
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (context) => const LoginPage()),
+                  (route) => false,
+                );
+              }
+            },
+            child: Text(
+              'Log out',
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: _accentRed,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
   }
 
   // ---------------------------------------------------------------------------

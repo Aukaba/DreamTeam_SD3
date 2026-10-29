@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login_page.dart';
+import 'Authentication/auth_service.dart';
 
 class SignupPage extends StatefulWidget {
   const SignupPage({super.key});
@@ -19,9 +21,13 @@ class _SignupPageState extends State<SignupPage> {
   final FocusNode _emailFocusNode = FocusNode();
   final FocusNode _passwordFocusNode = FocusNode();
   final FocusNode _confirmPasswordFocusNode = FocusNode();
+  final AuthService _authService = AuthService();
+  final SupabaseClient _supabase = Supabase.instance.client;
   bool _agreeToTerms = false;
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
+  bool _isLoading = false;
+  String? _errorMessage;
 
   @override
   void initState() {
@@ -51,6 +57,88 @@ class _SignupPageState extends State<SignupPage> {
     _passwordFocusNode.dispose();
     _confirmPasswordFocusNode.dispose();
     super.dispose();
+  }
+
+  Future<void> _signUp() async {
+    if (_fullNameController.text.isEmpty ||
+        _emailController.text.isEmpty ||
+        _passwordController.text.isEmpty ||
+        _confirmPasswordController.text.isEmpty) {
+      setState(() {
+        _errorMessage = 'Please fill in all fields';
+      });
+      return;
+    }
+
+    if (!_agreeToTerms) {
+      setState(() {
+        _errorMessage = 'Please agree to the Terms and Privacy Policy';
+      });
+      return;
+    }
+
+    if (_passwordController.text != _confirmPasswordController.text) {
+      setState(() {
+        _errorMessage = 'Passwords do not match';
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      // Sign up with Supabase Auth with metadata
+      final response = await _authService.signUp(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+        data: {
+          'full_name': _fullNameController.text.trim(),
+        },
+      );
+
+      if (response.user != null) {
+        // Try to create profile (in case trigger fails)
+        try {
+          await _supabase.from('profiles').insert({
+            'id': response.user!.id,
+            'email': _emailController.text.trim(),
+            'full_name': _fullNameController.text.trim(),
+            'avatar_url': null,
+            'created_at': DateTime.now().toIso8601String(),
+            'role': 'user',
+          });
+          print('Profile inserted manually');
+        } catch (e) {
+          // If trigger already created the profile, ignore duplicate error
+          print('Profile already created by trigger: $e');
+        }
+
+        // Navigate to login page on successful signup
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const LoginPage()),
+          );
+        }
+      } else {
+        setState(() {
+          _errorMessage = 'Sign up failed. Please try again.';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'An error occurred: ${e.toString()}';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
   }
 
   @override
@@ -410,9 +498,7 @@ class _SignupPageState extends State<SignupPage> {
                 const SizedBox(height: 24),
                 // Sign up button
                 GestureDetector(
-                  onTap: () {
-                    // Handle sign up
-                  },
+                  onTap: _isLoading ? null : _signUp,
                   child: Container(
                     width: double.infinity,
                     height: 56,
@@ -423,27 +509,51 @@ class _SignupPageState extends State<SignupPage> {
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Text(
-                          'Sign up',
-                          style: GoogleFonts.poppins(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
+                        if (_isLoading)
+                          const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2,
+                            ),
+                          )
+                        else
+                          Text(
+                            'Sign up',
+                            style: GoogleFonts.poppins(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          '→',
-                          style: GoogleFonts.poppins(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
+                        if (!_isLoading) const SizedBox(width: 8),
+                        if (!_isLoading)
+                          Text(
+                            '→',
+                            style: GoogleFonts.poppins(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
-                        ),
                       ],
                     ),
                   ),
                 ),
+                if (_errorMessage != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: Text(
+                      _errorMessage!,
+                      style: GoogleFonts.poppins(
+                        color: Colors.red,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w400,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
                 const SizedBox(height: 24),
                 // Divider with "or"
                 Row(
