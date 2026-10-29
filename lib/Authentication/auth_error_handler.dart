@@ -21,6 +21,8 @@ class AuthErrorHandler {
     if (errorString.contains('socketexception') ||
         errorString.contains('failed host lookup') ||
         errorString.contains('clientexception') ||
+        errorString.contains('failed to fetch') ||
+        errorString.contains('authretryablefetchexception') ||
         errorString.contains('network') ||
         errorString.contains('connection refused') ||
         errorString.contains('connection reset') ||
@@ -133,10 +135,23 @@ class AuthErrorHandler {
       return 'Your session has expired. Please sign in again.';
     }
 
-    // Network
+    // Placeholder or misconfigured Supabase URL
+    if (message.contains('your-project-id') ||
+        message.contains('your-project') ||
+        message.contains('example.com')) {
+      return 'Configuration error: Placeholder Supabase URL detected. Please restart the app with valid configuration.';
+    }
+
+    // Network & connectivity errors (including Flutter Web Failed to fetch)
     if (message.contains('network') ||
         message.contains('failed host lookup') ||
-        message.contains('socket')) {
+        message.contains('socket') ||
+        message.contains('failed to fetch') ||
+        message.contains('clientexception') ||
+        message.contains('fetch') ||
+        message.contains('connection refused') ||
+        message.contains('connection reset') ||
+        message.contains('handshakeexception')) {
       return 'Unable to connect to the server. Please check your internet connection.';
     }
 
