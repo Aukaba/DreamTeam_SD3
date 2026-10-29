@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'auth_service.dart';
+import 'auth_error_handler.dart';
 import 'sign_up_screen.dart';
 import 'forgot_password_screen.dart';
 
@@ -34,11 +35,35 @@ class _SignInScreenState extends State<SignInScreen> {
       }
     } on AuthException catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.error_outline, color: Colors.white),
+                const SizedBox(width: 12),
+                Expanded(child: Text(AuthErrorHandler.getErrorMessage(e))),
+              ],
+            ),
+            backgroundColor: Colors.red.shade700,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('An unexpected error occurred')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.error_outline, color: Colors.white),
+                const SizedBox(width: 12),
+                Expanded(child: Text(AuthErrorHandler.getErrorMessage(e))),
+              ],
+            ),
+            backgroundColor: Colors.red.shade700,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -75,11 +100,7 @@ class _SignInScreenState extends State<SignInScreen> {
                   controller: _emailController,
                   decoration: const InputDecoration(labelText: 'Email', border: OutlineInputBorder()),
                   keyboardType: TextInputType.emailAddress,
-                  validator: (value) {
-                    if (value == null || value.isEmpty) return 'Please enter your email';
-                    if (!value.contains('@')) return 'Please enter a valid email';
-                    return null;
-                  },
+                  validator: AuthErrorHandler.validateEmail,
                 ),
                 const SizedBox(height: 16),
                 TextFormField(

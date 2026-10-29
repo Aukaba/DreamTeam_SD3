@@ -122,7 +122,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
         ),
-        title: Text(
+        title: const Text(
           'Log out?',
           style: TextStyle(
             fontFamily: 'Poppins',
@@ -131,7 +131,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
             color: _primaryNavy,
           ),
         ),
-        content: Text(
+        content: const Text(
           'Are you sure you want to log out?',
           style: TextStyle(
             fontFamily: 'Poppins',
@@ -143,7 +143,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: Text(
+            child: const Text(
               'Cancel',
               style: TextStyle(
                 fontFamily: 'Poppins',
@@ -167,7 +167,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                 );
               }
             },
-            child: Text(
+            child: const Text(
               'Log out',
               style: TextStyle(
                 fontFamily: 'Poppins',
@@ -847,7 +847,6 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
 // -----------------------------------------------------------------------------
 class _RouteNavIcon extends StatelessWidget {
   final Color color;
-
 
   const _RouteNavIcon({required this.color});
 

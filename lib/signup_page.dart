@@ -4,6 +4,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login_page.dart';
 import 'Authentication/auth_service.dart';
+import 'Authentication/auth_error_handler.dart';
 
 class SignupPage extends StatefulWidget {
   const SignupPage({super.key});
@@ -60,26 +61,63 @@ class _SignupPageState extends State<SignupPage> {
   }
 
   Future<void> _signUp() async {
-    if (_fullNameController.text.isEmpty ||
-        _emailController.text.isEmpty ||
-        _passwordController.text.isEmpty ||
-        _confirmPasswordController.text.isEmpty) {
+    final fullName = _fullNameController.text.trim();
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+    final confirmPassword = _confirmPasswordController.text;
+
+    if (fullName.isEmpty) {
       setState(() {
-        _errorMessage = 'Please fill in all fields';
+        _errorMessage = 'Please enter your full name.';
+      });
+      return;
+    }
+
+    if (email.isEmpty) {
+      setState(() {
+        _errorMessage = 'Please enter your email address.';
+      });
+      return;
+    }
+
+    if (!AuthErrorHandler.isValidEmail(email)) {
+      setState(() {
+        _errorMessage = 'Please enter a valid email address.';
+      });
+      return;
+    }
+
+    if (password.isEmpty) {
+      setState(() {
+        _errorMessage = 'Please enter a password.';
+      });
+      return;
+    }
+
+    if (password.length < 6) {
+      setState(() {
+        _errorMessage = 'Password must be at least 6 characters long.';
+      });
+      return;
+    }
+
+    if (confirmPassword.isEmpty) {
+      setState(() {
+        _errorMessage = 'Please confirm your password.';
+      });
+      return;
+    }
+
+    if (password != confirmPassword) {
+      setState(() {
+        _errorMessage = 'Passwords do not match. Please verify and try again.';
       });
       return;
     }
 
     if (!_agreeToTerms) {
       setState(() {
-        _errorMessage = 'Please agree to the Terms and Privacy Policy';
-      });
-      return;
-    }
-
-    if (_passwordController.text != _confirmPasswordController.text) {
-      setState(() {
-        _errorMessage = 'Passwords do not match';
+        _errorMessage = 'Please agree to the Terms and Privacy Policy to continue.';
       });
       return;
     }
@@ -92,10 +130,10 @@ class _SignupPageState extends State<SignupPage> {
     try {
       // Sign up with Supabase Auth with metadata
       final response = await _authService.signUp(
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
+        email: email,
+        password: password,
         data: {
-          'full_name': _fullNameController.text.trim(),
+          'full_name': fullName,
         },
       );
 
@@ -104,8 +142,8 @@ class _SignupPageState extends State<SignupPage> {
         try {
           await _supabase.from('profiles').insert({
             'id': response.user!.id,
-            'email': _emailController.text.trim(),
-            'full_name': _fullNameController.text.trim(),
+            'email': email,
+            'full_name': fullName,
             'avatar_url': null,
             'created_at': DateTime.now().toIso8601String(),
             'role': 'user',
@@ -125,12 +163,12 @@ class _SignupPageState extends State<SignupPage> {
         }
       } else {
         setState(() {
-          _errorMessage = 'Sign up failed. Please try again.';
+          _errorMessage = 'Unable to complete sign up. Please try again.';
         });
       }
     } catch (e) {
       setState(() {
-        _errorMessage = 'An error occurred: ${e.toString()}';
+        _errorMessage = AuthErrorHandler.getErrorMessage(e);
       });
     } finally {
       if (mounted) {
@@ -544,14 +582,33 @@ class _SignupPageState extends State<SignupPage> {
                 if (_errorMessage != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 16),
-                    child: Text(
-                      _errorMessage!,
-                      style: GoogleFonts.poppins(
-                        color: Colors.red,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w400,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFEE2E2),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFFCA5A5)),
                       ),
-                      textAlign: TextAlign.center,
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.error_outline_rounded,
+                            color: Color(0xFFDC2626),
+                            size: 20,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              _errorMessage!,
+                              style: GoogleFonts.poppins(
+                                color: const Color(0xFF991B1B),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 const SizedBox(height: 24),
