@@ -4,18 +4,22 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 
 class HazardAnalysisResult {
+  final bool isRoadHazard; // true if it's a genuine road/traffic/civic hazard
   final String category; // e.g. "Flood", "Road damage", etc.
   final String detected; // e.g. "Flooded Road"
   final int confidence; // e.g. 91
   final String severity; // "Low", "Medium", "High", "Critical"
   final String description;
+  final String? rejectionReason; // Explanation if not a road hazard
 
   HazardAnalysisResult({
+    required this.isRoadHazard,
     required this.category,
     required this.detected,
     required this.confidence,
     required this.severity,
     required this.description,
+    this.rejectionReason,
   });
 }
 
@@ -57,7 +61,6 @@ class GeminiHazardService {
       throw Exception('Gemini API key is not configured in .env');
     }
 
-    // High availability models supported on free tier with multimodal input
     final modelsToTry = [
       'gemini-3.5-flash',
       'gemini-3.5-flash-lite',
@@ -75,43 +78,35 @@ class GeminiHazardService {
         );
 
         const prompt = '''
-You are an expert civic road safety and hazard inspector.
-Examine this image and detect the primary physical hazard shown.
+You are an expert civic road safety and hazard verification system.
+First, check whether this image actually depicts a legitimate real-world road, street, highway, traffic, or outdoor civic safety hazard.
 
-Select EXACTLY ONE of these categories:
-- Flood
-- Road damage
-- Accident
-- Fallen tree
-- Fire
-- Broken streetlight
-- Blocked road
-- Other
+CRITICAL ROAD HAZARD VALIDATION:
+- If the image is unrelated to roads, streets, public pathways, traffic safety, or civic infrastructure (e.g. animals, random clipart, drawings, memes, food, selfies, indoor household objects, screenshots of random apps/illustrations):
+  Set "is_road_hazard": false.
+  Set "rejection_reason": A friendly explanation like "This photo does not appear to show a road or civic hazard. Please upload a clear photo of a road issue (e.g., potholes, flooding, accidents, or fallen trees)."
 
-Rules:
-- If there is a tree or branch on or blocking the road, choose "Fallen tree".
-- If the road has potholes, cracks, or asphalt damage, choose "Road damage".
-- If there is standing water or flooding, choose "Flood".
-- If vehicles have collided, choose "Accident".
-- If a fire is visible, choose "Fire".
-- If streetlights are dark or broken, choose "Broken streetlight".
-- If the route is physically barricaded or impassable without falling tree, choose "Blocked road".
-- Otherwise choose "Other".
+- If the image IS a genuine road or outdoor civic hazard:
+  Set "is_road_hazard": true.
+  Categorize it into EXACTLY ONE of:
+  - Flood
+  - Road damage
+  - Accident
+  - Fallen tree
+  - Fire
+  - Broken streetlight
+  - Blocked road
+  - Other
 
-Provide:
-1. "category": EXACTLY one of the 8 category names listed above.
-2. "detected": A brief specific title (2-4 words) describing what is visible (e.g. "Fallen Tree on Road", "Severe Road Pothole", "Vehicle Collision", "Flooded Street").
-3. "confidence": Realistic integer between 70 and 98 representing confidence in this identification.
-4. "severity": "Low", "Medium", "High", or "Critical" based on threat to traffic or human safety.
-5. "description": 1 concise sentence describing the hazard and impact.
-
-Output ONLY valid raw JSON:
+Output ONLY raw JSON with these exact fields:
 {
-  "category": "Fallen tree",
-  "detected": "Fallen Tree on Road",
-  "confidence": 92,
-  "severity": "High",
-  "description": "A fallen tree trunk is blocking traffic on the road."
+  "is_road_hazard": true/false,
+  "rejection_reason": "string or null",
+  "category": "One of the 8 categories or 'Other'",
+  "detected": "Concise specific hazard title (e.g. Fallen Tree on Road, Pothole, Flooded Street)",
+  "confidence": integer between 70 and 99,
+  "severity": "Low" | "Medium" | "High" | "Critical",
+  "description": "Brief description"
 }
 ''';
 
@@ -161,6 +156,9 @@ Output ONLY valid raw JSON:
                   .trim();
               final jsonResult = jsonDecode(cleanText);
 
+              final bool isRoadHazard = jsonResult['is_road_hazard'] == true;
+              final String? rejectionReason = jsonResult['rejection_reason']?.toString();
+
               String cat = jsonResult['category']?.toString().trim() ?? 'Other';
               final matchedCat = categories.firstWhere(
                 (c) => c.toLowerCase() == cat.toLowerCase(),
@@ -180,11 +178,13 @@ Output ONLY valid raw JSON:
               );
 
               return HazardAnalysisResult(
+                isRoadHazard: isRoadHazard,
                 category: matchedCat,
                 detected: detected,
                 confidence: confidence,
                 severity: matchedSeverity,
                 description: jsonResult['description']?.toString() ?? '',
+                rejectionReason: rejectionReason,
               );
             }
           }
