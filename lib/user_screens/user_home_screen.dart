@@ -3,6 +3,9 @@ import '../map_screen.dart';
 import '../widgets/report_hazard_modal.dart';
 import '../Authentication/auth_service.dart';
 import '../login_page.dart';
+import '../widgets/custom_wavy_header.dart';
+import '../widgets/safe_route_bottom_nav.dart';
+import 'route_screen.dart';
 
 class UserHomeScreen extends StatefulWidget {
   const UserHomeScreen({super.key});
@@ -187,30 +190,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   // INLINE SCROLLABLE HEADER
   // ---------------------------------------------------------------------------
   Widget _buildScrollableHeader() {
-    return Stack(
-      children: [
-        // Wavy Blue Background
-        Image.asset(
-          'assets/image/saferoute_heather.png',
-          width: double.infinity,
-          fit: BoxFit.fitWidth,
-          alignment: Alignment.topCenter,
-        ),
-
-        // SafeRoute Logo positioned over top-left of the blue wave
-        SafeArea(
-          bottom: false,
-          child: Padding(
-            padding: const EdgeInsets.only(left: 20.0, top: 10.0),
-            child: Image.asset(
-              'assets/image/saferoute_logo_and_icon.png',
-              height: 40,
-              fit: BoxFit.contain,
-            ),
-          ),
-        ),
-      ],
-    );
+    return const CustomWavyHeader();
   }
 
   // ---------------------------------------------------------------------------
@@ -769,146 +749,25 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   // BOTTOM NAVIGATION BAR
   // ---------------------------------------------------------------------------
   Widget _buildBottomNavigationBar() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, -3),
-          ),
-        ],
-      ),
-      child: SafeArea(
-        top: false,
-        child: BottomNavigationBar(
-          currentIndex: _currentNavIndex,
-          onTap: (index) {
-            setState(() {
-              _currentNavIndex = index;
-            });
-          },
-          type: BottomNavigationBarType.fixed,
-          backgroundColor: Colors.white,
-          elevation: 0,
-          selectedItemColor: _primaryNavy,
-          unselectedItemColor: _secondaryGrey,
-          selectedLabelStyle: const TextStyle(
-            fontFamily: 'Poppins',
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-          ),
-          unselectedLabelStyle: const TextStyle(
-            fontFamily: 'Poppins',
-            fontSize: 11,
-            fontWeight: FontWeight.w500,
-          ),
-          items: [
-            const BottomNavigationBarItem(
-              icon: Padding(
-                padding: EdgeInsets.only(bottom: 2.0),
-                child: Icon(Icons.home_rounded, size: 24),
-              ),
-              label: 'Home',
+    return SafeRouteBottomNav(
+      currentIndex: _currentNavIndex,
+      onTap: (index) {
+        if (index == 1) {
+          Navigator.pushReplacement(
+            context,
+            PageRouteBuilder(
+              pageBuilder: (context, anim1, anim2) => const RouteScreen(),
+              transitionDuration: Duration.zero,
             ),
-            BottomNavigationBarItem(
-              icon: Padding(
-                padding: const EdgeInsets.only(bottom: 2.0),
-                child: _RouteNavIcon(
-                  color: _currentNavIndex == 1 ? _primaryNavy : _secondaryGrey,
-                ),
-              ),
-              label: 'Route',
-            ),
-            const BottomNavigationBarItem(
-              icon: Padding(
-                padding: EdgeInsets.only(bottom: 2.0),
-                child: Icon(Icons.notifications_none_rounded, size: 24),
-              ),
-              label: 'Alerts',
-            ),
-            const BottomNavigationBarItem(
-              icon: Padding(
-                padding: EdgeInsets.only(bottom: 2.0),
-                child: Icon(Icons.person_outline_rounded, size: 24),
-              ),
-              label: 'Profile',
-            ),
-          ],
-        ),
-      ),
+          );
+        } else {
+          setState(() {
+            _currentNavIndex = index;
+          });
+        }
+      },
     );
   }
-}
-
-// -----------------------------------------------------------------------------
-// ROUTE BOTTOM NAV ICON (S-Curve Route Path matching Figma)
-// -----------------------------------------------------------------------------
-class _RouteNavIcon extends StatelessWidget {
-  final Color color;
-
-  const _RouteNavIcon({required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 24,
-      height: 24,
-      child: CustomPaint(
-        painter: _RouteNavPainter(color: color),
-      ),
-    );
-  }
-}
-
-class _RouteNavPainter extends CustomPainter {
-  final Color color;
-
-  _RouteNavPainter({required this.color});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final strokePaint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    final dotPaint = Paint()
-      ..color = color
-      ..style = PaintingStyle.fill;
-
-    // Start circle at top left
-    canvas.drawCircle(
-        Offset(size.width * 0.28, size.height * 0.24), 2.2, dotPaint);
-
-    final path = Path()
-      ..moveTo(size.width * 0.38, size.height * 0.24)
-      ..lineTo(size.width * 0.65, size.height * 0.24)
-      ..arcToPoint(
-        Offset(size.width * 0.65, size.height * 0.52),
-        radius: Radius.circular(size.width * 0.14),
-        clockwise: true,
-      )
-      ..lineTo(size.width * 0.35, size.height * 0.52)
-      ..arcToPoint(
-        Offset(size.width * 0.35, size.height * 0.80),
-        radius: Radius.circular(size.width * 0.14),
-        clockwise: false,
-      )
-      ..lineTo(size.width * 0.62, size.height * 0.80);
-
-    canvas.drawPath(path, strokePaint);
-    // End circle at bottom right
-    canvas.drawCircle(
-        Offset(size.width * 0.72, size.height * 0.80), 2.2, dotPaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _RouteNavPainter oldDelegate) =>
-      oldDelegate.color != color;
 }
 
 // -----------------------------------------------------------------------------
