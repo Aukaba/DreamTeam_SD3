@@ -1,8 +1,12 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' hide Path;
+import 'services/cebu_landmark_service.dart';
 import 'services/location_service.dart';
+import 'services/nominatim_rate_limiter.dart';
 import 'widgets/report_hazard_modal.dart';
 
 class MapScreen extends StatefulWidget {
@@ -53,8 +57,21 @@ class _MapScreenState extends State<MapScreen> {
   int _selectedFilterIndex = 0;
   final DraggableScrollableController _sheetController = DraggableScrollableController();
   final MapController _mapController = MapController();
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
   int _tileStyleIndex = 0;
   bool _hasTileError = false;
+
+  // Search state
+  List<CebuLandmark> _searchResults = [];
+  bool _isSearching = false;
+  bool _isSearchingOnline = false;
+  CebuLandmark? _selectedLandmark;
+  Timer? _searchDebounceTimer;
+  Timer? _reverseGeocodeDebounceTimer;
+  bool _isProgrammaticTextUpdate = false;
+  bool _hasUserInteracted = false;
+  int _reverseGeocodeRequestId = 0;
 
   // Camera tracking for dynamic scale indicator
   double _currentZoom = 16.0;
@@ -175,11 +192,148 @@ class _MapScreenState extends State<MapScreen> {
     super.initState();
     _currentLocation = widget.initialLocation ?? LocationService.defaultLocation;
     _currentLatitude = _currentLocation.latitude;
+    _searchController.addListener(_onSearchChanged);
     _initDeviceLocation();
+  }
+
+  void _onSearchChanged() {
+    if (_isProgrammaticTextUpdate) return;
+
+    // User is actively typing/editing the query: clear previously selected landmark pin
+    if (_selectedLandmark != null) {
+      setState(() {
+        _selectedLandmark = null;
+      });
+    }
+
+    final query = _searchController.text.trim();
+    if (query.isEmpty || query.length < 3) {
+      _searchDebounceTimer?.cancel();
+      if (_searchResults.isNotEmpty || _isSearching || _isSearchingOnline) {
+        setState(() {
+          _searchResults = [];
+          _isSearching = false;
+          _isSearchingOnline = false;
+        });
+      }
+      return;
+    }
+
+    // 1. Instant local search (0ms latency, works offline for all barangays, streets, shops)
+    final localResults = CebuLandmarkService.searchLocal(
+      query,
+      userLocation: _currentLocation,
+    );
+    setState(() {
+      _searchResults = localResults;
+      _isSearching = true;
+      _isSearchingOnline = true;
+    });
+
+    // 2. 600ms debounced online geocoding (Nominatim OpenStreetMap)
+    _searchDebounceTimer?.cancel();
+    _searchDebounceTimer = Timer(const Duration(milliseconds: 600), () async {
+      final onlineResults = await CebuLandmarkService.searchOnline(
+        query,
+        userLocation: _currentLocation,
+      );
+
+      if (!mounted || _searchController.text.trim() != query) return;
+
+      setState(() {
+        _isSearchingOnline = false;
+        if (onlineResults.isNotEmpty) {
+          final merged = List<CebuLandmark>.from(_searchResults);
+          for (final online in onlineResults) {
+            // Deduplicate only when stable IDs match or (matching names AND distance < 35m)
+            final isDuplicate = merged.any((l) =>
+                (l.id == online.id) ||
+                (l.name.toLowerCase() == online.name.toLowerCase() &&
+                    const Distance().distance(l.location, online.location) < 35));
+            if (!isDuplicate) {
+              merged.add(online);
+            }
+          }
+          _searchResults = merged.take(10).toList();
+        }
+      });
+    });
+  }
+
+  void _clearSearch() {
+    _searchDebounceTimer?.cancel();
+    _isProgrammaticTextUpdate = true;
+    _searchController.clear();
+    _isProgrammaticTextUpdate = false;
+    _searchFocusNode.unfocus();
+    setState(() {
+      _searchResults = [];
+      _isSearching = false;
+      _isSearchingOnline = false;
+      _selectedLandmark = null;
+    });
+  }
+
+  void _selectLandmark(CebuLandmark landmark) {
+    _hasUserInteracted = true;
+    _searchDebounceTimer?.cancel();
+    _searchFocusNode.unfocus();
+
+    _isProgrammaticTextUpdate = true;
+    _searchController.text = landmark.name;
+    _isProgrammaticTextUpdate = false;
+
+    setState(() {
+      _selectedLandmark = landmark;
+      _searchResults = [];
+      _isSearching = false;
+      _isSearchingOnline = false;
+    });
+
+    // Adapt zoom level: wider for whole barangays, medium for streets, close-up for shops/landmarks
+    double targetZoom = 17.5;
+    if (landmark.category == LandmarkCategory.barangay) {
+      targetZoom = 15.5;
+    } else if (landmark.category == LandmarkCategory.street) {
+      targetZoom = 16.5;
+    }
+
+    _mapController.move(landmark.location, targetZoom);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(landmark.icon, color: Colors.white, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Found ${landmark.name} (${landmark.categoryLabel})',
+                style: const TextStyle(
+                  fontFamily: 'Poppins',
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  String _formatDistanceTo(LatLng target) {
+    final meters = const Distance().distance(_currentLocation, target);
+    if (meters < 1000) {
+      return '${meters.round()} m away';
+    }
+    return '${(meters / 1000).toStringAsFixed(1)} km away';
   }
 
   Future<void> _initDeviceLocation() async {
     final lastKnown = await LocationService.getLastKnownLocation();
+    if (_hasUserInteracted || _selectedLandmark != null) return;
     if (lastKnown != null && mounted) {
       setState(() {
         _currentLocation = lastKnown;
@@ -189,6 +343,7 @@ class _MapScreenState extends State<MapScreen> {
     }
 
     final current = await LocationService.getCurrentLocation();
+    if (_hasUserInteracted || _selectedLandmark != null) return;
     if (mounted) {
       setState(() {
         _currentLocation = current;
@@ -198,8 +353,44 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  Future<void> _reverseGeocode(LatLng pos) async {
+    final reqId = ++_reverseGeocodeRequestId;
+    try {
+      final url = Uri.parse(
+        'https://nominatim.openstreetmap.org/reverse?format=json&lat=${pos.latitude}&lon=${pos.longitude}&zoom=18&addressdetails=1',
+      );
+      final response = await NominatimRateLimiter.instance
+          .get(url)
+          .timeout(const Duration(seconds: 4));
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data != null && data['display_name'] != null) {
+          final raw = data['display_name'].toString();
+          // Extract display_name and take the top 2 comma-separated segments
+          final formatted = raw.split(',').take(2).map((s) => s.trim()).join(', ');
+          if (mounted &&
+              reqId == _reverseGeocodeRequestId &&
+              _selectedLandmark == null &&
+              !_searchFocusNode.hasFocus &&
+              const Distance().distance(pos, _mapController.camera.center) < 25) {
+            _isProgrammaticTextUpdate = true;
+            _searchController.text = formatted;
+            _isProgrammaticTextUpdate = false;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Reverse geocoding error: $e');
+    }
+  }
+
   @override
   void dispose() {
+    _searchDebounceTimer?.cancel();
+    _reverseGeocodeDebounceTimer?.cancel();
+    _searchController.removeListener(_onSearchChanged);
+    _searchController.dispose();
+    _searchFocusNode.dispose();
     _sheetController.dispose();
     _mapController.dispose();
     super.dispose();
@@ -261,12 +452,31 @@ class _MapScreenState extends State<MapScreen> {
                 interactionOptions: const InteractionOptions(
                   flags: InteractiveFlag.all,
                 ),
+                onTap: (tapPosition, point) {
+                  if (_searchFocusNode.hasFocus) {
+                    _searchFocusNode.unfocus();
+                  }
+                  if (_isSearching) {
+                    setState(() => _isSearching = false);
+                  }
+                },
                 onPositionChanged: (camera, hasGesture) {
                   if ((camera.zoom - _currentZoom).abs() > 0.05 ||
                       (camera.center.latitude - _currentLatitude).abs() > 0.001) {
                     setState(() {
                       _currentZoom = camera.zoom;
                       _currentLatitude = camera.center.latitude;
+                    });
+                  }
+
+                  // When hasGesture is true, user dragged/panned the map:
+                  // debounce reverse geocoding by 800ms to update search text
+                  if (hasGesture) {
+                    _hasUserInteracted = true;
+                    _reverseGeocodeDebounceTimer?.cancel();
+                    _reverseGeocodeDebounceTimer =
+                        Timer(const Duration(milliseconds: 800), () {
+                      _reverseGeocode(camera.center);
                     });
                   }
                 },
@@ -399,7 +609,7 @@ class _MapScreenState extends State<MapScreen> {
                 borderRadius: BorderRadius.circular(26),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.06),
+                    color: Colors.black.withValues(alpha: 0.08),
                     blurRadius: 12,
                     offset: const Offset(0, 4),
                   ),
@@ -410,7 +620,13 @@ class _MapScreenState extends State<MapScreen> {
                 children: [
                   // Back Arrow
                   IconButton(
-                    onPressed: () => Navigator.pop(context),
+                    onPressed: () {
+                      if (_isSearching || _selectedLandmark != null) {
+                        _clearSearch();
+                      } else {
+                        Navigator.pop(context);
+                      }
+                    },
                     icon: const Icon(
                       Icons.arrow_back,
                       color: _primaryNavy,
@@ -422,15 +638,56 @@ class _MapScreenState extends State<MapScreen> {
                   const SizedBox(width: 10),
 
                   // Search input
-                  const Expanded(
+                  Expanded(
                     child: TextField(
-                      style: TextStyle(
+                      controller: _searchController,
+                      focusNode: _searchFocusNode,
+                      textInputAction: TextInputAction.search,
+                      onSubmitted: (value) async {
+                        final submitted = value.trim();
+                        if (submitted.isEmpty) return;
+
+                        if (_searchResults.isNotEmpty) {
+                          _selectLandmark(_searchResults.first);
+                        } else {
+                          setState(() {
+                            _isSearchingOnline = true;
+                          });
+                          final localMatches = CebuLandmarkService.searchLocal(
+                            submitted,
+                            userLocation: _currentLocation,
+                          );
+                          if (localMatches.isNotEmpty) {
+                            if (mounted && _searchController.text.trim() == submitted) {
+                              _selectLandmark(localMatches.first);
+                            }
+                          } else {
+                            final onlineMatches =
+                                await CebuLandmarkService.searchOnline(
+                              submitted,
+                              userLocation: _currentLocation,
+                            );
+                            if (onlineMatches.isNotEmpty &&
+                                mounted &&
+                                _searchController.text.trim() == submitted) {
+                              _selectLandmark(onlineMatches.first);
+                            }
+                          }
+                          if (mounted) {
+                            setState(() {
+                              _isSearchingOnline = false;
+                            });
+                          }
+                        }
+                      },
+                      style: const TextStyle(
                         fontFamily: 'Poppins',
                         fontSize: 14,
                         color: _primaryNavy,
                       ),
-                      decoration: InputDecoration(
-                        hintText: 'Search destination or hazard...',
+                      decoration: const InputDecoration(
+                        hintText:
+                            'Search location (e.g. Cebu Institute of Technology)...',
                         hintStyle: TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 13,
@@ -443,17 +700,263 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   ),
 
-                  // LogoSR Asset branding
-                  Image.asset(
-                    'assets/image/LogoSR.png',
-                    height: 24,
-                    width: 24,
-                    fit: BoxFit.contain,
-                  ),
+                  // Clear button when query is present, otherwise LogoSR
+                  if (_searchController.text.isNotEmpty)
+                    IconButton(
+                      onPressed: _clearSearch,
+                      icon: const Icon(
+                        Icons.close_rounded,
+                        color: _secondaryGrey,
+                        size: 20,
+                      ),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    )
+                  else
+                    Image.asset(
+                      'assets/image/LogoSR.png',
+                      height: 24,
+                      width: 24,
+                      fit: BoxFit.contain,
+                    ),
                 ],
               ),
             ),
           ),
+
+          // Search Suggestions Dropdown Overlay
+          if (_isSearching && _searchResults.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.only(top: 8.0, left: 20.0, right: 20.0),
+              constraints: const BoxConstraints(maxHeight: 280),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.12),
+                    blurRadius: 18,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(18),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_isSearchingOnline)
+                      const LinearProgressIndicator(
+                        minHeight: 2.5,
+                        backgroundColor: Color(0xFFF1F5F9),
+                        color: _primaryNavy,
+                      ),
+                    Flexible(
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        itemCount: _searchResults.length,
+                        separatorBuilder: (context, index) => const Divider(
+                          color: Color(0xFFF1F5F9),
+                          height: 1,
+                          thickness: 1,
+                          indent: 58,
+                          endIndent: 16,
+                        ),
+                        itemBuilder: (context, index) {
+                          final landmark = _searchResults[index];
+                          final distStr = _formatDistanceTo(landmark.location);
+                          return Material(
+                            color: Colors.transparent,
+                            child: InkWell(
+                              onTap: () => _selectLandmark(landmark),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 10,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 36,
+                                      height: 36,
+                                      decoration: BoxDecoration(
+                                        color: landmark.color.withValues(alpha: 0.12),
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: Icon(
+                                        landmark.icon,
+                                        color: landmark.color,
+                                        size: 18,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            landmark.name,
+                                            style: const TextStyle(
+                                              fontFamily: 'Poppins',
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.w600,
+                                              color: _primaryNavy,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Row(
+                                            children: [
+                                              Container(
+                                                margin: const EdgeInsets.only(right: 6),
+                                                padding: const EdgeInsets.symmetric(
+                                                  horizontal: 5,
+                                                  vertical: 1.5,
+                                                ),
+                                                decoration: BoxDecoration(
+                                                  color: landmark.color.withValues(alpha: 0.12),
+                                                  borderRadius: BorderRadius.circular(4),
+                                                ),
+                                                child: Text(
+                                                  landmark.categoryLabel,
+                                                  style: TextStyle(
+                                                    fontFamily: 'Poppins',
+                                                    fontSize: 8.5,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: landmark.color,
+                                                    letterSpacing: 0.3,
+                                                  ),
+                                                ),
+                                              ),
+                                              Expanded(
+                                                child: Text(
+                                                  landmark.address,
+                                                  style: const TextStyle(
+                                                    fontFamily: 'Poppins',
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.w400,
+                                                    color: _secondaryGrey,
+                                                  ),
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 7,
+                                        vertical: 3,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFF1F5F9),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Text(
+                                        distStr,
+                                        style: const TextStyle(
+                                          fontFamily: 'Poppins',
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w500,
+                                          color: _secondaryGrey,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else if (_isSearching &&
+              _searchController.text.trim().isNotEmpty &&
+              _isSearchingOnline)
+            Container(
+              margin: const EdgeInsets.only(top: 8.0, left: 20.0, right: 20.0),
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.08),
+                    blurRadius: 14,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: const Row(
+                children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: _primaryNavy,
+                    ),
+                  ),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Searching locations, buildings & businesses...',
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 12,
+                        color: _secondaryGrey,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (_isSearching &&
+              _searchController.text.trim().isNotEmpty &&
+              _searchResults.isEmpty)
+            Container(
+              margin: const EdgeInsets.only(top: 8.0, left: 20.0, right: 20.0),
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.08),
+                    blurRadius: 14,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.search_off_rounded, color: _secondaryGrey, size: 20),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'No matching locations or businesses found',
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 12,
+                        color: _secondaryGrey,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
 
           const SizedBox(height: 12),
 
@@ -629,12 +1132,121 @@ class _MapScreenState extends State<MapScreen> {
       ),
     ];
 
-    // Add matching markers for every filtered hazard
+    // 2. Selected Landmark Search Marker
+    if (_selectedLandmark != null) {
+      markers.add(_buildSelectedLandmarkMarker(_selectedLandmark!));
+    }
+
+    // 3. Filtered hazard markers
     for (final hazard in _filteredHazards) {
       markers.add(_buildHazardMarker(hazard));
     }
 
     return markers;
+  }
+
+  // Selected Landmark Marker with Info Callout & Dismiss
+  Marker _buildSelectedLandmarkMarker(CebuLandmark landmark) {
+    return Marker(
+      point: landmark.location,
+      width: 180,
+      height: 96,
+      alignment: Alignment.center,
+      child: GestureDetector(
+        onTap: () {
+          _mapController.move(landmark.location, 17.0);
+        },
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Callout Pill
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.12),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: Text(
+                      landmark.name,
+                      style: const TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: _primaryNavy,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        _selectedLandmark = null;
+                        _searchController.clear();
+                      });
+                    },
+                    child: const Icon(
+                      Icons.close,
+                      size: 14,
+                      color: _secondaryGrey,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+
+            // Pin with pulse ring
+            Stack(
+              alignment: Alignment.center,
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: landmark.color.withValues(alpha: 0.22),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                Container(
+                  width: 30,
+                  height: 30,
+                  decoration: BoxDecoration(
+                    color: landmark.color,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: landmark.color.withValues(alpha: 0.45),
+                        blurRadius: 8,
+                        offset: const Offset(0, 3),
+                      ),
+                    ],
+                  ),
+                  child: Icon(
+                    landmark.icon,
+                    color: Colors.white,
+                    size: 16,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // 1. Current Location with Radar & "You are here"
@@ -831,6 +1443,7 @@ class _MapScreenState extends State<MapScreen> {
         _currentLatitude = current.latitude;
       });
       _mapController.move(current, 16.0);
+      _reverseGeocode(current);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Centered on current location'),
@@ -1213,16 +1826,20 @@ class _MapScreenState extends State<MapScreen> {
                         const SizedBox(width: 5),
                       ],
                     const SizedBox(width: 3),
-                    Text(
-                      '${filtered.length} nearby hazard${filtered.length == 1 ? '' : 's'}',
-                      style: const TextStyle(
-                        fontFamily: 'Poppins',
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: _primaryNavy,
+                    Flexible(
+                      child: Text(
+                        '${filtered.length} nearby hazard${filtered.length == 1 ? '' : 's'}',
+                        style: const TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: _primaryNavy,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    const Spacer(),
+                    const SizedBox(width: 8),
                     const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1230,12 +1847,12 @@ class _MapScreenState extends State<MapScreen> {
                           'Updated just now',
                           style: TextStyle(
                             fontFamily: 'Poppins',
-                            fontSize: 12,
+                            fontSize: 11.5,
                             fontWeight: FontWeight.w400,
                             color: _secondaryGrey,
                           ),
                         ),
-                        SizedBox(width: 4),
+                        SizedBox(width: 2),
                         Icon(
                           Icons.chevron_right,
                           size: 16,
