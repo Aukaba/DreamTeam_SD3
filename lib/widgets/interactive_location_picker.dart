@@ -3,8 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
+import 'package:dreamteam_sd3/services/nominatim_rate_limiter.dart';
 
 /// Interactive Location Picker & Reverse Geocoding Widget.
 ///
@@ -27,6 +27,32 @@ class InteractiveLocationPicker extends StatefulWidget {
     this.onLocationConfirmed,
   });
 
+  /// Formats raw display_name to top 2 comma-separated segments.
+  static String formatDisplayName(String rawDisplayName) {
+    final parts = rawDisplayName.split(',');
+    return parts.take(2).map((s) => s.trim()).join(', ');
+  }
+
+  /// Appends region scoping (e.g. ', Cebu') if query doesn't specify it.
+  static String applyRegionScoping(String query) {
+    final clean = query.trim();
+    return clean.toLowerCase().contains('cebu') ? clean : '$clean, Cebu';
+  }
+
+  /// Extracts title, subtitle, and full address from a Nominatim suggestion.
+  static ({String title, String subtitle, String fullAddress}) parseSuggestion(
+      Map<String, dynamic> option) {
+    final name = option['name']?.toString() ?? '';
+    final displayNameRaw = option['display_name']?.toString() ?? '';
+    final parts = displayNameRaw.split(',');
+
+    final title = name.isNotEmpty ? name.trim() : (parts.isNotEmpty ? parts.first.trim() : '');
+    final subtitle = parts.length > 1
+        ? parts.skip(1).take(2).map((s) => s.trim()).join(', ')
+        : displayNameRaw;
+    return (title: title, subtitle: subtitle, fullAddress: displayNameRaw);
+  }
+
   @override
   State<InteractiveLocationPicker> createState() =>
       _InteractiveLocationPickerState();
@@ -46,6 +72,13 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
   bool _isSearchingLocation = false;
   bool _isReverseGeocoding = false;
 
+  // Sequencing and confirmed address state
+  int _searchRequestId = 0;
+  int _reverseGeocodeRequestId = 0;
+  int _gpsLookupId = 0;
+  String _confirmedAddress = '';
+  bool _isAddressResolved = false;
+
   // Defaults
   static const LatLng _defaultLocation = LatLng(10.3157, 123.8854); // Cebu City
   static const Color _primaryNavy = Color(0xFF263354);
@@ -57,6 +90,8 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
     _selectedLocation = widget.initialLocation ?? _defaultLocation;
     if (widget.initialAddress != null && widget.initialAddress!.isNotEmpty) {
       _searchController.text = widget.initialAddress!;
+      _confirmedAddress = widget.initialAddress!;
+      _isAddressResolved = true;
     } else {
       _reverseGeocode(_selectedLocation);
     }
@@ -79,32 +114,33 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
     if (_searchDebounce?.isActive ?? false) _searchDebounce!.cancel();
 
     final clean = query.trim();
+    // Clear suggestions immediately when query changes or is cleared
+    setState(() {
+      _locationSuggestions = [];
+      _isSearchingLocation = clean.length >= 3;
+    });
+
     if (clean.length < 3) {
       setState(() {
-        _locationSuggestions = [];
         _isSearchingLocation = false;
       });
       return;
     }
 
+    final reqId = ++_searchRequestId;
+
     // Debounce search keystrokes by 600ms to avoid spamming the Nominatim API
     _searchDebounce = Timer(const Duration(milliseconds: 600), () async {
-      setState(() {
-        _isSearchingLocation = true;
-      });
-
-      // Region scoping: automatically append region if not present
-      final searchQuery =
-          clean.toLowerCase().contains('cebu') ? clean : '$clean, Cebu';
+      final searchQuery = InteractiveLocationPicker.applyRegionScoping(clean);
 
       try {
         final url = Uri.parse(
           'https://nominatim.openstreetmap.org/search?q=${Uri.encodeComponent(searchQuery)}&format=json&addressdetails=1&countrycodes=ph&limit=5',
         );
 
-        // Note on Flutter Web: Avoid custom User-Agent headers that trigger CORS preflight failures
-        final response =
-            await http.get(url).timeout(const Duration(seconds: 4));
+        final response = await NominatimRateLimiter.instance
+            .get(url)
+            .timeout(const Duration(seconds: 4));
 
         List data = [];
         if (response.statusCode == 200) {
@@ -116,14 +152,16 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
           final fallbackUrl = Uri.parse(
             'https://nominatim.openstreetmap.org/search?q=${Uri.encodeComponent(clean)}&format=json&addressdetails=1&countrycodes=ph&limit=5',
           );
-          final fallbackResp =
-              await http.get(fallbackUrl).timeout(const Duration(seconds: 4));
+          final fallbackResp = await NominatimRateLimiter.instance
+              .get(fallbackUrl)
+              .timeout(const Duration(seconds: 4));
           if (fallbackResp.statusCode == 200) {
             data = json.decode(fallbackResp.body);
           }
         }
 
-        if (mounted) {
+        // Verify that this response is still for the active request and matching current text
+        if (mounted && reqId == _searchRequestId && _searchController.text.trim() == clean) {
           setState(() {
             _locationSuggestions = data.cast<Map<String, dynamic>>();
           });
@@ -131,7 +169,7 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
       } catch (e) {
         debugPrint('Forward location search error: $e');
       } finally {
-        if (mounted) {
+        if (mounted && reqId == _searchRequestId) {
           setState(() {
             _isSearchingLocation = false;
           });
@@ -141,20 +179,19 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
   }
 
   void _onSuggestionTapped(Map<String, dynamic> option) {
+    _gpsLookupId++; // Invalidate pending GPS lookup
     final lat = double.tryParse(option['lat']?.toString() ?? '');
     final lon = double.tryParse(option['lon']?.toString() ?? '');
     if (lat == null || lon == null) return;
 
-    final name = option['name']?.toString() ?? '';
-    final displayNameRaw = option['display_name']?.toString() ?? '';
-    final parts = displayNameRaw.split(',');
-
-    final title = name.isNotEmpty ? name.trim() : parts.first.trim();
+    final parsed = InteractiveLocationPicker.parseSuggestion(option);
 
     setState(() {
       _selectedLocation = LatLng(lat, lon);
       _locationSuggestions = [];
-      _searchController.text = title;
+      _searchController.text = parsed.title;
+      _confirmedAddress = parsed.fullAddress.isNotEmpty ? parsed.fullAddress : parsed.title;
+      _isAddressResolved = true;
     });
 
     _mapController.move(_selectedLocation, 15.0);
@@ -168,8 +205,10 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
   // ---------------------------------------------------------------------------
   void _onMapPositionChanged(MapCamera camera, bool hasGesture) {
     if (hasGesture) {
+      _gpsLookupId++; // Invalidate any pending GPS fix
       setState(() {
         _selectedLocation = camera.center;
+        _isAddressResolved = false;
       });
 
       widget.onLocationChanged?.call(_selectedLocation);
@@ -184,8 +223,10 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
 
   Future<void> _reverseGeocode(LatLng pos) async {
     if (!mounted) return;
+    final reqId = ++_reverseGeocodeRequestId;
     setState(() {
       _isReverseGeocoding = true;
+      _isAddressResolved = false;
     });
 
     try {
@@ -193,16 +234,26 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
         'https://nominatim.openstreetmap.org/reverse?format=json&lat=${pos.latitude}&lon=${pos.longitude}&zoom=18&addressdetails=1',
       );
 
-      final response = await http.get(url).timeout(const Duration(seconds: 4));
+      final response = await NominatimRateLimiter.instance
+          .get(url)
+          .timeout(const Duration(seconds: 4));
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         if (data != null && data['display_name'] != null) {
           final raw = data['display_name'].toString();
-          // Extract display_name and take the top 2 comma-separated segments
-          final formatted = raw.split(',').take(2).join(', ').trim();
-          if (mounted) {
+          final formatted = InteractiveLocationPicker.formatDisplayName(raw);
+
+          // Discard response if another reverse-geocode started or user moved away
+          if (mounted &&
+              reqId == _reverseGeocodeRequestId &&
+              const Distance().distance(pos, _selectedLocation) < 25) {
             setState(() {
-              _searchController.text = formatted;
+              _confirmedAddress = raw;
+              _isAddressResolved = true;
+              // Do not overwrite search field if user is actively focused on typing
+              if (!_searchFocusNode.hasFocus) {
+                _searchController.text = formatted;
+              }
             });
           }
         }
@@ -210,7 +261,7 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
     } catch (e) {
       debugPrint('Reverse geocoding error: $e');
     } finally {
-      if (mounted) {
+      if (mounted && reqId == _reverseGeocodeRequestId) {
         setState(() {
           _isReverseGeocoding = false;
         });
@@ -222,6 +273,7 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
   // C. GPS CURRENT LOCATION DETECTION
   // ---------------------------------------------------------------------------
   Future<void> _fetchCurrentLocation() async {
+    final lookupId = ++_gpsLookupId;
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
@@ -261,9 +313,11 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
         ),
       );
 
+      // Verify that the user did not pan or select another destination during GPS lookup
+      if (!mounted || lookupId != _gpsLookupId) return;
+
       final current = LatLng(position.latitude, position.longitude);
 
-      if (!mounted) return;
       setState(() {
         _selectedLocation = current;
       });
@@ -300,6 +354,7 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
             TileLayer(
               urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
               userAgentPackageName: 'com.dreamteam.sd3',
+              errorTileCallback: (tile, error, stackTrace) {},
             ),
             MarkerLayer(
               markers: [
@@ -428,20 +483,7 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
                             const Divider(height: 1, color: Color(0xFFF1F5F9)),
                         itemBuilder: (context, index) {
                           final option = _locationSuggestions[index];
-                          final name = option['name']?.toString() ?? '';
-                          final displayNameRaw =
-                              option['display_name']?.toString() ?? '';
-                          final parts = displayNameRaw.split(',');
-
-                          final title =
-                              name.isNotEmpty ? name.trim() : parts.first.trim();
-                          final subtitle = parts.length > 1
-                              ? parts
-                                  .skip(name.isNotEmpty ? 0 : 1)
-                                  .take(2)
-                                  .join(', ')
-                                  .trim()
-                              : displayNameRaw;
+                          final parsed = InteractiveLocationPicker.parseSuggestion(option);
 
                           return ListTile(
                             leading: const Icon(
@@ -450,7 +492,7 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
                               size: 22,
                             ),
                             title: Text(
-                              title,
+                              parsed.title,
                               style: const TextStyle(
                                 fontFamily: 'Poppins',
                                 fontSize: 13,
@@ -461,7 +503,7 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
                               overflow: TextOverflow.ellipsis,
                             ),
                             subtitle: Text(
-                              subtitle,
+                              parsed.subtitle,
                               style: const TextStyle(
                                 fontFamily: 'Poppins',
                                 fontSize: 11,
@@ -552,29 +594,50 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
             bottom: 20,
             child: SizedBox(
               height: 50,
-              child: ElevatedButton.icon(
-                onPressed: () {
-                  widget.onLocationConfirmed!(
-                    _selectedLocation,
-                    _searchController.text,
-                  );
-                },
-                icon: const Icon(Icons.check_circle_outline, color: Colors.white),
-                label: const Text(
-                  'Confirm Location',
-                  style: TextStyle(
-                    fontFamily: 'Poppins',
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
-                  ),
-                ),
+              child: ElevatedButton(
+                onPressed: _isAddressResolved && !_isReverseGeocoding
+                    ? () {
+                        widget.onLocationConfirmed!(
+                          _selectedLocation,
+                          _confirmedAddress.isNotEmpty
+                              ? _confirmedAddress
+                              : _searchController.text,
+                        );
+                      }
+                    : null,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _primaryNavy,
+                  disabledBackgroundColor: _secondaryGrey.withValues(alpha: 0.5),
                   elevation: 6,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(25),
                   ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    if (_isReverseGeocoding)
+                      const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    else
+                      const Icon(Icons.check_circle_outline, color: Colors.white),
+                    const SizedBox(width: 8),
+                    Text(
+                      _isReverseGeocoding ? 'Resolving Address...' : 'Confirm Location',
+                      style: const TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -583,4 +646,3 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
     );
   }
 }
-

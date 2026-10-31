@@ -1,8 +1,9 @@
 import 'dart:convert';
-import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
+import 'package:dreamteam_sd3/services/nominatim_rate_limiter.dart';
 
 enum LandmarkCategory {
   barangay,
@@ -1042,16 +1043,30 @@ class CebuLandmarkService {
     return scored.take(8).map((e) => e.key).toList();
   }
 
+  // Geographic bounds for Cebu Province
+  static const double cebuMinLat = 9.4;
+  static const double cebuMaxLat = 11.5;
+  static const double cebuMinLon = 123.0;
+  static const double cebuMaxLon = 124.6;
+
+  static bool isInCebuBounds(double lat, double lon) {
+    return lat >= cebuMinLat &&
+        lat <= cebuMaxLat &&
+        lon >= cebuMinLon &&
+        lon <= cebuMaxLon;
+  }
+
   /// Backward-compatible alias for searchLocal
   static List<CebuLandmark> search(String query, {LatLng? userLocation}) {
     return searchLocal(query, userLocation: userLocation);
   }
 
-  /// Online geocoding search replicated from automate (UnliRice_Softdev2)
-  /// using OpenStreetMap Nominatim with dynamic suffixing and clean display parsing.
+  /// Online geocoding search using OpenStreetMap Nominatim with rate limiting,
+  /// Cebu geographic bounds filtering, and Photon fallback.
   static Future<List<CebuLandmark>> searchOnline(
     String query, {
     LatLng? userLocation,
+    http.Client? client,
   }) async {
     final clean = query.trim();
     if (clean.length < 2) return const [];
@@ -1063,23 +1078,29 @@ class CebuLandmarkService {
       final url = Uri.parse(
         'https://nominatim.openstreetmap.org/search?q=${Uri.encodeComponent(searchQuery)}&format=json&addressdetails=1&countrycodes=ph&limit=6',
       );
-      final response =
-          await http.get(url).timeout(const Duration(seconds: 4));
-      List data = [];
-      if (response.statusCode == 200) {
-        data = json.decode(response.body);
+      final response = await NominatimRateLimiter.instance
+          .get(url, client: client)
+          .timeout(const Duration(seconds: 4));
+
+      if (response.statusCode != 200) {
+        throw Exception('Nominatim returned HTTP ${response.statusCode}');
       }
+
+      List data = json.decode(response.body);
 
       // If query with ', Cebu' returned empty, fallback to raw clean query
       if (data.isEmpty && searchQuery != clean) {
         final fallbackUrl = Uri.parse(
           'https://nominatim.openstreetmap.org/search?q=${Uri.encodeComponent(clean)}&format=json&addressdetails=1&countrycodes=ph&limit=6',
         );
-        final fallbackResp =
-            await http.get(fallbackUrl).timeout(const Duration(seconds: 4));
-        if (fallbackResp.statusCode == 200) {
-          data = json.decode(fallbackResp.body);
+        final fallbackResp = await NominatimRateLimiter.instance
+            .get(fallbackUrl, client: client)
+            .timeout(const Duration(seconds: 4));
+
+        if (fallbackResp.statusCode != 200) {
+          throw Exception('Nominatim fallback returned HTTP ${fallbackResp.statusCode}');
         }
+        data = json.decode(fallbackResp.body);
       }
 
       if (data.isNotEmpty) {
@@ -1088,6 +1109,7 @@ class CebuLandmarkService {
           final lat = double.tryParse(option['lat']?.toString() ?? '');
           final lon = double.tryParse(option['lon']?.toString() ?? '');
           if (lat == null || lon == null) continue;
+          if (!isInCebuBounds(lat, lon)) continue;
 
           final name = option['name']?.toString() ?? '';
           final displayNameRaw = option['display_name']?.toString() ?? '';
@@ -1096,7 +1118,7 @@ class CebuLandmarkService {
           final String title =
               name.isNotEmpty ? name.trim() : parts.first.trim();
           final String subtitle = parts.length > 1
-              ? parts.skip(name.isNotEmpty ? 0 : 1).take(2).join(',').trim()
+              ? parts.skip(1).take(2).map((s) => s.trim()).join(', ')
               : displayNameRaw;
 
           final itemClass = option['class']?.toString() ?? '';
@@ -1146,7 +1168,9 @@ class CebuLandmarkService {
             ),
           );
         }
-        return results;
+        if (results.isNotEmpty) {
+          return results;
+        }
       }
     } catch (e) {
       debugPrint("Nominatim location search error: $e");
@@ -1154,8 +1178,11 @@ class CebuLandmarkService {
 
     // Secondary fallback: Photon typeahead
     try {
-      final photonResults =
-          await _searchWithPhoton(clean, userLocation: userLocation);
+      final photonResults = await _searchWithPhoton(
+        clean,
+        userLocation: userLocation,
+        client: client,
+      );
       if (photonResults.isNotEmpty) {
         return photonResults;
       }
@@ -1166,14 +1193,17 @@ class CebuLandmarkService {
     return const [];
   }
 
-  /// Photon geocoding API (Komoot / OpenStreetMap)
+  /// Photon geocoding API (Komoot / OpenStreetMap) using web-compatible package:http
+  /// with bounded geographic query and proper client disposal.
   static Future<List<CebuLandmark>> _searchWithPhoton(
     String query, {
     LatLng? userLocation,
+    http.Client? client,
   }) async {
     final queryParams = <String, String>{
       'q': query,
       'limit': '10',
+      'bbox': '$cebuMinLon,$cebuMinLat,$cebuMaxLon,$cebuMaxLat',
     };
     if (userLocation != null) {
       queryParams['lat'] = userLocation.latitude.toString();
@@ -1181,144 +1211,154 @@ class CebuLandmarkService {
     }
 
     final uri = Uri.https('photon.komoot.io', '/api/', queryParams);
-    final client = HttpClient();
-    client.connectionTimeout = const Duration(seconds: 4);
-    final request = await client.getUrl(uri);
-    request.headers.set('User-Agent', 'DreamTeam_SD3_App/1.0.0');
-    final response = await request.close().timeout(const Duration(seconds: 4));
+    final headers = <String, String>{};
+    if (!kIsWeb) {
+      headers['User-Agent'] = 'DreamTeam_SD3/1.0 (cebu-softdev-hazard-map)';
+    }
 
-    if (response.statusCode == 200) {
-      final body = await response.transform(utf8.decoder).join();
-      final data = jsonDecode(body) as Map<String, dynamic>;
-      final features = data['features'] as List<dynamic>?;
-      if (features == null || features.isEmpty) return const [];
+    final httpClient = client ?? http.Client();
+    try {
+      final response = await httpClient
+          .get(uri, headers: headers)
+          .timeout(const Duration(seconds: 4));
 
-      final results = <CebuLandmark>[];
-      for (final f in features) {
-        final geometry = f['geometry'] as Map<String, dynamic>?;
-        final properties = f['properties'] as Map<String, dynamic>?;
-        if (geometry == null || properties == null) continue;
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final features = data['features'] as List<dynamic>?;
+        if (features == null || features.isEmpty) return const [];
 
-        final coords = geometry['coordinates'] as List<dynamic>?;
-        if (coords == null || coords.length < 2) continue;
+        final results = <CebuLandmark>[];
+        for (final f in features) {
+          final geometry = f['geometry'] as Map<String, dynamic>?;
+          final properties = f['properties'] as Map<String, dynamic>?;
+          if (geometry == null || properties == null) continue;
 
-        // GeoJSON coordinates are [lon, lat]
-        final lon = double.tryParse(coords[0].toString());
-        final lat = double.tryParse(coords[1].toString());
-        if (lat == null || lon == null) continue;
+          final coords = geometry['coordinates'] as List<dynamic>?;
+          if (coords == null || coords.length < 2) continue;
 
-        final rawName = properties['name']?.toString();
-        final street = properties['street']?.toString();
-        final district = properties['district']?.toString();
-        final locality = properties['locality']?.toString();
-        final city = properties['city']?.toString() ??
-            properties['county']?.toString();
-        final state = properties['state']?.toString();
-        final country = properties['country']?.toString();
+          // GeoJSON coordinates are [lon, lat]
+          final lon = double.tryParse(coords[0].toString());
+          final lat = double.tryParse(coords[1].toString());
+          if (lat == null || lon == null) continue;
+          if (!isInCebuBounds(lat, lon)) continue;
 
-        final name = (rawName != null && rawName.trim().isNotEmpty)
-            ? rawName.trim()
-            : (street ?? district ?? city ?? 'Point of Interest');
+          final rawName = properties['name']?.toString();
+          final street = properties['street']?.toString();
+          final district = properties['district']?.toString();
+          final locality = properties['locality']?.toString();
+          final city = properties['city']?.toString() ??
+              properties['county']?.toString();
+          final state = properties['state']?.toString();
+          final country = properties['country']?.toString();
 
-        // Build clean readable address
-        final addressParts = <String>[];
-        if (street != null && street != name) addressParts.add(street);
-        if (locality != null && locality != name && locality != district) {
-          addressParts.add(locality);
-        }
-        if (district != null) addressParts.add('Brgy. $district');
-        if (city != null) addressParts.add(city);
-        if (addressParts.isEmpty) {
-          if (state != null) addressParts.add(state);
-          if (country != null) addressParts.add(country);
-        }
-        final address = addressParts.isNotEmpty
-            ? addressParts.join(', ')
-            : (city ?? country ?? 'Philippines');
+          final name = (rawName != null && rawName.trim().isNotEmpty)
+              ? rawName.trim()
+              : (street ?? district ?? city ?? 'Point of Interest');
 
-        // Classify category based on OSM tags
-        final osmKey = properties['osm_key']?.toString() ?? '';
-        final osmValue = properties['osm_value']?.toString() ?? '';
-        final osmType = properties['type']?.toString() ?? '';
-
-        LandmarkCategory category = LandmarkCategory.commercial;
-        if (osmKey == 'highway') {
-          category = LandmarkCategory.street;
-        } else if (osmKey == 'amenity') {
-          if ([
-            'restaurant',
-            'cafe',
-            'fast_food',
-            'bar',
-            'food_court',
-            'marketplace',
-            'ice_cream',
-          ].contains(osmValue)) {
-            category = LandmarkCategory.shop;
-          } else if ([
-            'hospital',
-            'clinic',
-            'pharmacy',
-            'dentist',
-            'doctors',
-          ].contains(osmValue)) {
-            category = LandmarkCategory.hospital;
-          } else if ([
-            'school',
-            'college',
-            'university',
-            'kindergarten',
-          ].contains(osmValue)) {
-            category = LandmarkCategory.university;
-          } else if ([
-            'police',
-            'fire_station',
-            'post_office',
-            'townhall',
-            'courthouse',
-            'embassy',
-          ].contains(osmValue)) {
-            category = LandmarkCategory.government;
-          } else if ([
-            'fuel',
-            'bus_station',
-            'ferry_terminal',
-            'parking',
-          ].contains(osmValue)) {
-            category = LandmarkCategory.transport;
+          // Build clean readable address
+          final addressParts = <String>[];
+          if (street != null && street != name) addressParts.add(street);
+          if (locality != null && locality != name && locality != district) {
+            addressParts.add(locality);
           }
-        } else if (osmKey == 'shop') {
-          if (['mall', 'department_store', 'supermarket'].contains(osmValue)) {
-            category = LandmarkCategory.shopping;
-          } else {
-            category = LandmarkCategory.shop;
+          if (district != null) addressParts.add('Brgy. $district');
+          if (city != null) addressParts.add(city);
+          if (addressParts.isEmpty) {
+            if (state != null) addressParts.add(state);
+            if (country != null) addressParts.add(country);
           }
-        } else if (osmKey == 'tourism') {
-          if (['hotel', 'motel', 'hostel', 'guest_house'].contains(osmValue)) {
-            category = LandmarkCategory.commercial;
-          } else {
-            category = LandmarkCategory.historic;
-          }
-        } else if (osmKey == 'leisure') {
-          category = LandmarkCategory.nature;
-        } else if (osmKey == 'place' ||
-            osmKey == 'boundary' ||
-            osmType == 'district' ||
-            osmType == 'locality') {
-          category = LandmarkCategory.barangay;
-        }
+          final address = addressParts.isNotEmpty
+              ? addressParts.join(', ')
+              : (city ?? country ?? 'Philippines');
 
-        results.add(
-          CebuLandmark(
-            id: 'photon_${properties['osm_id'] ?? results.length}',
-            name: name,
-            address: address,
-            location: LatLng(lat, lon),
-            category: category,
-          ),
-        );
+          // Classify category based on OSM tags
+          final osmKey = properties['osm_key']?.toString() ?? '';
+          final osmValue = properties['osm_value']?.toString() ?? '';
+          final osmType = properties['type']?.toString() ?? '';
+
+          LandmarkCategory category = LandmarkCategory.commercial;
+          if (osmKey == 'highway') {
+            category = LandmarkCategory.street;
+          } else if (osmKey == 'amenity') {
+            if ([
+              'restaurant',
+              'cafe',
+              'fast_food',
+              'bar',
+              'food_court',
+              'marketplace',
+              'ice_cream',
+            ].contains(osmValue)) {
+              category = LandmarkCategory.shop;
+            } else if ([
+              'hospital',
+              'clinic',
+              'pharmacy',
+              'dentist',
+              'doctors',
+            ].contains(osmValue)) {
+              category = LandmarkCategory.hospital;
+            } else if ([
+              'school',
+              'college',
+              'university',
+              'kindergarten',
+            ].contains(osmValue)) {
+              category = LandmarkCategory.university;
+            } else if ([
+              'police',
+              'fire_station',
+              'post_office',
+              'townhall',
+              'courthouse',
+              'embassy',
+            ].contains(osmValue)) {
+              category = LandmarkCategory.government;
+            } else if ([
+              'fuel',
+              'bus_station',
+              'ferry_terminal',
+              'parking',
+            ].contains(osmValue)) {
+              category = LandmarkCategory.transport;
+            }
+          } else if (osmKey == 'shop') {
+            if (['mall', 'department_store', 'supermarket'].contains(osmValue)) {
+              category = LandmarkCategory.shopping;
+            } else {
+              category = LandmarkCategory.shop;
+            }
+          } else if (osmKey == 'tourism') {
+            if (['hotel', 'motel', 'hostel', 'guest_house'].contains(osmValue)) {
+              category = LandmarkCategory.commercial;
+            } else {
+              category = LandmarkCategory.historic;
+            }
+          } else if (osmKey == 'leisure') {
+            category = LandmarkCategory.nature;
+          } else if (osmKey == 'place' ||
+              osmKey == 'boundary' ||
+              osmType == 'district' ||
+              osmType == 'locality') {
+            category = LandmarkCategory.barangay;
+          }
+
+          results.add(
+            CebuLandmark(
+              id: 'photon_${properties['osm_id'] ?? results.length}',
+              name: name,
+              address: address,
+              location: LatLng(lat, lon),
+              category: category,
+            ),
+          );
+        }
+        return results;
       }
-      return results;
+    } finally {
+      if (client == null) {
+        httpClient.close();
+      }
     }
     return const [];
   }

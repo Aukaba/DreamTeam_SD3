@@ -1,6 +1,24 @@
+import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:dreamteam_sd3/services/cebu_landmark_service.dart';
+
+class StubHttpClient extends http.BaseClient {
+  final Future<http.Response> Function(http.Request request) _handler;
+  StubHttpClient(this._handler);
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final httpRequest = request as http.Request;
+    final response = await _handler(httpRequest);
+    return http.StreamedResponse(
+      Stream.value(response.bodyBytes),
+      response.statusCode,
+      headers: response.headers,
+    );
+  }
+}
 
 void main() {
   group('CebuLandmarkService Comprehensive Search Tests', () {
@@ -124,35 +142,154 @@ void main() {
       expect(results, isEmpty);
     });
 
-    test('Online search finds businesses and buildings dynamically', () async {
+    test('Online search finds businesses and buildings deterministically with stub client', () async {
+      final stubClient = StubHttpClient((request) async {
+        if (request.url.host == 'nominatim.openstreetmap.org') {
+          return http.Response(
+            jsonEncode([
+              {
+                'osm_id': 123456,
+                'name': 'Cebu Institute of Technology - University',
+                'display_name': 'Cebu Institute of Technology - University, N. Bacalso Ave, Cebu City, Philippines',
+                'lat': '10.2944',
+                'lon': '123.8811',
+                'class': 'amenity',
+                'type': 'university',
+              }
+            ]),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('[]', 200);
+      });
+
       final results = await CebuLandmarkService.searchOnline(
         'Cebu Institute of Technology',
         userLocation: userLocation,
+        client: stubClient,
       );
-      if (results.isNotEmpty) {
-        expect(results.first.name, contains('Cebu Institute of Technology'));
-        expect(results.first.address.isNotEmpty, isTrue);
-        expect(results.first.location.latitude, isNotNull);
-        expect(results.first.location.longitude, isNotNull);
-      }
+
+      expect(results, isNotEmpty);
+      expect(results.first.name, contains('Cebu Institute of Technology'));
+      expect(results.first.address, contains('N. Bacalso Ave'));
+      expect(results.first.location.latitude, closeTo(10.29, 0.05));
+      expect(results.first.location.longitude, closeTo(123.88, 0.05));
+      expect(results.first.category, LandmarkCategory.university);
     });
 
-    test('Online search finds Bayanihan neighbourhood', () async {
+    test('Online search finds Bayanihan neighbourhood deterministically', () async {
+      final stubClient = StubHttpClient((request) async {
+        if (request.url.host == 'nominatim.openstreetmap.org') {
+          return http.Response(
+            jsonEncode([
+              {
+                'osm_id': 654321,
+                'name': 'Bayanihan',
+                'display_name': 'Bayanihan, Quiot, Cebu City, Cebu, 6000, Philippines',
+                'lat': '10.2980',
+                'lon': '123.8650',
+                'class': 'place',
+                'type': 'neighbourhood',
+              }
+            ]),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('[]', 200);
+      });
+
       final results = await CebuLandmarkService.searchOnline(
         'Bayanihan',
         userLocation: userLocation,
+        client: stubClient,
       );
-      if (results.isNotEmpty) {
-        expect(results.any((r) => r.name.toLowerCase().contains('bayanihan')), isTrue);
-      }
+
+      expect(results, isNotEmpty);
+      expect(results.any((r) => r.name.toLowerCase().contains('bayanihan')), isTrue);
+      expect(results.first.category, LandmarkCategory.barangay);
+    });
+
+    test('Online search falls back to Photon when Nominatim returns non-200 HTTP error', () async {
+      final stubClient = StubHttpClient((request) async {
+        if (request.url.host == 'nominatim.openstreetmap.org') {
+          return http.Response('Too Many Requests', 429);
+        }
+        if (request.url.host == 'photon.komoot.io') {
+          return http.Response(
+            jsonEncode({
+              'features': [
+                {
+                  'geometry': {
+                    'coordinates': [123.8854, 10.3157],
+                  },
+                  'properties': {
+                    'osm_id': 999888,
+                    'name': 'Cebu Provincial Capitol',
+                    'street': 'Osmeña Boulevard',
+                    'city': 'Cebu City',
+                    'osm_key': 'amenity',
+                    'osm_value': 'townhall',
+                  }
+                }
+              ]
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('[]', 404);
+      });
+
+      final results = await CebuLandmarkService.searchOnline(
+        'Capitol',
+        userLocation: userLocation,
+        client: stubClient,
+      );
+
+      expect(results, isNotEmpty);
+      expect(results.first.name, 'Cebu Provincial Capitol');
+      expect(results.first.category, LandmarkCategory.government);
+    });
+
+    test('Online search rejects results outside Cebu bounding box', () async {
+      final stubClient = StubHttpClient((request) async {
+        if (request.url.host == 'nominatim.openstreetmap.org') {
+          return http.Response(
+            jsonEncode([
+              {
+                'osm_id': 111222,
+                'name': 'Rizal Park Manila',
+                'display_name': 'Rizal Park, Manila, Metro Manila, Philippines',
+                'lat': '14.5826', // Manila coordinates (outside Cebu: 9.4-11.5)
+                'lon': '120.9787',
+                'class': 'leisure',
+                'type': 'park',
+              }
+            ]),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response(jsonEncode({'features': []}), 200);
+      });
+
+      final results = await CebuLandmarkService.searchOnline(
+        'Rizal Park',
+        userLocation: userLocation,
+        client: stubClient,
+      );
+
+      expect(results, isEmpty);
     });
 
     test('All landmark items have valid coordinates and icons', () {
       for (final landmark in CebuLandmarkService.landmarks) {
         expect(landmark.name.isNotEmpty, isTrue);
         expect(landmark.address.isNotEmpty, isTrue);
-        expect(landmark.location.latitude, inInclusiveRange(9.5, 11.5)); // Cebu latitude range
-        expect(landmark.location.longitude, inInclusiveRange(123.0, 124.5)); // Cebu longitude range
+        expect(landmark.location.latitude, inInclusiveRange(9.4, 11.5)); // Cebu latitude range
+        expect(landmark.location.longitude, inInclusiveRange(123.0, 124.6)); // Cebu longitude range
         expect(landmark.icon, isNotNull);
         expect(landmark.color, isNotNull);
         expect(landmark.categoryLabel.isNotEmpty, isTrue);

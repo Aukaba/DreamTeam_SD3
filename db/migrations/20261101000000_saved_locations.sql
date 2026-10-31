@@ -9,8 +9,8 @@ create table if not exists public.saved_locations (
   latitude double precision not null,
   longitude double precision not null,
   category text default 'custom',
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+  created_at timestamp with time zone default now() not null,
+  updated_at timestamp with time zone default now() not null
 );
 
 -- 2. Performance indexes
@@ -52,7 +52,7 @@ create policy "Users can delete their own saved locations."
 create or replace function public.set_updated_at()
 returns trigger as $$
 begin
-  new.updated_at = timezone('utc'::text, now());
+  new.updated_at = now();
   return new;
 end;
 $$ language plpgsql set search_path = '';

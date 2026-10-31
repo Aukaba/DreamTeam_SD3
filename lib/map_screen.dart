@@ -3,10 +3,10 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart' hide Path;
 import 'services/cebu_landmark_service.dart';
 import 'services/location_service.dart';
+import 'services/nominatim_rate_limiter.dart';
 import 'widgets/report_hazard_modal.dart';
 
 class MapScreen extends StatefulWidget {
@@ -69,6 +69,9 @@ class _MapScreenState extends State<MapScreen> {
   CebuLandmark? _selectedLandmark;
   Timer? _searchDebounceTimer;
   Timer? _reverseGeocodeDebounceTimer;
+  bool _isProgrammaticTextUpdate = false;
+  bool _hasUserInteracted = false;
+  int _reverseGeocodeRequestId = 0;
 
   // Camera tracking for dynamic scale indicator
   double _currentZoom = 16.0;
@@ -194,6 +197,15 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _onSearchChanged() {
+    if (_isProgrammaticTextUpdate) return;
+
+    // User is actively typing/editing the query: clear previously selected landmark pin
+    if (_selectedLandmark != null) {
+      setState(() {
+        _selectedLandmark = null;
+      });
+    }
+
     final query = _searchController.text.trim();
     if (query.isEmpty || query.length < 3) {
       _searchDebounceTimer?.cancel();
@@ -233,9 +245,11 @@ class _MapScreenState extends State<MapScreen> {
         if (onlineResults.isNotEmpty) {
           final merged = List<CebuLandmark>.from(_searchResults);
           for (final online in onlineResults) {
+            // Deduplicate only when stable IDs match or (matching names AND distance < 35m)
             final isDuplicate = merged.any((l) =>
-                l.name.toLowerCase() == online.name.toLowerCase() ||
-                (const Distance().distance(l.location, online.location) < 35));
+                (l.id == online.id) ||
+                (l.name.toLowerCase() == online.name.toLowerCase() &&
+                    const Distance().distance(l.location, online.location) < 35));
             if (!isDuplicate) {
               merged.add(online);
             }
@@ -248,7 +262,9 @@ class _MapScreenState extends State<MapScreen> {
 
   void _clearSearch() {
     _searchDebounceTimer?.cancel();
+    _isProgrammaticTextUpdate = true;
     _searchController.clear();
+    _isProgrammaticTextUpdate = false;
     _searchFocusNode.unfocus();
     setState(() {
       _searchResults = [];
@@ -259,13 +275,19 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _selectLandmark(CebuLandmark landmark) {
+    _hasUserInteracted = true;
     _searchDebounceTimer?.cancel();
     _searchFocusNode.unfocus();
+
+    _isProgrammaticTextUpdate = true;
+    _searchController.text = landmark.name;
+    _isProgrammaticTextUpdate = false;
+
     setState(() {
       _selectedLandmark = landmark;
       _searchResults = [];
       _isSearching = false;
-      _searchController.text = landmark.name;
+      _isSearchingOnline = false;
     });
 
     // Adapt zoom level: wider for whole barangays, medium for streets, close-up for shops/landmarks
@@ -311,6 +333,7 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _initDeviceLocation() async {
     final lastKnown = await LocationService.getLastKnownLocation();
+    if (_hasUserInteracted || _selectedLandmark != null) return;
     if (lastKnown != null && mounted) {
       setState(() {
         _currentLocation = lastKnown;
@@ -320,6 +343,7 @@ class _MapScreenState extends State<MapScreen> {
     }
 
     final current = await LocationService.getCurrentLocation();
+    if (_hasUserInteracted || _selectedLandmark != null) return;
     if (mounted) {
       setState(() {
         _currentLocation = current;
@@ -330,22 +354,28 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _reverseGeocode(LatLng pos) async {
+    final reqId = ++_reverseGeocodeRequestId;
     try {
       final url = Uri.parse(
         'https://nominatim.openstreetmap.org/reverse?format=json&lat=${pos.latitude}&lon=${pos.longitude}&zoom=18&addressdetails=1',
       );
-      final response =
-          await http.get(url).timeout(const Duration(seconds: 4));
+      final response = await NominatimRateLimiter.instance
+          .get(url)
+          .timeout(const Duration(seconds: 4));
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         if (data != null && data['display_name'] != null) {
           final raw = data['display_name'].toString();
           // Extract display_name and take the top 2 comma-separated segments
-          final formatted = raw.split(',').take(2).join(', ').trim();
-          if (mounted && _selectedLandmark == null) {
-            setState(() {
-              _searchController.text = formatted;
-            });
+          final formatted = raw.split(',').take(2).map((s) => s.trim()).join(', ');
+          if (mounted &&
+              reqId == _reverseGeocodeRequestId &&
+              _selectedLandmark == null &&
+              !_searchFocusNode.hasFocus &&
+              const Distance().distance(pos, _mapController.camera.center) < 25) {
+            _isProgrammaticTextUpdate = true;
+            _searchController.text = formatted;
+            _isProgrammaticTextUpdate = false;
           }
         }
       }
@@ -442,6 +472,7 @@ class _MapScreenState extends State<MapScreen> {
                   // When hasGesture is true, user dragged/panned the map:
                   // debounce reverse geocoding by 800ms to update search text
                   if (hasGesture) {
+                    _hasUserInteracted = true;
                     _reverseGeocodeDebounceTimer?.cancel();
                     _reverseGeocodeDebounceTimer =
                         Timer(const Duration(milliseconds: 800), () {
@@ -613,25 +644,32 @@ class _MapScreenState extends State<MapScreen> {
                       focusNode: _searchFocusNode,
                       textInputAction: TextInputAction.search,
                       onSubmitted: (value) async {
+                        final submitted = value.trim();
+                        if (submitted.isEmpty) return;
+
                         if (_searchResults.isNotEmpty) {
                           _selectLandmark(_searchResults.first);
-                        } else if (value.trim().isNotEmpty) {
+                        } else {
                           setState(() {
                             _isSearchingOnline = true;
                           });
                           final localMatches = CebuLandmarkService.searchLocal(
-                            value,
+                            submitted,
                             userLocation: _currentLocation,
                           );
                           if (localMatches.isNotEmpty) {
-                            _selectLandmark(localMatches.first);
+                            if (mounted && _searchController.text.trim() == submitted) {
+                              _selectLandmark(localMatches.first);
+                            }
                           } else {
                             final onlineMatches =
                                 await CebuLandmarkService.searchOnline(
-                              value,
+                              submitted,
                               userLocation: _currentLocation,
                             );
-                            if (onlineMatches.isNotEmpty && mounted) {
+                            if (onlineMatches.isNotEmpty &&
+                                mounted &&
+                                _searchController.text.trim() == submitted) {
                               _selectLandmark(onlineMatches.first);
                             }
                           }
