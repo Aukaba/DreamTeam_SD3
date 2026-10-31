@@ -73,14 +73,29 @@ class _MapScreenState extends State<MapScreen> {
     10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000
   ];
 
-  static const List<String> _tileUrls = [
-    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
+  static const List<String> _tileNames = [
+    'Natural Modern',
+    'Cool Slate',
+    'OpenStreetMap Standard',
   ];
 
-  static const List<String> _tileNames = [
-    'OpenStreetMap Standard',
-    'CartoDB Voyager',
+  static const List<List<double>?> _tileColorMatrices = [
+    // 0: Natural Modern (Soft pastel greens/blues, crisp white roads, zero yellow/brown)
+    <double>[
+      0.75, 0.15, 0.10, 0.0, 15.0,
+      0.05, 0.85, 0.10, 0.0, 15.0,
+      0.40, 0.40, 0.20, 0.0, 15.0,
+      0.00, 0.00, 0.00, 1.0,  0.0,
+    ],
+    // 1: Cool Slate (Modern minimalist light slate / cool tone)
+    <double>[
+      0.70, 0.15, 0.10, 0.0, 18.0,
+      0.06, 0.82, 0.10, 0.0, 18.0,
+      0.25, 0.30, 0.45, 0.0, 22.0,
+      0.00, 0.00, 0.00, 1.0,  0.0,
+    ],
+    // 2: Standard OpenStreetMap (unfiltered)
+    null,
   ];
 
   late final List<_HazardItem> _allHazards = [
@@ -229,7 +244,7 @@ class _MapScreenState extends State<MapScreen> {
     final screenSize = MediaQuery.of(context).size;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F2EC),
+      backgroundColor: const Color(0xFFF1F5F9),
       body: Stack(
         children: [
           // -------------------------------------------------------------------
@@ -258,10 +273,20 @@ class _MapScreenState extends State<MapScreen> {
               ),
               children: [
                 TileLayer(
-                  urlTemplate: _tileUrls[_tileStyleIndex],
-                  fallbackUrl: _tileUrls[(_tileStyleIndex + 1) % _tileUrls.length],
+                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  fallbackUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
                   userAgentPackageName: 'com.dreamteam.sd3',
                   evictErrorTileStrategy: EvictErrorTileStrategy.dispose,
+                  tileBuilder: (context, tileWidget, tile) {
+                    final matrix = _tileColorMatrices[_tileStyleIndex];
+                    if (matrix != null) {
+                      return ColorFiltered(
+                        colorFilter: ColorFilter.matrix(matrix),
+                        child: tileWidget,
+                      );
+                    }
+                    return tileWidget;
+                  },
                   errorTileCallback: (tile, error, stackTrace) {
                     if (!_hasTileError && mounted) {
                       setState(() {
@@ -270,13 +295,11 @@ class _MapScreenState extends State<MapScreen> {
                     }
                   },
                 ),
-                SimpleAttributionWidget(
+                const SimpleAttributionWidget(
                   alignment: Alignment.bottomRight,
                   source: Text(
-                    _tileStyleIndex == 0
-                        ? '© OpenStreetMap contributors'
-                        : '© CARTO, © OpenStreetMap',
-                    style: const TextStyle(fontSize: 9, color: Color(0xFF4B5563)),
+                    '© OpenStreetMap contributors',
+                    style: TextStyle(fontSize: 9, color: Color(0xFF4B5563)),
                   ),
                 ),
                 MarkerLayer(
@@ -820,7 +843,7 @@ class _MapScreenState extends State<MapScreen> {
 
   void _toggleTileStyle() {
     setState(() {
-      _tileStyleIndex = (_tileStyleIndex + 1) % _tileUrls.length;
+      _tileStyleIndex = (_tileStyleIndex + 1) % _tileNames.length;
       _hasTileError = false;
     });
     ScaffoldMessenger.of(context).showSnackBar(

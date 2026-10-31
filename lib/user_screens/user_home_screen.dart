@@ -274,9 +274,20 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                           children: [
                             TileLayer(
                               urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                              fallbackUrl: 'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
+                              fallbackUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
                               userAgentPackageName: 'com.dreamteam.sd3',
                               evictErrorTileStrategy: EvictErrorTileStrategy.dispose,
+                              tileBuilder: (context, tileWidget, tile) {
+                                return ColorFiltered(
+                                  colorFilter: const ColorFilter.matrix(<double>[
+                                    0.75, 0.15, 0.10, 0.0, 15.0,
+                                    0.05, 0.85, 0.10, 0.0, 15.0,
+                                    0.40, 0.40, 0.20, 0.0, 15.0,
+                                    0.00, 0.00, 0.00, 1.0,  0.0,
+                                  ]),
+                                  child: tileWidget,
+                                );
+                              },
                               errorTileCallback: (tile, error, stackTrace) {
                                 if (!_previewMapError && mounted) {
                                   setState(() => _previewMapError = true);
