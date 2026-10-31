@@ -1,8 +1,14 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' hide Path;
+import 'services/location_service.dart';
 import 'widgets/report_hazard_modal.dart';
 
 class MapScreen extends StatefulWidget {
-  const MapScreen({super.key});
+  final LatLng? initialLocation;
+
+  const MapScreen({super.key, this.initialLocation});
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -11,60 +17,358 @@ class MapScreen extends StatefulWidget {
 // Alias for UserFullMapScreen so both names can be used interchangeably
 typedef UserFullMapScreen = MapScreen;
 
+class _HazardItem {
+  final String id;
+  final String overline;
+  final String title;
+  final String subtitle;
+  final String distance;
+  final String badgeText;
+  final Color themeColor;
+  final Color bgColor;
+  final Color iconBgColor;
+  final Color badgeBgColor;
+  final IconData icon;
+  final LatLng location;
+  final int filterCategoryIndex; // 1 = Roadwork/Obstruction, 2 = Flooding, 3 = Safety, 4 = Crime
+
+  const _HazardItem({
+    required this.id,
+    required this.overline,
+    required this.title,
+    required this.subtitle,
+    required this.distance,
+    required this.badgeText,
+    required this.themeColor,
+    required this.bgColor,
+    required this.iconBgColor,
+    required this.badgeBgColor,
+    required this.icon,
+    required this.location,
+    required this.filterCategoryIndex,
+  });
+}
+
 class _MapScreenState extends State<MapScreen> {
   int _selectedFilterIndex = 0;
   final DraggableScrollableController _sheetController = DraggableScrollableController();
+  final MapController _mapController = MapController();
+  int _tileStyleIndex = 0;
+  bool _hasTileError = false;
+
+  // Camera tracking for dynamic scale indicator
+  double _currentZoom = 16.0;
+  double _currentLatitude = 10.3157;
+
+  // Device location initialized dynamically
+  late LatLng _currentLocation;
+
+  // Landmark hazard coordinates
+  static const LatLng _roadworkLocation = LatLng(10.3182, 123.8895);
+  static const LatLng _floodingLocation = LatLng(10.3135, 123.8880);
+  static const LatLng _lightingLocation = LatLng(10.3195, 123.8940);
+  static const LatLng _crimeLocation = LatLng(10.3115, 123.8945);
+
+  static const List<double> _scaleDistances = [
+    10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000
+  ];
+
+  static const List<String> _tileNames = [
+    'Natural Modern',
+    'Cool Slate',
+    'OpenStreetMap Standard',
+  ];
+
+  static const List<List<double>?> _tileColorMatrices = [
+    // 0: Natural Modern (Soft pastel greens/blues, crisp white roads, zero yellow/brown)
+    <double>[
+      0.75, 0.15, 0.10, 0.0, 15.0,
+      0.05, 0.85, 0.10, 0.0, 15.0,
+      0.40, 0.40, 0.20, 0.0, 15.0,
+      0.00, 0.00, 0.00, 1.0,  0.0,
+    ],
+    // 1: Cool Slate (Modern minimalist light slate / cool tone)
+    <double>[
+      0.70, 0.15, 0.10, 0.0, 18.0,
+      0.06, 0.82, 0.10, 0.0, 18.0,
+      0.25, 0.30, 0.45, 0.0, 22.0,
+      0.00, 0.00, 0.00, 1.0,  0.0,
+    ],
+    // 2: Standard OpenStreetMap (unfiltered)
+    null,
+  ];
+
+  late final List<_HazardItem> _allHazards = [
+    const _HazardItem(
+      id: 'safety_1',
+      overline: 'SAFETY',
+      title: 'Poor lighting area',
+      subtitle: 'Near University Avenue (around 2:14 PM)',
+      distance: '0.3 km away',
+      badgeText: 'High',
+      themeColor: Color(0xFFEF4444),
+      bgColor: Color(0xFFFFF5F5),
+      iconBgColor: Color(0xFFFEE2E2),
+      badgeBgColor: Color(0xFFFEE2E2),
+      icon: Icons.lightbulb_outline_rounded,
+      location: _lightingLocation,
+      filterCategoryIndex: 3,
+    ),
+    const _HazardItem(
+      id: 'obstruction_1',
+      overline: 'OBSTRUCTION',
+      title: 'Blocked sidewalk',
+      subtitle: 'Near Capitol Site (around 1:32 PM)',
+      distance: '0.6 km away',
+      badgeText: 'Medium',
+      themeColor: Color(0xFFD97706),
+      bgColor: Color(0xFFFFFDF5),
+      iconBgColor: Color(0xFFFEF3C7),
+      badgeBgColor: Color(0xFFFEF3C7),
+      icon: Icons.construction_rounded,
+      location: _roadworkLocation,
+      filterCategoryIndex: 1,
+    ),
+    const _HazardItem(
+      id: 'crime_1',
+      overline: 'CRIME',
+      title: 'Suspicious activity',
+      subtitle: 'Near Mango Square (around 12:45 PM)',
+      distance: '1.2 km away',
+      badgeText: 'Low',
+      themeColor: Color(0xFF3B82F6),
+      bgColor: Color(0xFFF5F9FF),
+      iconBgColor: Color(0xFFDBEAFE),
+      badgeBgColor: Color(0xFFDBEAFE),
+      icon: Icons.error_outline_rounded,
+      location: _crimeLocation,
+      filterCategoryIndex: 4,
+    ),
+    const _HazardItem(
+      id: 'flooding_1',
+      overline: 'FLOODING',
+      title: 'Minor street flooding',
+      subtitle: 'Near Capitol Site (around 1:50 PM)',
+      distance: '0.4 km away',
+      badgeText: 'Low',
+      themeColor: Color(0xFF4A90E2),
+      bgColor: Color(0xFFF0F9FF),
+      iconBgColor: Color(0xFFE0F2FE),
+      badgeBgColor: Color(0xFFE0F2FE),
+      icon: Icons.water_drop_rounded,
+      location: _floodingLocation,
+      filterCategoryIndex: 2,
+    ),
+  ];
+
+  List<_HazardItem> get _filteredHazards {
+    if (_selectedFilterIndex == 0) {
+      return _allHazards;
+    }
+    return _allHazards
+        .where((hazard) => hazard.filterCategoryIndex == _selectedFilterIndex)
+        .toList();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _currentLocation = widget.initialLocation ?? LocationService.defaultLocation;
+    _currentLatitude = _currentLocation.latitude;
+    _initDeviceLocation();
+  }
+
+  Future<void> _initDeviceLocation() async {
+    final lastKnown = await LocationService.getLastKnownLocation();
+    if (lastKnown != null && mounted) {
+      setState(() {
+        _currentLocation = lastKnown;
+        _currentLatitude = lastKnown.latitude;
+      });
+      _mapController.move(_currentLocation, _currentZoom);
+    }
+
+    final current = await LocationService.getCurrentLocation();
+    if (mounted) {
+      setState(() {
+        _currentLocation = current;
+        _currentLatitude = current.latitude;
+      });
+      _mapController.move(_currentLocation, _currentZoom);
+    }
+  }
 
   @override
   void dispose() {
     _sheetController.dispose();
+    _mapController.dispose();
     super.dispose();
   }
 
   // Design Colors matching Figma
   static const Color _primaryNavy = Color(0xFF263354);
-  static const Color _routeBlue = Color(0xFF7098C2);
   static const Color _secondaryGrey = Color(0xFF8A94A6);
   static const Color _accentOrange = Color(0xFFF37C34);
   static const Color _accentBlue = Color(0xFF4A90E2);
   static const Color _safeGreen = Color(0xFF2E7D32);
   static const Color _safeGreenBg = Color(0xFFE8F5E9);
 
+  ({double width, String label}) _calculateScale() {
+    final latRad = _currentLatitude * math.pi / 180.0;
+    final metersPerPixel =
+        (40075016.686 * math.cos(latRad)) / math.pow(2.0, _currentZoom + 8.0);
+
+    const targetPixels = 50.0;
+    final targetDistance = targetPixels * metersPerPixel;
+
+    double bestDistance = _scaleDistances.first;
+    double minDiff = (targetDistance - bestDistance).abs();
+    for (final d in _scaleDistances) {
+      final diff = (targetDistance - d).abs();
+      if (diff < minDiff) {
+        minDiff = diff;
+        bestDistance = d;
+      }
+    }
+
+    final width = (bestDistance / metersPerPixel).clamp(24.0, 96.0);
+    final label = bestDistance >= 1000
+        ? '${(bestDistance / 1000).toStringAsFixed(bestDistance % 1000 == 0 ? 0 : 1)} km'
+        : '${bestDistance.toInt()} m';
+
+    return (width: width, label: label);
+  }
+
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F2EC),
+      backgroundColor: const Color(0xFFF1F5F9),
       body: Stack(
         children: [
           // -------------------------------------------------------------------
-          // LAYER 1 (BOTTOM): THE MAP BACKGROUND
+          // LAYER 1 (BOTTOM): FLUTTER MAP
           // -------------------------------------------------------------------
           Positioned.fill(
-            child: CustomPaint(
-              painter: _FullMapBackgroundPainter(),
-              size: screenSize,
+            child: FlutterMap(
+              mapController: _mapController,
+              options: MapOptions(
+                initialCenter: _currentLocation,
+                initialZoom: _currentZoom,
+                minZoom: 3.0,
+                maxZoom: 19.0,
+                interactionOptions: const InteractionOptions(
+                  flags: InteractiveFlag.all,
+                ),
+                onPositionChanged: (camera, hasGesture) {
+                  if ((camera.zoom - _currentZoom).abs() > 0.05 ||
+                      (camera.center.latitude - _currentLatitude).abs() > 0.001) {
+                    setState(() {
+                      _currentZoom = camera.zoom;
+                      _currentLatitude = camera.center.latitude;
+                    });
+                  }
+                },
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  fallbackUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+                  userAgentPackageName: 'com.dreamteam.sd3',
+                  evictErrorTileStrategy: EvictErrorTileStrategy.dispose,
+                  tileBuilder: (context, tileWidget, tile) {
+                    final matrix = _tileColorMatrices[_tileStyleIndex];
+                    if (matrix != null) {
+                      return ColorFiltered(
+                        colorFilter: ColorFilter.matrix(matrix),
+                        child: tileWidget,
+                      );
+                    }
+                    return tileWidget;
+                  },
+                  errorTileCallback: (tile, error, stackTrace) {
+                    if (!_hasTileError && mounted) {
+                      setState(() {
+                        _hasTileError = true;
+                      });
+                    }
+                  },
+                ),
+                const SimpleAttributionWidget(
+                  alignment: Alignment.bottomRight,
+                  source: Text(
+                    '© OpenStreetMap contributors',
+                    style: TextStyle(fontSize: 9, color: Color(0xFF4B5563)),
+                  ),
+                ),
+                MarkerLayer(
+                  markers: _buildMapMarkers(),
+                ),
+              ],
             ),
           ),
 
           // -------------------------------------------------------------------
-          // LAYER 2: MAP OVERLAYS (Hazard & Location Markers)
-          // -------------------------------------------------------------------
-          _buildMapOverlays(screenSize),
-
-          // -------------------------------------------------------------------
-          // LAYER 3: FLOATING TOP ELEMENTS (Search Bar, Filters, Live Map Badge)
+          // LAYER 2: FLOATING TOP ELEMENTS (Search Bar, Filters, Live Map Badge)
           // -------------------------------------------------------------------
           _buildTopControls(),
 
+          // Tile Error Banner (if basemap fails to load)
+          if (_hasTileError)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 130,
+              left: 20,
+              right: 20,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF2F2),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFFCA5A5)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.06),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.cloud_off_rounded, color: Color(0xFFDC2626), size: 18),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'Map tiles unavailable. Check internet connection.',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 11,
+                          color: Color(0xFF991B1B),
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          _hasTileError = false;
+                        });
+                      },
+                      child: const Icon(Icons.refresh_rounded, color: Color(0xFFDC2626), size: 18),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
           // -------------------------------------------------------------------
-          // LAYER 4: FLOATING ACTION BUTTONS (Report hazard, Crosshair, Layers, Scale)
+          // LAYER 3: FLOATING ACTION BUTTONS (Report hazard, Crosshair, Layers, Scale)
           // -------------------------------------------------------------------
           _buildFloatingActionButtons(screenSize),
 
           // -------------------------------------------------------------------
-          // LAYER 5 (ABSOLUTE TOP): DRAGGABLE SCROLLABLE SHEET
+          // LAYER 4 (ABSOLUTE TOP): DRAGGABLE SCROLLABLE SHEET
           // -------------------------------------------------------------------
           Positioned.fill(
             child: _buildDraggableScrollableSheet(),
@@ -115,44 +419,31 @@ class _MapScreenState extends State<MapScreen> {
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(),
                   ),
-                  const SizedBox(width: 14),
+                  const SizedBox(width: 10),
 
-                  // Middle Search SafeRoute Text
-                  Expanded(
-                    child: RichText(
-                      text: const TextSpan(
-                        style: TextStyle(
+                  // Search input
+                  const Expanded(
+                    child: TextField(
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 14,
+                        color: _primaryNavy,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: 'Search destination or hazard...',
+                        hintStyle: TextStyle(
                           fontFamily: 'Poppins',
-                          fontSize: 15,
+                          fontSize: 13,
+                          color: _secondaryGrey,
                         ),
-                        children: [
-                          TextSpan(
-                            text: 'Search ',
-                            style: TextStyle(
-                              color: _secondaryGrey,
-                              fontWeight: FontWeight.w400,
-                            ),
-                          ),
-                          TextSpan(
-                            text: 'Safe',
-                            style: TextStyle(
-                              color: _primaryNavy,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          TextSpan(
-                            text: 'Route',
-                            style: TextStyle(
-                              color: _routeBlue,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
+                        border: InputBorder.none,
+                        isDense: true,
+                        contentPadding: EdgeInsets.zero,
                       ),
                     ),
                   ),
 
-                  // Right SafeRoute route icon
+                  // LogoSR Asset branding
                   Image.asset(
                     'assets/image/LogoSR.png',
                     height: 24,
@@ -198,6 +489,24 @@ class _MapScreenState extends State<MapScreen> {
                   activeBg: Colors.white,
                   activeText: _primaryNavy,
                   activeIcon: _accentBlue,
+                ),
+                const SizedBox(width: 10),
+                _buildFilterChip(
+                  index: 3,
+                  label: 'Safety',
+                  icon: Icons.warning_amber_rounded,
+                  activeBg: Colors.white,
+                  activeText: _primaryNavy,
+                  activeIcon: const Color(0xFFEF4444),
+                ),
+                const SizedBox(width: 10),
+                _buildFilterChip(
+                  index: 4,
+                  label: 'Crime',
+                  icon: Icons.shield_outlined,
+                  activeBg: Colors.white,
+                  activeText: _primaryNavy,
+                  activeIcon: const Color(0xFF3B82F6),
                 ),
               ],
             ),
@@ -306,229 +615,276 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // MAP OVERLAYS (Current Location, Roadwork, Flooding)
+  // MAP MARKERS & OVERLAYS
   // ---------------------------------------------------------------------------
-  Widget _buildMapOverlays(Size screenSize) {
-    return Stack(
-      children: [
-        // 1. Roadwork Hazard (top: ~35%, left: ~28%)
-        Positioned(
-          top: screenSize.height * 0.35,
-          left: screenSize.width * 0.28,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Pill label above
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.08),
-                      blurRadius: 6,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
+  List<Marker> _buildMapMarkers() {
+    final markers = <Marker>[
+      // 1. Current Location Marker (always visible)
+      Marker(
+        point: _currentLocation,
+        width: 100,
+        height: 115,
+        alignment: Alignment.center,
+        child: _buildCurrentLocationMarker(),
+      ),
+    ];
+
+    // Add matching markers for every filtered hazard
+    for (final hazard in _filteredHazards) {
+      markers.add(_buildHazardMarker(hazard));
+    }
+
+    return markers;
+  }
+
+  // 1. Current Location with Radar & "You are here"
+  Widget _buildCurrentLocationMarker() {
+    return GestureDetector(
+      onTap: () {
+        _recenterToCurrentLocation();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('You are here (Current Location)'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      },
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Radar beam & Center dot
+          SizedBox(
+            width: 84,
+            height: 84,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                // Outer radar pulse circle
+                Container(
+                  width: 84,
+                  height: 84,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF3B82F6).withValues(alpha: 0.16),
+                    shape: BoxShape.circle,
+                  ),
                 ),
-                child: RichText(
-                  text: const TextSpan(
-                    style: TextStyle(
-                      fontFamily: 'Poppins',
-                      fontSize: 12,
-                    ),
-                    children: [
-                      TextSpan(
-                        text: 'Roadwork ',
-                        style: TextStyle(
-                          color: _primaryNavy,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      TextSpan(
-                        text: '200 m',
-                        style: TextStyle(
-                          color: _secondaryGrey,
-                          fontWeight: FontWeight.w400,
-                        ),
+
+                // Translucent direction radar cone
+                ClipPath(
+                  clipper: _RadarConeClipper(),
+                  child: Container(
+                    width: 84,
+                    height: 84,
+                    color: const Color(0xFF3B82F6).withValues(alpha: 0.30),
+                  ),
+                ),
+
+                // Blue current location dot with white border
+                Container(
+                  width: 15,
+                  height: 15,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2563EB),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF2563EB).withValues(alpha: 0.4),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
                       ),
                     ],
                   ),
                 ),
-              ),
-              const SizedBox(height: 6),
-
-              // Orange hazard marker circle with barrier/hazard icon
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: _accentOrange,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 2.5),
-                  boxShadow: [
-                    BoxShadow(
-                      color: _accentOrange.withValues(alpha: 0.35),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: const Icon(
-                  Icons.construction_rounded,
-                  color: Colors.white,
-                  size: 18,
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
+          const SizedBox(height: 2),
 
-        // 2. Current Location with Radar & "You are here" (center of screen)
-        Positioned(
-          top: screenSize.height * 0.49,
-          left: screenSize.width * 0.40,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Radar beam & Center dot
-              SizedBox(
-                width: 84,
-                height: 84,
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    // Outer radar pulse circle
-                    Container(
-                      width: 84,
-                      height: 84,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF3B82F6).withValues(alpha: 0.16),
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-
-                    // Translucent direction radar cone
-                    ClipPath(
-                      clipper: _RadarConeClipper(),
-                      child: Container(
-                        width: 84,
-                        height: 84,
-                        color: const Color(0xFF3B82F6).withValues(alpha: 0.30),
-                      ),
-                    ),
-
-                    // Blue current location dot with white border
-                    Container(
-                      width: 15,
-                      height: 15,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF2563EB),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 2.5),
-                        boxShadow: [
-                          BoxShadow(
-                            color:
-                                const Color(0xFF2563EB).withValues(alpha: 0.4),
-                            blurRadius: 6,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+          // "You are here" label pill
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.08),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
                 ),
+              ],
+            ),
+            child: const Text(
+              'You are here',
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: _primaryNavy,
               ),
-              const SizedBox(height: 4),
-
-              // "You are here" label pill
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.08),
-                      blurRadius: 6,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: const Text(
-                  'You are here',
-                  style: TextStyle(
-                    fontFamily: 'Poppins',
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: _primaryNavy,
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
-
-        // 3. Flooding Hazard (bottom-left)
-        Positioned(
-          top: screenSize.height * 0.63,
-          left: screenSize.width * 0.18,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Blue circle with water drop icon
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: _accentBlue,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 2.5),
-                  boxShadow: [
-                    BoxShadow(
-                      color: _accentBlue.withValues(alpha: 0.35),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: const Icon(
-                  Icons.water_drop_rounded,
-                  color: Colors.white,
-                  size: 18,
-                ),
-              ),
-              const SizedBox(height: 4),
-
-              // Blue text label
-              const Text(
-                'Minor flooding',
-                style: TextStyle(
-                  fontFamily: 'Poppins',
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: _accentBlue,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
+  // Generic Hazard Marker Matching Card
+  Marker _buildHazardMarker(_HazardItem hazard) {
+    return Marker(
+      point: hazard.location,
+      width: 140,
+      height: 75,
+      alignment: Alignment.center,
+      child: GestureDetector(
+        onTap: () {
+          _mapController.move(hazard.location, 17.0);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('${hazard.title}: ${hazard.subtitle}'),
+              duration: const Duration(seconds: 2),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        },
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Pill label above
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.08),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: RichText(
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                text: TextSpan(
+                  style: const TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 11,
+                  ),
+                  children: [
+                    TextSpan(
+                      text: '${hazard.title} ',
+                      style: const TextStyle(
+                        color: _primaryNavy,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    TextSpan(
+                      text: hazard.distance.split(' ').first,
+                      style: const TextStyle(
+                        color: _secondaryGrey,
+                        fontWeight: FontWeight.w400,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+
+            // Hazard marker circle
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: hazard.themeColor,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: hazard.themeColor.withValues(alpha: 0.35),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: Icon(
+                hazard.icon,
+                color: Colors.white,
+                size: 16,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _recenterToCurrentLocation() async {
+    final current = await LocationService.getCurrentLocation();
+    if (mounted) {
+      setState(() {
+        _currentLocation = current;
+        _currentLatitude = current.latitude;
+      });
+      _mapController.move(current, 16.0);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Centered on current location'),
+          duration: Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  void _toggleTileStyle() {
+    setState(() {
+      _tileStyleIndex = (_tileStyleIndex + 1) % _tileNames.length;
+      _hasTileError = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Switched to ${_tileNames[_tileStyleIndex]}'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _onHazardCardTap(_HazardItem hazard) {
+    // Ensure the marker is visible under the active filter
+    if (_selectedFilterIndex != 0 &&
+        _selectedFilterIndex != hazard.filterCategoryIndex) {
+      setState(() {
+        _selectedFilterIndex = hazard.filterCategoryIndex;
+      });
+    }
+
+    _mapController.move(hazard.location, 17.0);
+
+    if (_sheetController.isAttached) {
+      _sheetController.animateTo(
+        0.22,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
   // ---------------------------------------------------------------------------
-  // LAYER 4: FLOATING ACTION BUTTONS (Report hazard, Crosshair, Layers, Scale)
+  // LAYER 3: FLOATING ACTION BUTTONS (Report hazard, Crosshair, Layers, Scale)
   // ---------------------------------------------------------------------------
   Widget _buildFloatingActionButtons(Size screenSize) {
     final collapsedOffset = screenSize.height * 0.22 + 12.0;
+    final scale = _calculateScale();
 
     return Stack(
       children: [
-        // Scale bar (100 m) on the map
+        // Dynamic Scale bar on the map
         Positioned(
           left: 20,
           top: screenSize.height * 0.29,
@@ -536,13 +892,13 @@ class _MapScreenState extends State<MapScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               CustomPaint(
-                size: const Size(44, 8),
+                size: Size(scale.width, 8),
                 painter: _ScaleLinePainter(),
               ),
               const SizedBox(width: 6),
-              const Text(
-                '100 m',
-                style: TextStyle(
+              Text(
+                scale.label,
+                style: const TextStyle(
                   fontFamily: 'Poppins',
                   fontSize: 11,
                   fontWeight: FontWeight.w500,
@@ -613,7 +969,7 @@ class _MapScreenState extends State<MapScreen> {
                 icon: Icons.layers_outlined,
                 size: 44,
                 iconSize: 22,
-                onTap: () {},
+                onTap: _toggleTileStyle,
               ),
               const SizedBox(height: 12),
               _buildNorthCompassFab(),
@@ -629,7 +985,7 @@ class _MapScreenState extends State<MapScreen> {
             icon: Icons.my_location_rounded,
             size: 48,
             iconSize: 24,
-            onTap: () {},
+            onTap: _recenterToCurrentLocation,
           ),
         ),
       ],
@@ -686,35 +1042,46 @@ class _MapScreenState extends State<MapScreen> {
           ),
         ],
       ),
-      child: const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              'N',
-              style: TextStyle(
-                fontFamily: 'Poppins',
-                fontSize: 9,
-                fontWeight: FontWeight.w600,
-                color: _primaryNavy,
-                height: 1.0,
-              ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () {
+            _mapController.rotate(0.0);
+          },
+          child: const Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  'N',
+                  style: TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 9,
+                    fontWeight: FontWeight.w600,
+                    color: _primaryNavy,
+                    height: 1.0,
+                  ),
+                ),
+                Icon(
+                  Icons.navigation,
+                  size: 14,
+                  color: _primaryNavy,
+                ),
+              ],
             ),
-            Icon(
-              Icons.navigation,
-              size: 14,
-              color: _primaryNavy,
-            ),
-          ],
+          ),
         ),
       ),
     );
   }
 
   // ---------------------------------------------------------------------------
-  // LAYER 5 (ABSOLUTE TOP): DRAGGABLE SCROLLABLE SHEET
+  // LAYER 4 (ABSOLUTE TOP): DRAGGABLE SCROLLABLE SHEET
   // ---------------------------------------------------------------------------
   Widget _buildDraggableScrollableSheet() {
+    final filtered = _filteredHazards;
+
     return DraggableScrollableSheet(
       controller: _sheetController,
       initialChildSize: 0.22,
@@ -785,7 +1152,7 @@ class _MapScreenState extends State<MapScreen> {
                         ),
                         SizedBox(height: 2),
                         Text(
-                          'Capitol Site, Cebu City',
+                          'Safe route monitored in real time',
                           style: TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: 13,
@@ -824,27 +1191,31 @@ class _MapScreenState extends State<MapScreen> {
                 },
                 child: Row(
                   children: [
-                    Container(
-                      width: 7,
-                      height: 7,
-                      decoration: const BoxDecoration(
-                        color: _accentOrange,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 5),
-                    Container(
-                      width: 7,
-                      height: 7,
-                      decoration: const BoxDecoration(
-                        color: _accentBlue,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    const Text(
-                      '2 nearby hazards',
-                      style: TextStyle(
+                    if (filtered.isEmpty)
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: const BoxDecoration(
+                          color: _secondaryGrey,
+                          shape: BoxShape.circle,
+                        ),
+                      )
+                    else
+                      for (final hazard in filtered) ...[
+                        Container(
+                          width: 7,
+                          height: 7,
+                          decoration: BoxDecoration(
+                            color: hazard.themeColor,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 5),
+                      ],
+                    const SizedBox(width: 3),
+                    Text(
+                      '${filtered.length} nearby hazard${filtered.length == 1 ? '' : 's'}',
+                      style: const TextStyle(
                         fontFamily: 'Poppins',
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
@@ -891,52 +1262,29 @@ class _MapScreenState extends State<MapScreen> {
 
               const SizedBox(height: 14),
 
-              // 6. Hazard Cards (12px vertical spacing between cards)
-              // Card 1: High Severity (Safety - Red / Pale Pink)
-              _buildHazardReportCard(
-                overline: 'SAFETY',
-                title: 'Poor lighting area',
-                subtitle: 'Near University Avenue (around 2:14 PM)',
-                distance: '0.3 km away',
-                badgeText: 'High',
-                themeColor: const Color(0xFFEF4444),
-                bgColor: const Color(0xFFFFF5F5),
-                iconBgColor: const Color(0xFFFEE2E2),
-                badgeBgColor: const Color(0xFFFEE2E2),
-                icon: Icons.warning_amber_rounded,
-              ),
-
-              const SizedBox(height: 12),
-
-              // Card 2: Medium Severity (Obstruction - Orange/Amber / Pale Yellow)
-              _buildHazardReportCard(
-                overline: 'OBSTRUCTION',
-                title: 'Blocked sidewalk',
-                subtitle: 'Near Capitol Site (around 1:32 PM)',
-                distance: '0.6 km away',
-                badgeText: 'Medium',
-                themeColor: const Color(0xFFD97706),
-                bgColor: const Color(0xFFFFFDF5),
-                iconBgColor: const Color(0xFFFEF3C7),
-                badgeBgColor: const Color(0xFFFEF3C7),
-                icon: Icons.warning_amber_rounded,
-              ),
-
-              const SizedBox(height: 12),
-
-              // Card 3: Low Severity (Crime - Blue / Pale Blue)
-              _buildHazardReportCard(
-                overline: 'CRIME',
-                title: 'Suspicious activity',
-                subtitle: 'Near Mango Square (around 12:45 PM)',
-                distance: '1.2 km away',
-                badgeText: 'Low',
-                themeColor: const Color(0xFF3B82F6),
-                bgColor: const Color(0xFFF5F9FF),
-                iconBgColor: const Color(0xFFDBEAFE),
-                badgeBgColor: const Color(0xFFDBEAFE),
-                icon: Icons.error_outline_rounded,
-              ),
+              // 6. Filtered Hazard Cards
+              if (filtered.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24.0),
+                  child: Center(
+                    child: Text(
+                      'No hazards reported for this category',
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 13,
+                        color: _secondaryGrey,
+                      ),
+                    ),
+                  ),
+                )
+              else
+                for (int i = 0; i < filtered.length; i++) ...[
+                  _buildHazardReportCard(
+                    hazard: filtered[i],
+                    onTap: () => _onHazardCardTap(filtered[i]),
+                  ),
+                  if (i < filtered.length - 1) const SizedBox(height: 12),
+                ],
 
               const SizedBox(height: 16),
 
@@ -954,7 +1302,17 @@ class _MapScreenState extends State<MapScreen> {
                 child: Material(
                   color: Colors.transparent,
                   child: InkWell(
-                    onTap: () {},
+                    onTap: () {
+                      setState(() => _selectedFilterIndex = 0);
+                      _mapController.move(_currentLocation, 15.0);
+                      if (_sheetController.isAttached) {
+                        _sheetController.animateTo(
+                          0.22,
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.easeInOut,
+                        );
+                      }
+                    },
                     borderRadius: BorderRadius.circular(12),
                     child: const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 16.0),
@@ -998,27 +1356,18 @@ class _MapScreenState extends State<MapScreen> {
 
   // Reusable Hazard Report Card
   Widget _buildHazardReportCard({
-    required String overline,
-    required String title,
-    required String subtitle,
-    required String distance,
-    required String badgeText,
-    required Color themeColor,
-    required Color bgColor,
-    required Color iconBgColor,
-    required Color badgeBgColor,
-    required IconData icon,
+    required _HazardItem hazard,
     VoidCallback? onTap,
   }) {
     return Container(
       decoration: BoxDecoration(
-        color: bgColor,
+        color: hazard.bgColor,
         borderRadius: BorderRadius.circular(12),
       ),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: onTap ?? () {},
+          onTap: onTap,
           borderRadius: BorderRadius.circular(12),
           child: Padding(
             padding: const EdgeInsets.all(14.0),
@@ -1030,12 +1379,12 @@ class _MapScreenState extends State<MapScreen> {
                   width: 38,
                   height: 38,
                   decoration: BoxDecoration(
-                    color: iconBgColor,
+                    color: hazard.iconBgColor,
                     shape: BoxShape.circle,
                   ),
                   child: Icon(
-                    icon,
-                    color: themeColor,
+                    hazard.icon,
+                    color: hazard.themeColor,
                     size: 20,
                   ),
                 ),
@@ -1047,18 +1396,18 @@ class _MapScreenState extends State<MapScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        overline,
+                        hazard.overline,
                         style: TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 10,
                           fontWeight: FontWeight.w700,
-                          color: themeColor,
+                          color: hazard.themeColor,
                           letterSpacing: 0.6,
                         ),
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        title,
+                        hazard.title,
                         style: const TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 14,
@@ -1068,7 +1417,7 @@ class _MapScreenState extends State<MapScreen> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        subtitle,
+                        hazard.subtitle,
                         style: const TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 11,
@@ -1086,7 +1435,7 @@ class _MapScreenState extends State<MapScreen> {
                           ),
                           const SizedBox(width: 3),
                           Text(
-                            distance,
+                            hazard.distance,
                             style: const TextStyle(
                               fontFamily: 'Poppins',
                               fontSize: 11,
@@ -1112,16 +1461,16 @@ class _MapScreenState extends State<MapScreen> {
                         vertical: 3,
                       ),
                       decoration: BoxDecoration(
-                        color: badgeBgColor,
+                        color: hazard.badgeBgColor,
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: Text(
-                        badgeText,
+                        hazard.badgeText,
                         style: TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 10,
                           fontWeight: FontWeight.w600,
-                          color: themeColor,
+                          color: hazard.themeColor,
                         ),
                       ),
                     ),
@@ -1170,7 +1519,7 @@ class _ScaleLinePainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..color = const Color(0xFF555555)
-      ..strokeWidth = 1.2
+      ..strokeWidth = 1.4
       ..style = PaintingStyle.stroke;
 
     final path = Path()
@@ -1183,248 +1532,5 @@ class _ScaleLinePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-// -----------------------------------------------------------------------------
-// STYLIZED REALISTIC FULL-MAP BACKGROUND PAINTER
-// -----------------------------------------------------------------------------
-class _FullMapBackgroundPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    // 1. Base Map Background (#F4F2EC)
-    final bgPaint = Paint()..color = const Color(0xFFF4F2EC);
-    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), bgPaint);
-
-    // 2. Green Park Areas
-    final parkPaint = Paint()..color = const Color(0xFFDCEBD9);
-
-    // Cebu City Park (top center)
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(
-            size.width * 0.22, size.height * 0.16, size.width * 0.38, 90),
-        const Radius.circular(8),
-      ),
-      parkPaint,
-    );
-
-    // Capitol Grounds (mid left)
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(-10, size.height * 0.24, size.width * 0.30, 70),
-        const Radius.circular(8),
-      ),
-      parkPaint,
-    );
-
-    // Bottom-left green zone
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(-10, size.height * 0.68, size.width * 0.26, 90),
-        const Radius.circular(16),
-      ),
-      parkPaint,
-    );
-
-    // 3. Subtle Building Blocks (#E5EAEB)
-    final buildingPaint = Paint()..color = const Color(0xFFE5EAEB);
-
-    final buildings = [
-      Rect.fromLTWH(size.width * 0.08, size.height * 0.29, 36, 24),
-      Rect.fromLTWH(size.width * 0.70, size.height * 0.20, 48, 30),
-      Rect.fromLTWH(size.width * 0.75, size.height * 0.30, 45, 34),
-      Rect.fromLTWH(size.width * 0.12, size.height * 0.42, 60, 26),
-      Rect.fromLTWH(size.width * 0.65, size.height * 0.45, 75, 40),
-      Rect.fromLTWH(size.width * 0.68, size.height * 0.58, 65, 36),
-      Rect.fromLTWH(size.width * 0.28, size.height * 0.68, 50, 32),
-      Rect.fromLTWH(size.width * 0.12, size.height * 0.82, 55, 30),
-      Rect.fromLTWH(size.width * 0.72, size.height * 0.82, 60, 32),
-    ];
-
-    for (final b in buildings) {
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(b, const Radius.circular(4)),
-        buildingPaint,
-      );
-    }
-
-    // 4. White Local Streets (with borders)
-    final streetBorderPaint = Paint()
-      ..color = const Color(0xFFE2E6EA)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 9.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    final streetPaint = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 7.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    final streetPaths = [
-      // Street 1: M. Velez St
-      Path()
-        ..moveTo(-10, size.height * 0.36)
-        ..lineTo(size.width * 0.35, size.height * 0.33),
-      // Street 2: Grid behind Capitol
-      Path()
-        ..moveTo(size.width * 0.08, size.height * 0.53)
-        ..lineTo(size.width * 0.32, size.height * 0.50)
-        ..lineTo(size.width * 0.44, size.height * 0.58)
-        ..lineTo(size.width * 0.24, size.height * 0.62)
-        ..close(),
-      // Diagonal street connecting to Capitol site
-      Path()
-        ..moveTo(size.width * 0.04, size.height * 0.71)
-        ..lineTo(size.width * 0.28, size.height * 0.51)
-        ..lineTo(size.width * 0.55, size.height * 0.57),
-      // Street to right of Osmeña Blvd
-      Path()
-        ..moveTo(size.width * 0.62, size.height * 0.55)
-        ..lineTo(size.width + 10, size.height * 0.52),
-      Path()
-        ..moveTo(size.width * 0.60, size.height * 0.36)
-        ..lineTo(size.width + 10, size.height * 0.43),
-      Path()
-        ..moveTo(size.width * 0.68, size.height * 0.18)
-        ..lineTo(size.width * 0.78, size.height * 0.34)
-        ..lineTo(size.width + 10, size.height * 0.32),
-    ];
-
-    for (final p in streetPaths) {
-      canvas.drawPath(p, streetBorderPaint);
-      canvas.drawPath(p, streetPaint);
-    }
-
-    // 5. Main Primary Yellow Roads (N. Escario & Osmeña Blvd)
-    final mainRoadBorder = Paint()
-      ..color = const Color(0xFFE4D69B)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 15.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    final mainRoad = Paint()
-      ..color = const Color(0xFFF7E7A6)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 13.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    // N. Escario St (diagonal across map)
-    final escarioPath = Path()
-      ..moveTo(-10, size.height * 0.46)
-      ..lineTo(size.width * 0.60, size.height * 0.36)
-      ..lineTo(size.width + 10, size.height * 0.31);
-
-    canvas.drawPath(escarioPath, mainRoadBorder);
-    canvas.drawPath(escarioPath, mainRoad);
-
-    // Osmeña Blvd (Vertical Main Avenue)
-    final osmenaPath = Path()
-      ..moveTo(size.width * 0.69, -10)
-      ..lineTo(size.width * 0.61, size.height * 0.36)
-      ..lineTo(size.width * 0.58, size.height * 0.77);
-
-    canvas.drawPath(osmenaPath, mainRoadBorder);
-    canvas.drawPath(osmenaPath, mainRoad);
-
-    // 6. Fuente Osmeña Circle / Roundabout (at bottom right)
-    final circleCenter = Offset(size.width * 0.58, size.height * 0.80);
-    const circleRadius = 50.0;
-
-    // Outer roundabout road
-    canvas.drawCircle(circleCenter, circleRadius + 6, mainRoadBorder);
-    canvas.drawCircle(circleCenter, circleRadius + 6, mainRoad);
-
-    // Inner green park
-    canvas.drawCircle(circleCenter, circleRadius - 4,
-        Paint()..color = const Color(0xFFD6E8D5));
-    // Center fountain / monument dot
-    canvas.drawCircle(
-        circleCenter, 10, Paint()..color = const Color(0xFFA5CADE));
-
-    // Road continuing below roundabout
-    final maxilomRoad = Path()
-      ..moveTo(circleCenter.dx - circleRadius - 10, circleCenter.dy + 16)
-      ..lineTo(circleCenter.dx + circleRadius + size.width * 0.4,
-          circleCenter.dy + 16);
-    canvas.drawPath(maxilomRoad, mainRoadBorder);
-    canvas.drawPath(maxilomRoad, mainRoad);
-
-    // 7. Place and Street Name Labels
-    _drawLabel(
-        canvas, 'CEBU CITY', Offset(size.width * 0.35, size.height * 0.18),
-        fontSize: 11,
-        fontWeight: FontWeight.w600,
-        color: const Color(0xFF6B7280));
-    _drawLabel(canvas, 'Cebu Provincial\nCapitol',
-        Offset(size.width * 0.08, size.height * 0.26),
-        fontSize: 9, color: const Color(0xFF64748B));
-    _drawLabel(
-        canvas, 'M. Velez St.', Offset(size.width * 0.06, size.height * 0.33),
-        fontSize: 9, color: const Color(0xFF64748B));
-    _drawLabel(
-        canvas, 'N. Escario St.', Offset(size.width * 0.56, size.height * 0.36),
-        fontSize: 9, color: const Color(0xFF64748B), angle: -0.15);
-    _drawLabel(
-        canvas, 'CAPITOL SITE', Offset(size.width * 0.15, size.height * 0.48),
-        fontSize: 11,
-        fontWeight: FontWeight.w600,
-        color: const Color(0xFF6B7280));
-    _drawLabel(canvas, 'Don Gil Garcia St.',
-        Offset(size.width * 0.09, size.height * 0.54),
-        fontSize: 9, color: const Color(0xFF64748B), angle: -0.3);
-    _drawLabel(canvas, 'Chong Hua\nHospital',
-        Offset(size.width * 0.74, size.height * 0.54),
-        fontSize: 9, color: const Color(0xFF64748B));
-    _drawLabel(canvas, 'Cebu Doctors\'\nUniversity Hospital',
-        Offset(size.width * 0.72, size.height * 0.46),
-        fontSize: 9, color: const Color(0xFF64748B));
-    _drawLabel(canvas, 'J. Llorente St.',
-        Offset(size.width * 0.35, size.height * 0.68),
-        fontSize: 9, color: const Color(0xFF64748B));
-    _drawLabel(
-        canvas, 'Maxilom Ave.', Offset(size.width * 0.74, size.height * 0.82),
-        fontSize: 9, color: const Color(0xFF64748B));
-  }
-
-  void _drawLabel(
-    Canvas canvas,
-    String text,
-    Offset offset, {
-    double fontSize = 10,
-    FontWeight fontWeight = FontWeight.w500,
-    Color color = const Color(0xFF6B7280),
-    double angle = 0.0,
-  }) {
-    final textSpan = TextSpan(
-      text: text,
-      style: TextStyle(
-        fontFamily: 'Poppins',
-        fontSize: fontSize,
-        fontWeight: fontWeight,
-        color: color,
-        height: 1.1,
-      ),
-    );
-    final textPainter = TextPainter(
-      text: textSpan,
-      textDirection: TextDirection.ltr,
-    )..layout();
-
-    canvas.save();
-    canvas.translate(offset.dx, offset.dy);
-    if (angle != 0.0) {
-      canvas.rotate(angle);
-    }
-    textPainter.paint(canvas, Offset.zero);
-    canvas.restore();
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }

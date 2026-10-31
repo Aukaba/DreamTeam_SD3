@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' hide Path;
 import '../map_screen.dart';
+import '../services/location_service.dart';
 import '../widgets/report_hazard_modal.dart';
 import '../Authentication/auth_service.dart';
-import '../login_page.dart';
+import '../Authentication/login_page.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
 
@@ -16,6 +19,34 @@ class UserHomeScreen extends StatefulWidget {
 class _UserHomeScreenState extends State<UserHomeScreen> {
   DateTime? _lastBackPressedAt;
   final AuthService _authService = AuthService();
+  final MapController _mapPreviewController = MapController();
+  LatLng _currentLocation = LocationService.defaultLocation;
+  bool _previewMapError = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initCurrentLocation();
+  }
+
+  @override
+  void dispose() {
+    _mapPreviewController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _initCurrentLocation() async {
+    final lastKnown = await LocationService.getLastKnownLocation();
+    if (lastKnown != null && mounted) {
+      setState(() => _currentLocation = lastKnown);
+      _mapPreviewController.move(lastKnown, 15.0);
+    }
+    final current = await LocationService.getCurrentLocation();
+    if (mounted) {
+      setState(() => _currentLocation = current);
+      _mapPreviewController.move(current, 15.0);
+    }
+  }
 
   // Color Palette Constants
   static const Color _bgWarm = Color(0xFFF8F7F4);
@@ -214,66 +245,190 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
             padding: const EdgeInsets.fromLTRB(10, 10, 10, 0),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(16),
-              child: Container(
-                height: 150,
-                width: double.infinity,
-                color: const Color(0xFFEDF2F7),
-                child: Stack(
-                  children: [
-                    // Stylized road canvas
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: _MapCanvasPainter(),
-                      ),
+              child: GestureDetector(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const MapScreen(),
                     ),
-
-                    // Top-left "LIVE MAP" badge
-                    Positioned(
-                      top: 12,
-                      left: 12,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(20),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.06),
-                              blurRadius: 6,
-                              offset: const Offset(0, 2),
+                  );
+                },
+                child: Container(
+                  height: 150,
+                  width: double.infinity,
+                  color: const Color(0xFFEDF2F7),
+                  child: Stack(
+                    children: [
+                      // FlutterMap live preview
+                      Positioned.fill(
+                        child: FlutterMap(
+                          mapController: _mapPreviewController,
+                          options: MapOptions(
+                            initialCenter: _currentLocation,
+                            initialZoom: 15.0,
+                            interactionOptions: const InteractionOptions(
+                              flags: InteractiveFlag.none,
                             ),
-                          ],
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
+                          ),
                           children: [
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: const BoxDecoration(
-                                color: _accentOrange,
-                                shape: BoxShape.circle,
-                              ),
+                            TileLayer(
+                              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                              fallbackUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+                              userAgentPackageName: 'com.dreamteam.sd3',
+                              evictErrorTileStrategy: EvictErrorTileStrategy.dispose,
+                              tileBuilder: (context, tileWidget, tile) {
+                                return ColorFiltered(
+                                  colorFilter: const ColorFilter.matrix(<double>[
+                                    0.75, 0.15, 0.10, 0.0, 15.0,
+                                    0.05, 0.85, 0.10, 0.0, 15.0,
+                                    0.40, 0.40, 0.20, 0.0, 15.0,
+                                    0.00, 0.00, 0.00, 1.0,  0.0,
+                                  ]),
+                                  child: tileWidget,
+                                );
+                              },
+                              errorTileCallback: (tile, error, stackTrace) {
+                                if (!_previewMapError && mounted) {
+                                  setState(() => _previewMapError = true);
+                                }
+                              },
                             ),
-                            const SizedBox(width: 6),
-                            const Text(
-                              'LIVE MAP',
-                              style: TextStyle(
-                                fontFamily: 'Poppins',
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                                color: _primaryNavy,
-                                letterSpacing: 0.8,
+                            const SimpleAttributionWidget(
+                              source: Text(
+                                '© OpenStreetMap contributors',
+                                style: TextStyle(fontSize: 8, color: Color(0xFF4B5563)),
                               ),
+                              alignment: Alignment.bottomRight,
+                            ),
+                            MarkerLayer(
+                              markers: [
+                                Marker(
+                                  point: _currentLocation,
+                                  width: 22,
+                                  height: 22,
+                                  alignment: Alignment.center,
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF2563EB),
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: Colors.white, width: 2.5),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: const Color(0xFF2563EB).withValues(alpha: 0.4),
+                                          blurRadius: 6,
+                                          offset: const Offset(0, 2),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                Marker(
+                                  point: LatLng(
+                                    _currentLocation.latitude + 0.0025,
+                                    _currentLocation.longitude - 0.0025,
+                                  ),
+                                  width: 20,
+                                  height: 20,
+                                  alignment: Alignment.center,
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: _accentOrange,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: Colors.white, width: 2),
+                                    ),
+                                    child: const Icon(
+                                      Icons.construction_rounded,
+                                      color: Colors.white,
+                                      size: 11,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),
                       ),
-                    ),
-                  ],
+
+                      // Offline indicator if tile requests fail
+                      if (_previewMapError)
+                        Positioned(
+                          bottom: 8,
+                          left: 12,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFEF2F2).withValues(alpha: 0.95),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: const Color(0xFFFCA5A5)),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.wifi_off_rounded, size: 11, color: Color(0xFFDC2626)),
+                                SizedBox(width: 4),
+                                Text(
+                                  'Offline map',
+                                  style: TextStyle(
+                                    fontFamily: 'Poppins',
+                                    fontSize: 9,
+                                    color: Color(0xFF991B1B),
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+
+                      // Top-left "LIVE MAP" badge
+                      Positioned(
+                        top: 12,
+                        left: 12,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(20),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.06),
+                                blurRadius: 6,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: const BoxDecoration(
+                                  color: _accentOrange,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              const Text(
+                                'LIVE MAP',
+                                style: TextStyle(
+                                  fontFamily: 'Poppins',
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  color: _primaryNavy,
+                                  letterSpacing: 0.8,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -751,63 +906,4 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
       currentIndex: 0,
     );
   }
-}
-
-// -----------------------------------------------------------------------------
-// STYLIZED MAP PLACEHOLDER CANVAS PAINTER
-// -----------------------------------------------------------------------------
-class _MapCanvasPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Subtle road lines
-    final roadPaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.85)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 9.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    final roadBorderPaint = Paint()
-      ..color = const Color(0xFFE2E8F0)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 11.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    final path1 = Path()
-      ..moveTo(-10, size.height * 0.72)
-      ..lineTo(size.width * 0.32, size.height * 0.52)
-      ..lineTo(size.width * 0.65, size.height * 0.40)
-      ..lineTo(size.width + 10, size.height * 0.62);
-
-    final path2 = Path()
-      ..moveTo(size.width * 0.22, 0)
-      ..lineTo(size.width * 0.32, size.height * 0.52)
-      ..lineTo(size.width * 0.42, size.height + 10);
-
-    // Draw borders first, then inner roads
-    canvas.drawPath(path1, roadBorderPaint);
-    canvas.drawPath(path2, roadBorderPaint);
-    canvas.drawPath(path1, roadPaint);
-    canvas.drawPath(path2, roadPaint);
-
-    // Location / landmark dots
-    final dotPaint = Paint()
-      ..color = const Color(0xFF8A94A6)
-      ..style = PaintingStyle.fill;
-
-    canvas.drawCircle(
-      Offset(size.width * 0.42, size.height * 0.48),
-      3.5,
-      dotPaint,
-    );
-    canvas.drawCircle(
-      Offset(size.width * 0.75, size.height * 0.55),
-      3.0,
-      dotPaint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

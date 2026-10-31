@@ -3,8 +3,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login_page.dart';
-import 'Authentication/auth_service.dart';
-import 'Authentication/auth_error_handler.dart';
+import 'auth_service.dart';
+import 'auth_error_handler.dart';
 
 class ResetPasswordPage extends StatefulWidget {
   const ResetPasswordPage({super.key});
