@@ -2,55 +2,76 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'signup_page.dart';
-import 'reset_password_page.dart';
-import 'user_screens/user_home_screen.dart';
-import 'Authentication/auth_service.dart';
-import 'Authentication/auth_error_handler.dart';
+import 'login_page.dart';
+import 'auth_service.dart';
+import 'auth_error_handler.dart';
 
-class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+class SignupPage extends StatefulWidget {
+  const SignupPage({super.key});
 
   @override
-  State<LoginPage> createState() => _LoginPageState();
+  State<SignupPage> createState() => _SignupPageState();
 }
 
-class _LoginPageState extends State<LoginPage> {
+class _SignupPageState extends State<SignupPage> {
+  final TextEditingController _fullNameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _confirmPasswordController = TextEditingController();
+  final FocusNode _fullNameFocusNode = FocusNode();
   final FocusNode _emailFocusNode = FocusNode();
   final FocusNode _passwordFocusNode = FocusNode();
+  final FocusNode _confirmPasswordFocusNode = FocusNode();
   final AuthService _authService = AuthService();
   final SupabaseClient _supabase = Supabase.instance.client;
-  bool _rememberMe = false;
+  bool _agreeToTerms = false;
   bool _obscurePassword = true;
+  bool _obscureConfirmPassword = true;
   bool _isLoading = false;
   String? _errorMessage;
 
   @override
   void initState() {
     super.initState();
+    _fullNameFocusNode.addListener(() {
+      setState(() {});
+    });
     _emailFocusNode.addListener(() {
       setState(() {});
     });
     _passwordFocusNode.addListener(() {
       setState(() {});
     });
+    _confirmPasswordFocusNode.addListener(() {
+      setState(() {});
+    });
   }
 
   @override
   void dispose() {
+    _fullNameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
+    _confirmPasswordController.dispose();
+    _fullNameFocusNode.dispose();
     _emailFocusNode.dispose();
     _passwordFocusNode.dispose();
+    _confirmPasswordFocusNode.dispose();
     super.dispose();
   }
 
-  Future<void> _signIn() async {
+  Future<void> _signUp() async {
+    final fullName = _fullNameController.text.trim();
     final email = _emailController.text.trim();
     final password = _passwordController.text;
+    final confirmPassword = _confirmPasswordController.text;
+
+    if (fullName.isEmpty) {
+      setState(() {
+        _errorMessage = 'Please enter your full name.';
+      });
+      return;
+    }
 
     if (email.isEmpty) {
       setState(() {
@@ -68,7 +89,35 @@ class _LoginPageState extends State<LoginPage> {
 
     if (password.isEmpty) {
       setState(() {
-        _errorMessage = 'Please enter your password.';
+        _errorMessage = 'Please enter a password.';
+      });
+      return;
+    }
+
+    if (password.length < 6) {
+      setState(() {
+        _errorMessage = 'Password must be at least 6 characters long.';
+      });
+      return;
+    }
+
+    if (confirmPassword.isEmpty) {
+      setState(() {
+        _errorMessage = 'Please confirm your password.';
+      });
+      return;
+    }
+
+    if (password != confirmPassword) {
+      setState(() {
+        _errorMessage = 'Passwords do not match. Please verify and try again.';
+      });
+      return;
+    }
+
+    if (!_agreeToTerms) {
+      setState(() {
+        _errorMessage = 'Please agree to the Terms and Privacy Policy to continue.';
       });
       return;
     }
@@ -79,42 +128,42 @@ class _LoginPageState extends State<LoginPage> {
     });
 
     try {
-      final response = await _authService.signIn(
+      // Sign up with Supabase Auth with metadata
+      final response = await _authService.signUp(
         email: email,
         password: password,
+        data: {
+          'full_name': fullName,
+        },
       );
 
       if (response.user != null) {
-        // Save "Remember me" preference
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('rememberMe', _rememberMe);
+        // Try to create profile (in case trigger fails)
+        try {
+          await _supabase.from('profiles').insert({
+            'id': response.user!.id,
+            'email': email,
+            'full_name': fullName,
+            'avatar_url': null,
+            'created_at': DateTime.now().toIso8601String(),
+            'role': 'user',
+          });
+          debugPrint('Profile inserted manually');
+        } catch (e) {
+          // If trigger already created the profile, ignore duplicate error
+          debugPrint('Profile already created by trigger: $e');
+        }
 
-        // Fetch user's role from profiles table
-        final profileData = await _supabase
-            .from('profiles')
-            .select('role')
-            .eq('id', response.user!.id)
-            .single();
-
-        final role = profileData['role'] as String?;
-
-        // Navigate based on role
+        // Navigate to login page on successful signup
         if (mounted) {
-          if (role == 'user') {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (context) => const UserHomeScreen()),
-            );
-          } else {
-            // Handle other roles if needed
-            setState(() {
-              _errorMessage = 'Access denied. Your account does not have permission to log in.';
-            });
-          }
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const LoginPage()),
+          );
         }
       } else {
         setState(() {
-          _errorMessage = 'Sign in failed. Please check your credentials and try again.';
+          _errorMessage = 'Unable to complete sign up. Please try again.';
         });
       }
     } catch (e) {
@@ -196,7 +245,7 @@ class _LoginPageState extends State<LoginPage> {
                 const SizedBox(height: 15),
                 // Welcome text
                 Text(
-                  'WELCOME BACK',
+                  'CREATE AN ACCOUNT',
                   style: GoogleFonts.poppins(
                     color: const Color(0xFF63729A),
                     fontSize: 12,
@@ -205,16 +254,16 @@ class _LoginPageState extends State<LoginPage> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Good to see you.',
+                  'Join your safer journey.',
                   style: GoogleFonts.poppins(
                     color: const Color(0xFF263354),
-                    fontSize: 28,
+                    fontSize: 24,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
                 const SizedBox(height: 15),
                 Text(
-                  'Log in to continue your safer journey and stay connected to your community.',
+                  'Sign up to start your safer journey and connect with your community.',
                   style: GoogleFonts.poppins(
                     color: const Color(0xFF63739A),
                     fontSize: 13,
@@ -222,6 +271,55 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                 ),
                 const SizedBox(height: 25),
+                // Full name field
+                Text(
+                  'Full name',
+                  style: GoogleFonts.poppins(
+                    color: const Color(0xFF344673),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _fullNameController,
+                  focusNode: _fullNameFocusNode,
+                  decoration: InputDecoration(
+                    hintText: 'Enter your full name',
+                    hintStyle: GoogleFonts.poppins(
+                      color: const Color(0xFF344673),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w400,
+                    ),
+                    filled: true,
+                    fillColor: const Color(0xFFEDEEF2),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: BorderSide.none,
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: BorderSide.none,
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: const BorderSide(
+                        width: 1.5,
+                        color: Color(0xFF344673),
+                      ),
+                    ),
+                    prefixIcon: Padding(
+                      padding: const EdgeInsets.only(left: 16, right: 10),
+                      child: SvgPicture.asset(
+                        'assets/user.svg',
+                        width: 20,
+                        height: 20,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
                 // Email field
                 Text(
                   'Email address',
@@ -332,64 +430,113 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                // Remember me and Forgot password
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Row(
-                      children: [
-                        SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: Checkbox(
-                            value: _rememberMe,
-                            onChanged: (value) {
-                              setState(() {
-                                _rememberMe = value ?? false;
-                              });
-                            },
-                            side: const BorderSide(
-                              width: 1.5,
-                              color: Color(0xFF63739A),
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(3),
-                            ),
+                // Confirm password field
+                Text(
+                  'Confirm password',
+                  style: GoogleFonts.poppins(
+                    color: const Color(0xFF344673),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _confirmPasswordController,
+                  focusNode: _confirmPasswordFocusNode,
+                  obscureText: _obscureConfirmPassword,
+                  decoration: InputDecoration(
+                    hintText: 'Confirm your password',
+                    hintStyle: GoogleFonts.poppins(
+                      color: const Color(0xFF344673),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w400,
+                    ),
+                    filled: true,
+                    fillColor: const Color(0xFFEDEEF2),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: BorderSide.none,
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: BorderSide.none,
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: const BorderSide(
+                        width: 1.5,
+                        color: Color(0xFF344673),
+                      ),
+                    ),
+                    prefixIcon: Padding(
+                      padding: const EdgeInsets.only(left: 16, right: 10),
+                      child: SvgPicture.asset(
+                        'assets/lock.svg',
+                        width: 20,
+                        height: 20,
+                      ),
+                    ),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _obscureConfirmPassword ? Icons.visibility_off : Icons.visibility,
+                        color: const Color(0xFF344673),
+                      ),
+                      onPressed: () {
+                        setState(() {
+                          _obscureConfirmPassword = !_obscureConfirmPassword;
+                        });
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                // Terms checkbox
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _agreeToTerms = !_agreeToTerms;
+                    });
+                  },
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: Checkbox(
+                          value: _agreeToTerms,
+                          onChanged: (value) {
+                            setState(() {
+                              _agreeToTerms = value ?? false;
+                            });
+                          },
+                          side: const BorderSide(
+                            width: 1.5,
+                            color: Color(0xFF63739A),
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(3),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Remember me',
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'I agree to the Terms and Privacy Policy',
                           style: GoogleFonts.poppins(
                             color: const Color(0xFF63739A),
                             fontSize: 13,
                             fontWeight: FontWeight.w400,
                           ),
                         ),
-                      ],
-                    ),
-                    GestureDetector(
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (context) => const ResetPasswordPage()),
-                        );
-                      },
-                      child: Text(
-                        'Forgot password?',
-                        style: GoogleFonts.poppins(
-                          color: const Color(0xFF344673),
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 24),
-                // Login button
+                // Sign up button
                 GestureDetector(
-                  onTap: _isLoading ? null : _signIn,
+                  onTap: _isLoading ? null : _signUp,
                   child: Container(
                     width: double.infinity,
                     height: 56,
@@ -411,7 +558,7 @@ class _LoginPageState extends State<LoginPage> {
                           )
                         else
                           Text(
-                            'Log in',
+                            'Sign up',
                             style: GoogleFonts.poppins(
                               color: Colors.white,
                               fontSize: 16,
@@ -494,12 +641,12 @@ class _LoginPageState extends State<LoginPage> {
                   ],
                 ),
                 const SizedBox(height: 24),
-                // Don't have an account
+                // Already have an account
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(
-                      "Don't have an account?",
+                      'Already have an account?',
                       style: GoogleFonts.poppins(
                         color: const Color(0xFF63739A),
                         fontSize: 14,
@@ -510,11 +657,11 @@ class _LoginPageState extends State<LoginPage> {
                       onTap: () {
                         Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (context) => const SignupPage()),
+                          MaterialPageRoute(builder: (context) => const LoginPage()),
                         );
                       },
                       child: Text(
-                        ' Create one',
+                        ' Log in',
                         style: GoogleFonts.poppins(
                           color: const Color(0xFF344673),
                           fontSize: 14,

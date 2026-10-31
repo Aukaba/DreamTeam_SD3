@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' hide Path;
 import 'widgets/report_hazard_modal.dart';
 
 class MapScreen extends StatefulWidget {
@@ -14,10 +16,30 @@ typedef UserFullMapScreen = MapScreen;
 class _MapScreenState extends State<MapScreen> {
   int _selectedFilterIndex = 0;
   final DraggableScrollableController _sheetController = DraggableScrollableController();
+  final MapController _mapController = MapController();
+  int _tileStyleIndex = 0;
+
+  // Geographic coordinates centered around Cebu City (matching the original design landmarks)
+  static const LatLng _currentLocation = LatLng(10.3157, 123.8920);
+  static const LatLng _roadworkLocation = LatLng(10.3182, 123.8895);
+  static const LatLng _floodingLocation = LatLng(10.3135, 123.8880);
+  static const LatLng _lightingLocation = LatLng(10.3195, 123.8940);
+  static const LatLng _crimeLocation = LatLng(10.3115, 123.8945);
+
+  static const List<String> _tileUrls = [
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
+  ];
+
+  static const List<String> _tileNames = [
+    'OpenStreetMap Standard',
+    'CartoDB Voyager',
+  ];
 
   @override
   void dispose() {
     _sheetController.dispose();
+    _mapController.dispose();
     super.dispose();
   }
 
@@ -39,32 +61,44 @@ class _MapScreenState extends State<MapScreen> {
       body: Stack(
         children: [
           // -------------------------------------------------------------------
-          // LAYER 1 (BOTTOM): THE MAP BACKGROUND
+          // LAYER 1 (BOTTOM): FLUTTER MAP
           // -------------------------------------------------------------------
           Positioned.fill(
-            child: CustomPaint(
-              painter: _FullMapBackgroundPainter(),
-              size: screenSize,
+            child: FlutterMap(
+              mapController: _mapController,
+              options: const MapOptions(
+                initialCenter: _currentLocation,
+                initialZoom: 16.0,
+                minZoom: 3.0,
+                maxZoom: 19.0,
+                interactionOptions: InteractionOptions(
+                  flags: InteractiveFlag.all,
+                ),
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate: _tileUrls[_tileStyleIndex],
+                  userAgentPackageName: 'com.dreamteam.sd3',
+                ),
+                MarkerLayer(
+                  markers: _buildMapMarkers(),
+                ),
+              ],
             ),
           ),
 
           // -------------------------------------------------------------------
-          // LAYER 2: MAP OVERLAYS (Hazard & Location Markers)
-          // -------------------------------------------------------------------
-          _buildMapOverlays(screenSize),
-
-          // -------------------------------------------------------------------
-          // LAYER 3: FLOATING TOP ELEMENTS (Search Bar, Filters, Live Map Badge)
+          // LAYER 2: FLOATING TOP ELEMENTS (Search Bar, Filters, Live Map Badge)
           // -------------------------------------------------------------------
           _buildTopControls(),
 
           // -------------------------------------------------------------------
-          // LAYER 4: FLOATING ACTION BUTTONS (Report hazard, Crosshair, Layers, Scale)
+          // LAYER 3: FLOATING ACTION BUTTONS (Report hazard, Crosshair, Layers, Scale)
           // -------------------------------------------------------------------
           _buildFloatingActionButtons(screenSize),
 
           // -------------------------------------------------------------------
-          // LAYER 5 (ABSOLUTE TOP): DRAGGABLE SCROLLABLE SHEET
+          // LAYER 4 (ABSOLUTE TOP): DRAGGABLE SCROLLABLE SHEET
           // -------------------------------------------------------------------
           Positioned.fill(
             child: _buildDraggableScrollableSheet(),
@@ -306,222 +340,314 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // MAP OVERLAYS (Current Location, Roadwork, Flooding)
+  // MAP MARKERS & OVERLAYS (Integrated with FlutterMap MarkerLayer)
   // ---------------------------------------------------------------------------
-  Widget _buildMapOverlays(Size screenSize) {
-    return Stack(
-      children: [
-        // 1. Roadwork Hazard (top: ~35%, left: ~28%)
-        Positioned(
-          top: screenSize.height * 0.35,
-          left: screenSize.width * 0.28,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Pill label above
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.08),
-                      blurRadius: 6,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
+  List<Marker> _buildMapMarkers() {
+    final markers = <Marker>[
+      // 1. Current Location (always visible)
+      Marker(
+        point: _currentLocation,
+        width: 100,
+        height: 115,
+        alignment: Alignment.center,
+        child: _buildCurrentLocationMarker(),
+      ),
+    ];
+
+    // Filter index: 0 = All hazards, 1 = Roadwork, 2 = Flooding
+    if (_selectedFilterIndex == 0 || _selectedFilterIndex == 1) {
+      markers.add(
+        Marker(
+          point: _roadworkLocation,
+          width: 130,
+          height: 75,
+          alignment: Alignment.center,
+          child: _buildRoadworkMarker(),
+        ),
+      );
+    }
+
+    if (_selectedFilterIndex == 0 || _selectedFilterIndex == 2) {
+      markers.add(
+        Marker(
+          point: _floodingLocation,
+          width: 120,
+          height: 65,
+          alignment: Alignment.center,
+          child: _buildFloodingMarker(),
+        ),
+      );
+    }
+
+    return markers;
+  }
+
+  // 1. Current Location with Radar & "You are here"
+  Widget _buildCurrentLocationMarker() {
+    return GestureDetector(
+      onTap: () {
+        _recenterToCurrentLocation();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('You are here: Safe Area (Osmeña Blvd)'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      },
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Radar beam & Center dot
+          SizedBox(
+            width: 84,
+            height: 84,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                // Outer radar pulse circle
+                Container(
+                  width: 84,
+                  height: 84,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF3B82F6).withValues(alpha: 0.16),
+                    shape: BoxShape.circle,
+                  ),
                 ),
-                child: RichText(
-                  text: const TextSpan(
-                    style: TextStyle(
-                      fontFamily: 'Poppins',
-                      fontSize: 12,
-                    ),
-                    children: [
-                      TextSpan(
-                        text: 'Roadwork ',
-                        style: TextStyle(
-                          color: _primaryNavy,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      TextSpan(
-                        text: '200 m',
-                        style: TextStyle(
-                          color: _secondaryGrey,
-                          fontWeight: FontWeight.w400,
-                        ),
+
+                // Translucent direction radar cone
+                ClipPath(
+                  clipper: _RadarConeClipper(),
+                  child: Container(
+                    width: 84,
+                    height: 84,
+                    color: const Color(0xFF3B82F6).withValues(alpha: 0.30),
+                  ),
+                ),
+
+                // Blue current location dot with white border
+                Container(
+                  width: 15,
+                  height: 15,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2563EB),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF2563EB).withValues(alpha: 0.4),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
                       ),
                     ],
                   ),
                 ),
-              ),
-              const SizedBox(height: 6),
-
-              // Orange hazard marker circle with barrier/hazard icon
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: _accentOrange,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 2.5),
-                  boxShadow: [
-                    BoxShadow(
-                      color: _accentOrange.withValues(alpha: 0.35),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: const Icon(
-                  Icons.construction_rounded,
-                  color: Colors.white,
-                  size: 18,
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
+          const SizedBox(height: 2),
 
-        // 2. Current Location with Radar & "You are here" (center of screen)
-        Positioned(
-          top: screenSize.height * 0.49,
-          left: screenSize.width * 0.40,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Radar beam & Center dot
-              SizedBox(
-                width: 84,
-                height: 84,
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    // Outer radar pulse circle
-                    Container(
-                      width: 84,
-                      height: 84,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF3B82F6).withValues(alpha: 0.16),
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-
-                    // Translucent direction radar cone
-                    ClipPath(
-                      clipper: _RadarConeClipper(),
-                      child: Container(
-                        width: 84,
-                        height: 84,
-                        color: const Color(0xFF3B82F6).withValues(alpha: 0.30),
-                      ),
-                    ),
-
-                    // Blue current location dot with white border
-                    Container(
-                      width: 15,
-                      height: 15,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF2563EB),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 2.5),
-                        boxShadow: [
-                          BoxShadow(
-                            color:
-                                const Color(0xFF2563EB).withValues(alpha: 0.4),
-                            blurRadius: 6,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+          // "You are here" label pill
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.08),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
                 ),
+              ],
+            ),
+            child: const Text(
+              'You are here',
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: _primaryNavy,
               ),
-              const SizedBox(height: 4),
-
-              // "You are here" label pill
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.08),
-                      blurRadius: 6,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: const Text(
-                  'You are here',
-                  style: TextStyle(
-                    fontFamily: 'Poppins',
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: _primaryNavy,
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
+        ],
+      ),
+    );
+  }
 
-        // 3. Flooding Hazard (bottom-left)
-        Positioned(
-          top: screenSize.height * 0.63,
-          left: screenSize.width * 0.18,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Blue circle with water drop icon
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: _accentBlue,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 2.5),
-                  boxShadow: [
-                    BoxShadow(
-                      color: _accentBlue.withValues(alpha: 0.35),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
+  // 2. Roadwork Hazard Marker (Orange icon with pill)
+  Widget _buildRoadworkMarker() {
+    return GestureDetector(
+      onTap: () {
+        _mapController.move(_roadworkLocation, 17.0);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Roadwork: 200 m ahead on N. Escario St'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      },
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Pill label above
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.08),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
                 ),
-                child: const Icon(
-                  Icons.water_drop_rounded,
-                  color: Colors.white,
-                  size: 18,
-                ),
-              ),
-              const SizedBox(height: 4),
-
-              // Blue text label
-              const Text(
-                'Minor flooding',
+              ],
+            ),
+            child: RichText(
+              text: const TextSpan(
                 style: TextStyle(
                   fontFamily: 'Poppins',
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: _accentBlue,
+                  fontSize: 11,
                 ),
+                children: [
+                  TextSpan(
+                    text: 'Roadwork ',
+                    style: TextStyle(
+                      color: _primaryNavy,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  TextSpan(
+                    text: '200 m',
+                    style: TextStyle(
+                      color: _secondaryGrey,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
-        ),
-      ],
+          const SizedBox(height: 4),
+
+          // Orange hazard marker circle with barrier/hazard icon
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: _accentOrange,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2.5),
+              boxShadow: [
+                BoxShadow(
+                  color: _accentOrange.withValues(alpha: 0.35),
+                  blurRadius: 8,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: const Icon(
+              Icons.construction_rounded,
+              color: Colors.white,
+              size: 16,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 3. Flooding Hazard Marker (Blue icon with pill)
+  Widget _buildFloodingMarker() {
+    return GestureDetector(
+      onTap: () {
+        _mapController.move(_floodingLocation, 17.0);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Flooding reported near Capitol Site'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      },
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Blue circle with water drop icon
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: _accentBlue,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2.5),
+              boxShadow: [
+                BoxShadow(
+                  color: _accentBlue.withValues(alpha: 0.35),
+                  blurRadius: 8,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: const Icon(
+              Icons.water_drop_rounded,
+              color: Colors.white,
+              size: 16,
+            ),
+          ),
+          const SizedBox(height: 4),
+
+          // Blue text label pill
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.08),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: const Text(
+              'Minor flooding',
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: _accentBlue,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _recenterToCurrentLocation() {
+    _mapController.move(_currentLocation, 16.0);
+  }
+
+  void _toggleTileStyle() {
+    setState(() {
+      _tileStyleIndex = (_tileStyleIndex + 1) % _tileUrls.length;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Switched to ${_tileNames[_tileStyleIndex]}'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 
   // ---------------------------------------------------------------------------
-  // LAYER 4: FLOATING ACTION BUTTONS (Report hazard, Crosshair, Layers, Scale)
+  // LAYER 3: FLOATING ACTION BUTTONS (Report hazard, Crosshair, Layers, Scale)
   // ---------------------------------------------------------------------------
   Widget _buildFloatingActionButtons(Size screenSize) {
     final collapsedOffset = screenSize.height * 0.22 + 12.0;
@@ -613,7 +739,7 @@ class _MapScreenState extends State<MapScreen> {
                 icon: Icons.layers_outlined,
                 size: 44,
                 iconSize: 22,
-                onTap: () {},
+                onTap: _toggleTileStyle,
               ),
               const SizedBox(height: 12),
               _buildNorthCompassFab(),
@@ -629,7 +755,7 @@ class _MapScreenState extends State<MapScreen> {
             icon: Icons.my_location_rounded,
             size: 48,
             iconSize: 24,
-            onTap: () {},
+            onTap: _recenterToCurrentLocation,
           ),
         ),
       ],
@@ -686,26 +812,35 @@ class _MapScreenState extends State<MapScreen> {
           ),
         ],
       ),
-      child: const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              'N',
-              style: TextStyle(
-                fontFamily: 'Poppins',
-                fontSize: 9,
-                fontWeight: FontWeight.w600,
-                color: _primaryNavy,
-                height: 1.0,
-              ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () {
+            _mapController.rotate(0.0);
+          },
+          child: const Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  'N',
+                  style: TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 9,
+                    fontWeight: FontWeight.w600,
+                    color: _primaryNavy,
+                    height: 1.0,
+                  ),
+                ),
+                Icon(
+                  Icons.navigation,
+                  size: 14,
+                  color: _primaryNavy,
+                ),
+              ],
             ),
-            Icon(
-              Icons.navigation,
-              size: 14,
-              color: _primaryNavy,
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -904,6 +1039,16 @@ class _MapScreenState extends State<MapScreen> {
                 iconBgColor: const Color(0xFFFEE2E2),
                 badgeBgColor: const Color(0xFFFEE2E2),
                 icon: Icons.warning_amber_rounded,
+                onTap: () {
+                  _mapController.move(_lightingLocation, 17.0);
+                  if (_sheetController.isAttached) {
+                    _sheetController.animateTo(
+                      0.22,
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut,
+                    );
+                  }
+                },
               ),
 
               const SizedBox(height: 12),
@@ -920,6 +1065,16 @@ class _MapScreenState extends State<MapScreen> {
                 iconBgColor: const Color(0xFFFEF3C7),
                 badgeBgColor: const Color(0xFFFEF3C7),
                 icon: Icons.warning_amber_rounded,
+                onTap: () {
+                  _mapController.move(_roadworkLocation, 17.0);
+                  if (_sheetController.isAttached) {
+                    _sheetController.animateTo(
+                      0.22,
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut,
+                    );
+                  }
+                },
               ),
 
               const SizedBox(height: 12),
@@ -936,6 +1091,16 @@ class _MapScreenState extends State<MapScreen> {
                 iconBgColor: const Color(0xFFDBEAFE),
                 badgeBgColor: const Color(0xFFDBEAFE),
                 icon: Icons.error_outline_rounded,
+                onTap: () {
+                  _mapController.move(_crimeLocation, 17.0);
+                  if (_sheetController.isAttached) {
+                    _sheetController.animateTo(
+                      0.22,
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut,
+                    );
+                  }
+                },
               ),
 
               const SizedBox(height: 16),
@@ -954,7 +1119,17 @@ class _MapScreenState extends State<MapScreen> {
                 child: Material(
                   color: Colors.transparent,
                   child: InkWell(
-                    onTap: () {},
+                    onTap: () {
+                      setState(() => _selectedFilterIndex = 0);
+                      _mapController.move(_currentLocation, 15.0);
+                      if (_sheetController.isAttached) {
+                        _sheetController.animateTo(
+                          0.22,
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.easeInOut,
+                        );
+                      }
+                    },
                     borderRadius: BorderRadius.circular(12),
                     child: const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 16.0),
@@ -1180,249 +1355,6 @@ class _ScaleLinePainter extends CustomPainter {
       ..lineTo(size.width, 0);
 
     canvas.drawPath(path, paint);
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-// -----------------------------------------------------------------------------
-// STYLIZED REALISTIC FULL-MAP BACKGROUND PAINTER
-// -----------------------------------------------------------------------------
-class _FullMapBackgroundPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    // 1. Base Map Background (#F4F2EC)
-    final bgPaint = Paint()..color = const Color(0xFFF4F2EC);
-    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), bgPaint);
-
-    // 2. Green Park Areas
-    final parkPaint = Paint()..color = const Color(0xFFDCEBD9);
-
-    // Cebu City Park (top center)
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(
-            size.width * 0.22, size.height * 0.16, size.width * 0.38, 90),
-        const Radius.circular(8),
-      ),
-      parkPaint,
-    );
-
-    // Capitol Grounds (mid left)
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(-10, size.height * 0.24, size.width * 0.30, 70),
-        const Radius.circular(8),
-      ),
-      parkPaint,
-    );
-
-    // Bottom-left green zone
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(-10, size.height * 0.68, size.width * 0.26, 90),
-        const Radius.circular(16),
-      ),
-      parkPaint,
-    );
-
-    // 3. Subtle Building Blocks (#E5EAEB)
-    final buildingPaint = Paint()..color = const Color(0xFFE5EAEB);
-
-    final buildings = [
-      Rect.fromLTWH(size.width * 0.08, size.height * 0.29, 36, 24),
-      Rect.fromLTWH(size.width * 0.70, size.height * 0.20, 48, 30),
-      Rect.fromLTWH(size.width * 0.75, size.height * 0.30, 45, 34),
-      Rect.fromLTWH(size.width * 0.12, size.height * 0.42, 60, 26),
-      Rect.fromLTWH(size.width * 0.65, size.height * 0.45, 75, 40),
-      Rect.fromLTWH(size.width * 0.68, size.height * 0.58, 65, 36),
-      Rect.fromLTWH(size.width * 0.28, size.height * 0.68, 50, 32),
-      Rect.fromLTWH(size.width * 0.12, size.height * 0.82, 55, 30),
-      Rect.fromLTWH(size.width * 0.72, size.height * 0.82, 60, 32),
-    ];
-
-    for (final b in buildings) {
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(b, const Radius.circular(4)),
-        buildingPaint,
-      );
-    }
-
-    // 4. White Local Streets (with borders)
-    final streetBorderPaint = Paint()
-      ..color = const Color(0xFFE2E6EA)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 9.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    final streetPaint = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 7.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    final streetPaths = [
-      // Street 1: M. Velez St
-      Path()
-        ..moveTo(-10, size.height * 0.36)
-        ..lineTo(size.width * 0.35, size.height * 0.33),
-      // Street 2: Grid behind Capitol
-      Path()
-        ..moveTo(size.width * 0.08, size.height * 0.53)
-        ..lineTo(size.width * 0.32, size.height * 0.50)
-        ..lineTo(size.width * 0.44, size.height * 0.58)
-        ..lineTo(size.width * 0.24, size.height * 0.62)
-        ..close(),
-      // Diagonal street connecting to Capitol site
-      Path()
-        ..moveTo(size.width * 0.04, size.height * 0.71)
-        ..lineTo(size.width * 0.28, size.height * 0.51)
-        ..lineTo(size.width * 0.55, size.height * 0.57),
-      // Street to right of Osmeña Blvd
-      Path()
-        ..moveTo(size.width * 0.62, size.height * 0.55)
-        ..lineTo(size.width + 10, size.height * 0.52),
-      Path()
-        ..moveTo(size.width * 0.60, size.height * 0.36)
-        ..lineTo(size.width + 10, size.height * 0.43),
-      Path()
-        ..moveTo(size.width * 0.68, size.height * 0.18)
-        ..lineTo(size.width * 0.78, size.height * 0.34)
-        ..lineTo(size.width + 10, size.height * 0.32),
-    ];
-
-    for (final p in streetPaths) {
-      canvas.drawPath(p, streetBorderPaint);
-      canvas.drawPath(p, streetPaint);
-    }
-
-    // 5. Main Primary Yellow Roads (N. Escario & Osmeña Blvd)
-    final mainRoadBorder = Paint()
-      ..color = const Color(0xFFE4D69B)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 15.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    final mainRoad = Paint()
-      ..color = const Color(0xFFF7E7A6)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 13.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    // N. Escario St (diagonal across map)
-    final escarioPath = Path()
-      ..moveTo(-10, size.height * 0.46)
-      ..lineTo(size.width * 0.60, size.height * 0.36)
-      ..lineTo(size.width + 10, size.height * 0.31);
-
-    canvas.drawPath(escarioPath, mainRoadBorder);
-    canvas.drawPath(escarioPath, mainRoad);
-
-    // Osmeña Blvd (Vertical Main Avenue)
-    final osmenaPath = Path()
-      ..moveTo(size.width * 0.69, -10)
-      ..lineTo(size.width * 0.61, size.height * 0.36)
-      ..lineTo(size.width * 0.58, size.height * 0.77);
-
-    canvas.drawPath(osmenaPath, mainRoadBorder);
-    canvas.drawPath(osmenaPath, mainRoad);
-
-    // 6. Fuente Osmeña Circle / Roundabout (at bottom right)
-    final circleCenter = Offset(size.width * 0.58, size.height * 0.80);
-    const circleRadius = 50.0;
-
-    // Outer roundabout road
-    canvas.drawCircle(circleCenter, circleRadius + 6, mainRoadBorder);
-    canvas.drawCircle(circleCenter, circleRadius + 6, mainRoad);
-
-    // Inner green park
-    canvas.drawCircle(circleCenter, circleRadius - 4,
-        Paint()..color = const Color(0xFFD6E8D5));
-    // Center fountain / monument dot
-    canvas.drawCircle(
-        circleCenter, 10, Paint()..color = const Color(0xFFA5CADE));
-
-    // Road continuing below roundabout
-    final maxilomRoad = Path()
-      ..moveTo(circleCenter.dx - circleRadius - 10, circleCenter.dy + 16)
-      ..lineTo(circleCenter.dx + circleRadius + size.width * 0.4,
-          circleCenter.dy + 16);
-    canvas.drawPath(maxilomRoad, mainRoadBorder);
-    canvas.drawPath(maxilomRoad, mainRoad);
-
-    // 7. Place and Street Name Labels
-    _drawLabel(
-        canvas, 'CEBU CITY', Offset(size.width * 0.35, size.height * 0.18),
-        fontSize: 11,
-        fontWeight: FontWeight.w600,
-        color: const Color(0xFF6B7280));
-    _drawLabel(canvas, 'Cebu Provincial\nCapitol',
-        Offset(size.width * 0.08, size.height * 0.26),
-        fontSize: 9, color: const Color(0xFF64748B));
-    _drawLabel(
-        canvas, 'M. Velez St.', Offset(size.width * 0.06, size.height * 0.33),
-        fontSize: 9, color: const Color(0xFF64748B));
-    _drawLabel(
-        canvas, 'N. Escario St.', Offset(size.width * 0.56, size.height * 0.36),
-        fontSize: 9, color: const Color(0xFF64748B), angle: -0.15);
-    _drawLabel(
-        canvas, 'CAPITOL SITE', Offset(size.width * 0.15, size.height * 0.48),
-        fontSize: 11,
-        fontWeight: FontWeight.w600,
-        color: const Color(0xFF6B7280));
-    _drawLabel(canvas, 'Don Gil Garcia St.',
-        Offset(size.width * 0.09, size.height * 0.54),
-        fontSize: 9, color: const Color(0xFF64748B), angle: -0.3);
-    _drawLabel(canvas, 'Chong Hua\nHospital',
-        Offset(size.width * 0.74, size.height * 0.54),
-        fontSize: 9, color: const Color(0xFF64748B));
-    _drawLabel(canvas, 'Cebu Doctors\'\nUniversity Hospital',
-        Offset(size.width * 0.72, size.height * 0.46),
-        fontSize: 9, color: const Color(0xFF64748B));
-    _drawLabel(canvas, 'J. Llorente St.',
-        Offset(size.width * 0.35, size.height * 0.68),
-        fontSize: 9, color: const Color(0xFF64748B));
-    _drawLabel(
-        canvas, 'Maxilom Ave.', Offset(size.width * 0.74, size.height * 0.82),
-        fontSize: 9, color: const Color(0xFF64748B));
-  }
-
-  void _drawLabel(
-    Canvas canvas,
-    String text,
-    Offset offset, {
-    double fontSize = 10,
-    FontWeight fontWeight = FontWeight.w500,
-    Color color = const Color(0xFF6B7280),
-    double angle = 0.0,
-  }) {
-    final textSpan = TextSpan(
-      text: text,
-      style: TextStyle(
-        fontFamily: 'Poppins',
-        fontSize: fontSize,
-        fontWeight: fontWeight,
-        color: color,
-        height: 1.1,
-      ),
-    );
-    final textPainter = TextPainter(
-      text: textSpan,
-      textDirection: TextDirection.ltr,
-    )..layout();
-
-    canvas.save();
-    canvas.translate(offset.dx, offset.dy);
-    if (angle != 0.0) {
-      canvas.rotate(angle);
-    }
-    textPainter.paint(canvas, Offset.zero);
-    canvas.restore();
   }
 
   @override

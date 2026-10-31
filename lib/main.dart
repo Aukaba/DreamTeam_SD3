@@ -3,9 +3,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'map_screen.dart';
-import 'login_page.dart';
+import 'Authentication/login_page.dart';
 import 'user_screens/user_home_screen.dart';
-import 'reset_password_page.dart';
+import 'Authentication/reset_password_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,11 +20,12 @@ Future<void> main() async {
 
     await Supabase.initialize(
       url: supabaseUrl,
+      // ignore: deprecated_member_use
       anonKey: supabaseAnonKey,
     );
     runApp(const MyApp());
   } catch (e) {
-    print('Error initializing Supabase: $e');
+    debugPrint('Error initializing Supabase: $e');
     rethrow;
   }
 }
