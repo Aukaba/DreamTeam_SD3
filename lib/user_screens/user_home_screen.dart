@@ -5,7 +5,6 @@ import '../Authentication/auth_service.dart';
 import '../login_page.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
-import 'route_screen.dart';
 
 class UserHomeScreen extends StatefulWidget {
   const UserHomeScreen({super.key});
@@ -15,7 +14,6 @@ class UserHomeScreen extends StatefulWidget {
 }
 
 class _UserHomeScreenState extends State<UserHomeScreen> {
-  int _currentNavIndex = 0;
   DateTime? _lastBackPressedAt;
   final AuthService _authService = AuthService();
 
@@ -31,17 +29,17 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
         final now = DateTime.now();
         if (_lastBackPressedAt == null ||
             now.difference(_lastBackPressedAt!) > const Duration(seconds: 2)) {
           _lastBackPressedAt = now;
-          return false;
+          return;
         }
-        // Show logout dialog on second back press
         await _showLogoutDialog();
-        return false; // Never allow back to proceed after logout
       },
       child: Scaffold(
         backgroundColor: _bgWarm,
@@ -118,6 +116,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   }
 
   Future<bool> _showLogoutDialog() async {
+    final nav = Navigator.of(context);
     final result = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -163,8 +162,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
               // Then sign out and navigate
               await _authService.signOut();
               if (mounted) {
-                Navigator.pushAndRemoveUntil(
-                  context,
+                nav.pushAndRemoveUntil(
                   MaterialPageRoute(builder: (context) => const LoginPage()),
                   (route) => false,
                 );
@@ -749,23 +747,8 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   // BOTTOM NAVIGATION BAR
   // ---------------------------------------------------------------------------
   Widget _buildBottomNavigationBar() {
-    return SafeRouteBottomNav(
-      currentIndex: _currentNavIndex,
-      onTap: (index) {
-        if (index == 1) {
-          Navigator.pushReplacement(
-            context,
-            PageRouteBuilder(
-              pageBuilder: (context, anim1, anim2) => const RouteScreen(),
-              transitionDuration: Duration.zero,
-            ),
-          );
-        } else {
-          setState(() {
-            _currentNavIndex = index;
-          });
-        }
-      },
+    return const SafeRouteBottomNav(
+      currentIndex: 0,
     );
   }
 }

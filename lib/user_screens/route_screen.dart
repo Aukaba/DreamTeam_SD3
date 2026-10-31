@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
+import '../Authentication/auth_service.dart';
+import '../login_page.dart';
 import '../map_screen.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
-import 'user_home_screen.dart';
 
 class RouteScreen extends StatefulWidget {
   const RouteScreen({super.key});
@@ -12,11 +13,97 @@ class RouteScreen extends StatefulWidget {
 }
 
 class _RouteScreenState extends State<RouteScreen> {
-  // Navigation Index (1 = Route)
-  final int _currentNavIndex = 1;
+  // Route Planning Toggles - Persisted outside disposed RouteScreen state
+  static bool _avoidHazard = true;
 
-  // Route Planning Toggles
-  bool _avoidHazard = true;
+  // System back press and logout guard
+  DateTime? _lastBackPressedAt;
+  final AuthService _authService = AuthService();
+
+  // Navigation guard to prevent multiple MapScreen instances
+  bool _isNavigatingToMap = false;
+
+  void _navigateToMap() {
+    if (_isNavigatingToMap) return;
+    _isNavigatingToMap = true;
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const MapScreen()),
+    ).then((_) {
+      if (mounted) {
+        setState(() {
+          _isNavigatingToMap = false;
+        });
+      }
+    });
+  }
+
+  Future<bool> _showLogoutDialog() async {
+    final nav = Navigator.of(context);
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: _cardBg,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        title: const Text(
+          'Log out?',
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            fontSize: 18,
+            fontWeight: FontWeight.w600,
+            color: _primaryNavy,
+          ),
+        ),
+        content: const Text(
+          'Are you sure you want to log out?',
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            fontSize: 14,
+            fontWeight: FontWeight.w400,
+            color: _secondaryGrey,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                color: _secondaryGrey,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(dialogContext, true);
+              await _authService.signOut();
+              if (mounted) {
+                nav.pushAndRemoveUntil(
+                  MaterialPageRoute(builder: (context) => const LoginPage()),
+                  (route) => false,
+                );
+              }
+            },
+            child: const Text(
+              'Log out',
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: Colors.redAccent,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
 
   // Design Colors matching Figma
   static const Color _bgWarm = Color(0xFFF8F7F4);
@@ -33,66 +120,65 @@ class _RouteScreenState extends State<RouteScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: _bgWarm,
-      body: SingleChildScrollView(
-        physics: const BouncingScrollPhysics(),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // 1. Shared Inline Scrollable Header with SafeRoute wave & logo
-            const CustomWavyHeader(),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        final now = DateTime.now();
+        if (_lastBackPressedAt == null ||
+            now.difference(_lastBackPressedAt!) > const Duration(seconds: 2)) {
+          _lastBackPressedAt = now;
+          return;
+        }
+        await _showLogoutDialog();
+      },
+      child: Scaffold(
+        backgroundColor: _bgWarm,
+        body: SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // 1. Shared Inline Scrollable Header with SafeRoute wave & logo
+              const CustomWavyHeader(),
 
-            // 2. Main Scrollable Content pulled up into the wave curve
-            Transform.translate(
-              offset: const Offset(0, -36),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Header Text Section
-                    _buildHeaderTextSection(),
+              // 2. Main Scrollable Content pulled up into the wave curve
+              Transform.translate(
+                offset: const Offset(0, -36),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Header Text Section
+                      _buildHeaderTextSection(),
 
-                    const SizedBox(height: 18),
+                      const SizedBox(height: 18),
 
-                    // Route Planning Card (From / To / Avoid Hazard / Walking / Find Route)
-                    _buildRoutePlanningCard(),
+                      // Route Planning Card (From / To / Avoid Hazard / Walking / Find Route)
+                      _buildRoutePlanningCard(),
 
-                    const SizedBox(height: 24),
+                      const SizedBox(height: 24),
 
-                    // Suggested Route Section
-                    _buildSuggestedRouteSection(),
+                      // Suggested Route Section
+                      _buildSuggestedRouteSection(),
 
-                    const SizedBox(height: 24),
+                      const SizedBox(height: 24),
 
-                    // Saved Routes Section
-                    _buildSavedRoutesSection(),
+                      // Saved Routes Section
+                      _buildSavedRoutesSection(),
 
-                    const SizedBox(height: 36),
-                  ],
+                      const SizedBox(height: 36),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
-      ),
-      bottomNavigationBar: SafeRouteBottomNav(
-        currentIndex: _currentNavIndex,
-        onTap: (index) {
-          if (index == 0) {
-            // Navigate to Home
-            Navigator.pushReplacement(
-              context,
-              PageRouteBuilder(
-                pageBuilder: (context, anim1, anim2) => const UserHomeScreen(),
-                transitionDuration: Duration.zero,
-              ),
-            );
-          } else if (index == 1) {
-            // Already on Route
-          }
-        },
+        bottomNavigationBar: const SafeRouteBottomNav(
+          currentIndex: 1,
+        ),
       ),
     );
   }
@@ -183,128 +269,126 @@ class _RouteScreenState extends State<RouteScreen> {
           const SizedBox(height: 14),
 
           // Bottom Action Controls: Avoid Hazard toggle, Walking chip, Find Route button
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              // a) Avoid Hazard switch
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.alt_route_rounded,
-                    size: 15,
-                    color: _secondaryGrey,
-                  ),
-                  const SizedBox(width: 4),
-                  Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: const [
-                      Text(
-                        'Avoid',
-                        style: TextStyle(
-                          fontFamily: 'Poppins',
-                          fontSize: 11,
-                          fontWeight: FontWeight.w500,
-                          color: _primaryNavy,
-                          height: 1.1,
+          SizedBox(
+            width: double.infinity,
+            child: Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 10,
+              children: [
+                // a) Avoid Hazard switch
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.alt_route_rounded,
+                      size: 15,
+                      color: _secondaryGrey,
+                    ),
+                    const SizedBox(width: 4),
+                    const Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Avoid',
+                          style: TextStyle(
+                            fontFamily: 'Poppins',
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                            color: _primaryNavy,
+                            height: 1.1,
+                          ),
                         ),
+                        Text(
+                          'Hazard',
+                          style: TextStyle(
+                            fontFamily: 'Poppins',
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                            color: _primaryNavy,
+                            height: 1.1,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(width: 4),
+                    _buildCustomCompactSwitch(
+                      value: _avoidHazard,
+                      onChanged: (val) {
+                        setState(() {
+                          _avoidHazard = val;
+                        });
+                      },
+                    ),
+                  ],
+                ),
+
+                // b) Walking chip
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: _lightBlue,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.directions_walk_rounded,
+                        size: 15,
+                        color: _accentBlue,
                       ),
+                      SizedBox(width: 4),
                       Text(
-                        'Hazard',
+                        'Walking',
                         style: TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 11,
                           fontWeight: FontWeight.w500,
-                          color: _primaryNavy,
-                          height: 1.1,
+                          color: _accentBlue,
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(width: 4),
-                  _buildCustomCompactSwitch(
-                    value: _avoidHazard,
-                    onChanged: (val) {
-                      setState(() {
-                        _avoidHazard = val;
-                      });
-                    },
-                  ),
-                ],
-              ),
-
-              // b) Walking chip
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                decoration: BoxDecoration(
-                  color: _lightBlue,
-                  borderRadius: BorderRadius.circular(20),
                 ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.directions_walk_rounded,
-                      size: 15,
-                      color: _accentBlue,
+
+                // c) Find Route button
+                ElevatedButton(
+                  onPressed: _navigateToMap,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _primaryNavy,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20),
                     ),
-                    SizedBox(width: 4),
-                    Text(
-                      'Walking',
-                      style: TextStyle(
-                        fontFamily: 'Poppins',
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                        color: _accentBlue,
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Find Route',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white,
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // c) Find Route button
-              ElevatedButton(
-                onPressed: () {
-                  // Navigate to Map
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => const MapScreen(),
-                    ),
-                  );
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _primaryNavy,
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'Find Route',
-                      style: TextStyle(
-                        fontFamily: 'Poppins',
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
+                      SizedBox(width: 4),
+                      Icon(
+                        Icons.arrow_forward_rounded,
+                        size: 13,
                         color: Colors.white,
                       ),
-                    ),
-                    SizedBox(width: 4),
-                    Icon(
-                      Icons.arrow_forward_rounded,
-                      size: 13,
-                      color: Colors.white,
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ],
       ),
@@ -435,14 +519,7 @@ class _RouteScreenState extends State<RouteScreen> {
               ),
             ),
             GestureDetector(
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const MapScreen(),
-                  ),
-                );
-              },
+              onTap: _navigateToMap,
               child: const Text(
                 'View on map →',
                 style: TextStyle(
@@ -614,12 +691,7 @@ class _RouteScreenState extends State<RouteScreen> {
           statusText: 'Safe',
           statusColor: _primaryNavy,
           statusBgColor: _lightBlue,
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const MapScreen()),
-            );
-          },
+          onTap: _navigateToMap,
         ),
 
         const SizedBox(height: 10),
@@ -631,12 +703,7 @@ class _RouteScreenState extends State<RouteScreen> {
           statusText: 'Moderate risk',
           statusColor: _warningAmber,
           statusBgColor: _warningAmberBg,
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const MapScreen()),
-            );
-          },
+          onTap: _navigateToMap,
         ),
 
         const SizedBox(height: 10),
@@ -648,12 +715,7 @@ class _RouteScreenState extends State<RouteScreen> {
           statusText: 'Safe',
           statusColor: _primaryNavy,
           statusBgColor: _lightBlue,
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const MapScreen()),
-            );
-          },
+          onTap: _navigateToMap,
         ),
       ],
     );

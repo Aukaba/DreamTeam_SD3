@@ -10,7 +10,7 @@ class CustomWavyHeader extends StatelessWidget {
       children: [
         // Wavy Blue Background
         Image.asset(
-          'assets/image/saferoute_heather.png',
+          'assets/image/saferoute_header.png',
           width: double.infinity,
           fit: BoxFit.fitWidth,
           alignment: Alignment.topCenter,
