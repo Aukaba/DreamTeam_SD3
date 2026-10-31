@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' hide Path;
 import '../map_screen.dart';
+import '../services/location_service.dart';
 import '../widgets/report_hazard_modal.dart';
 import '../Authentication/auth_service.dart';
 import '../Authentication/login_page.dart';
@@ -18,6 +19,34 @@ class UserHomeScreen extends StatefulWidget {
 class _UserHomeScreenState extends State<UserHomeScreen> {
   DateTime? _lastBackPressedAt;
   final AuthService _authService = AuthService();
+  final MapController _mapPreviewController = MapController();
+  LatLng _currentLocation = LocationService.defaultLocation;
+  bool _previewMapError = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initCurrentLocation();
+  }
+
+  @override
+  void dispose() {
+    _mapPreviewController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _initCurrentLocation() async {
+    final lastKnown = await LocationService.getLastKnownLocation();
+    if (lastKnown != null && mounted) {
+      setState(() => _currentLocation = lastKnown);
+      _mapPreviewController.move(lastKnown, 15.0);
+    }
+    final current = await LocationService.getCurrentLocation();
+    if (mounted) {
+      setState(() => _currentLocation = current);
+      _mapPreviewController.move(current, 15.0);
+    }
+  }
 
   // Color Palette Constants
   static const Color _bgWarm = Color(0xFFF8F7F4);
@@ -234,22 +263,37 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                       // FlutterMap live preview
                       Positioned.fill(
                         child: FlutterMap(
-                          options: const MapOptions(
-                            initialCenter: LatLng(10.3157, 123.8920),
+                          mapController: _mapPreviewController,
+                          options: MapOptions(
+                            initialCenter: _currentLocation,
                             initialZoom: 15.0,
-                            interactionOptions: InteractionOptions(
+                            interactionOptions: const InteractionOptions(
                               flags: InteractiveFlag.none,
                             ),
                           ),
                           children: [
                             TileLayer(
                               urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                              fallbackUrl: 'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
                               userAgentPackageName: 'com.dreamteam.sd3',
+                              evictErrorTileStrategy: EvictErrorTileStrategy.dispose,
+                              errorTileCallback: (tile, error, stackTrace) {
+                                if (!_previewMapError && mounted) {
+                                  setState(() => _previewMapError = true);
+                                }
+                              },
+                            ),
+                            const SimpleAttributionWidget(
+                              source: Text(
+                                '© OpenStreetMap contributors',
+                                style: TextStyle(fontSize: 8, color: Color(0xFF4B5563)),
+                              ),
+                              alignment: Alignment.bottomRight,
                             ),
                             MarkerLayer(
                               markers: [
                                 Marker(
-                                  point: const LatLng(10.3157, 123.8920),
+                                  point: _currentLocation,
                                   width: 22,
                                   height: 22,
                                   alignment: Alignment.center,
@@ -269,7 +313,10 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                                   ),
                                 ),
                                 Marker(
-                                  point: const LatLng(10.3182, 123.8895),
+                                  point: LatLng(
+                                    _currentLocation.latitude + 0.0025,
+                                    _currentLocation.longitude - 0.0025,
+                                  ),
                                   width: 20,
                                   height: 20,
                                   alignment: Alignment.center,
@@ -291,6 +338,37 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                           ],
                         ),
                       ),
+
+                      // Offline indicator if tile requests fail
+                      if (_previewMapError)
+                        Positioned(
+                          bottom: 8,
+                          left: 12,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFEF2F2).withValues(alpha: 0.95),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: const Color(0xFFFCA5A5)),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.wifi_off_rounded, size: 11, color: Color(0xFFDC2626)),
+                                SizedBox(width: 4),
+                                Text(
+                                  'Offline map',
+                                  style: TextStyle(
+                                    fontFamily: 'Poppins',
+                                    fontSize: 9,
+                                    color: Color(0xFF991B1B),
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
 
                       // Top-left "LIVE MAP" badge
                       Positioned(

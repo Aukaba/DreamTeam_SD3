@@ -1,10 +1,14 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' hide Path;
+import 'services/location_service.dart';
 import 'widgets/report_hazard_modal.dart';
 
 class MapScreen extends StatefulWidget {
-  const MapScreen({super.key});
+  final LatLng? initialLocation;
+
+  const MapScreen({super.key, this.initialLocation});
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -13,18 +17,61 @@ class MapScreen extends StatefulWidget {
 // Alias for UserFullMapScreen so both names can be used interchangeably
 typedef UserFullMapScreen = MapScreen;
 
+class _HazardItem {
+  final String id;
+  final String overline;
+  final String title;
+  final String subtitle;
+  final String distance;
+  final String badgeText;
+  final Color themeColor;
+  final Color bgColor;
+  final Color iconBgColor;
+  final Color badgeBgColor;
+  final IconData icon;
+  final LatLng location;
+  final int filterCategoryIndex; // 1 = Roadwork/Obstruction, 2 = Flooding, 3 = Safety, 4 = Crime
+
+  const _HazardItem({
+    required this.id,
+    required this.overline,
+    required this.title,
+    required this.subtitle,
+    required this.distance,
+    required this.badgeText,
+    required this.themeColor,
+    required this.bgColor,
+    required this.iconBgColor,
+    required this.badgeBgColor,
+    required this.icon,
+    required this.location,
+    required this.filterCategoryIndex,
+  });
+}
+
 class _MapScreenState extends State<MapScreen> {
   int _selectedFilterIndex = 0;
   final DraggableScrollableController _sheetController = DraggableScrollableController();
   final MapController _mapController = MapController();
   int _tileStyleIndex = 0;
+  bool _hasTileError = false;
 
-  // Geographic coordinates centered around Cebu City (matching the original design landmarks)
-  static const LatLng _currentLocation = LatLng(10.3157, 123.8920);
+  // Camera tracking for dynamic scale indicator
+  double _currentZoom = 16.0;
+  double _currentLatitude = 10.3157;
+
+  // Device location initialized dynamically
+  late LatLng _currentLocation;
+
+  // Landmark hazard coordinates
   static const LatLng _roadworkLocation = LatLng(10.3182, 123.8895);
   static const LatLng _floodingLocation = LatLng(10.3135, 123.8880);
   static const LatLng _lightingLocation = LatLng(10.3195, 123.8940);
   static const LatLng _crimeLocation = LatLng(10.3115, 123.8945);
+
+  static const List<double> _scaleDistances = [
+    10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000
+  ];
 
   static const List<String> _tileUrls = [
     'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -36,6 +83,106 @@ class _MapScreenState extends State<MapScreen> {
     'CartoDB Voyager',
   ];
 
+  late final List<_HazardItem> _allHazards = [
+    const _HazardItem(
+      id: 'safety_1',
+      overline: 'SAFETY',
+      title: 'Poor lighting area',
+      subtitle: 'Near University Avenue (around 2:14 PM)',
+      distance: '0.3 km away',
+      badgeText: 'High',
+      themeColor: Color(0xFFEF4444),
+      bgColor: Color(0xFFFFF5F5),
+      iconBgColor: Color(0xFFFEE2E2),
+      badgeBgColor: Color(0xFFFEE2E2),
+      icon: Icons.lightbulb_outline_rounded,
+      location: _lightingLocation,
+      filterCategoryIndex: 3,
+    ),
+    const _HazardItem(
+      id: 'obstruction_1',
+      overline: 'OBSTRUCTION',
+      title: 'Blocked sidewalk',
+      subtitle: 'Near Capitol Site (around 1:32 PM)',
+      distance: '0.6 km away',
+      badgeText: 'Medium',
+      themeColor: Color(0xFFD97706),
+      bgColor: Color(0xFFFFFDF5),
+      iconBgColor: Color(0xFFFEF3C7),
+      badgeBgColor: Color(0xFFFEF3C7),
+      icon: Icons.construction_rounded,
+      location: _roadworkLocation,
+      filterCategoryIndex: 1,
+    ),
+    const _HazardItem(
+      id: 'crime_1',
+      overline: 'CRIME',
+      title: 'Suspicious activity',
+      subtitle: 'Near Mango Square (around 12:45 PM)',
+      distance: '1.2 km away',
+      badgeText: 'Low',
+      themeColor: Color(0xFF3B82F6),
+      bgColor: Color(0xFFF5F9FF),
+      iconBgColor: Color(0xFFDBEAFE),
+      badgeBgColor: Color(0xFFDBEAFE),
+      icon: Icons.error_outline_rounded,
+      location: _crimeLocation,
+      filterCategoryIndex: 4,
+    ),
+    const _HazardItem(
+      id: 'flooding_1',
+      overline: 'FLOODING',
+      title: 'Minor street flooding',
+      subtitle: 'Near Capitol Site (around 1:50 PM)',
+      distance: '0.4 km away',
+      badgeText: 'Low',
+      themeColor: Color(0xFF4A90E2),
+      bgColor: Color(0xFFF0F9FF),
+      iconBgColor: Color(0xFFE0F2FE),
+      badgeBgColor: Color(0xFFE0F2FE),
+      icon: Icons.water_drop_rounded,
+      location: _floodingLocation,
+      filterCategoryIndex: 2,
+    ),
+  ];
+
+  List<_HazardItem> get _filteredHazards {
+    if (_selectedFilterIndex == 0) {
+      return _allHazards;
+    }
+    return _allHazards
+        .where((hazard) => hazard.filterCategoryIndex == _selectedFilterIndex)
+        .toList();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _currentLocation = widget.initialLocation ?? LocationService.defaultLocation;
+    _currentLatitude = _currentLocation.latitude;
+    _initDeviceLocation();
+  }
+
+  Future<void> _initDeviceLocation() async {
+    final lastKnown = await LocationService.getLastKnownLocation();
+    if (lastKnown != null && mounted) {
+      setState(() {
+        _currentLocation = lastKnown;
+        _currentLatitude = lastKnown.latitude;
+      });
+      _mapController.move(_currentLocation, _currentZoom);
+    }
+
+    final current = await LocationService.getCurrentLocation();
+    if (mounted) {
+      setState(() {
+        _currentLocation = current;
+        _currentLatitude = current.latitude;
+      });
+      _mapController.move(_currentLocation, _currentZoom);
+    }
+  }
+
   @override
   void dispose() {
     _sheetController.dispose();
@@ -45,12 +192,37 @@ class _MapScreenState extends State<MapScreen> {
 
   // Design Colors matching Figma
   static const Color _primaryNavy = Color(0xFF263354);
-  static const Color _routeBlue = Color(0xFF7098C2);
   static const Color _secondaryGrey = Color(0xFF8A94A6);
   static const Color _accentOrange = Color(0xFFF37C34);
   static const Color _accentBlue = Color(0xFF4A90E2);
   static const Color _safeGreen = Color(0xFF2E7D32);
   static const Color _safeGreenBg = Color(0xFFE8F5E9);
+
+  ({double width, String label}) _calculateScale() {
+    final latRad = _currentLatitude * math.pi / 180.0;
+    final metersPerPixel =
+        (40075016.686 * math.cos(latRad)) / math.pow(2.0, _currentZoom + 8.0);
+
+    const targetPixels = 50.0;
+    final targetDistance = targetPixels * metersPerPixel;
+
+    double bestDistance = _scaleDistances.first;
+    double minDiff = (targetDistance - bestDistance).abs();
+    for (final d in _scaleDistances) {
+      final diff = (targetDistance - d).abs();
+      if (diff < minDiff) {
+        minDiff = diff;
+        bestDistance = d;
+      }
+    }
+
+    final width = (bestDistance / metersPerPixel).clamp(24.0, 96.0);
+    final label = bestDistance >= 1000
+        ? '${(bestDistance / 1000).toStringAsFixed(bestDistance % 1000 == 0 ? 0 : 1)} km'
+        : '${bestDistance.toInt()} m';
+
+    return (width: width, label: label);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -66,19 +238,46 @@ class _MapScreenState extends State<MapScreen> {
           Positioned.fill(
             child: FlutterMap(
               mapController: _mapController,
-              options: const MapOptions(
+              options: MapOptions(
                 initialCenter: _currentLocation,
-                initialZoom: 16.0,
+                initialZoom: _currentZoom,
                 minZoom: 3.0,
                 maxZoom: 19.0,
-                interactionOptions: InteractionOptions(
+                interactionOptions: const InteractionOptions(
                   flags: InteractiveFlag.all,
                 ),
+                onPositionChanged: (camera, hasGesture) {
+                  if ((camera.zoom - _currentZoom).abs() > 0.05 ||
+                      (camera.center.latitude - _currentLatitude).abs() > 0.001) {
+                    setState(() {
+                      _currentZoom = camera.zoom;
+                      _currentLatitude = camera.center.latitude;
+                    });
+                  }
+                },
               ),
               children: [
                 TileLayer(
                   urlTemplate: _tileUrls[_tileStyleIndex],
+                  fallbackUrl: _tileUrls[(_tileStyleIndex + 1) % _tileUrls.length],
                   userAgentPackageName: 'com.dreamteam.sd3',
+                  evictErrorTileStrategy: EvictErrorTileStrategy.dispose,
+                  errorTileCallback: (tile, error, stackTrace) {
+                    if (!_hasTileError && mounted) {
+                      setState(() {
+                        _hasTileError = true;
+                      });
+                    }
+                  },
+                ),
+                SimpleAttributionWidget(
+                  alignment: Alignment.bottomRight,
+                  source: Text(
+                    _tileStyleIndex == 0
+                        ? '© OpenStreetMap contributors'
+                        : '© CARTO, © OpenStreetMap',
+                    style: const TextStyle(fontSize: 9, color: Color(0xFF4B5563)),
+                  ),
                 ),
                 MarkerLayer(
                   markers: _buildMapMarkers(),
@@ -91,6 +290,54 @@ class _MapScreenState extends State<MapScreen> {
           // LAYER 2: FLOATING TOP ELEMENTS (Search Bar, Filters, Live Map Badge)
           // -------------------------------------------------------------------
           _buildTopControls(),
+
+          // Tile Error Banner (if basemap fails to load)
+          if (_hasTileError)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 130,
+              left: 20,
+              right: 20,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF2F2),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFFCA5A5)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.06),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.cloud_off_rounded, color: Color(0xFFDC2626), size: 18),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'Map tiles unavailable. Check internet connection.',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 11,
+                          color: Color(0xFF991B1B),
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          _hasTileError = false;
+                        });
+                      },
+                      child: const Icon(Icons.refresh_rounded, color: Color(0xFFDC2626), size: 18),
+                    ),
+                  ],
+                ),
+              ),
+            ),
 
           // -------------------------------------------------------------------
           // LAYER 3: FLOATING ACTION BUTTONS (Report hazard, Crosshair, Layers, Scale)
@@ -149,44 +396,31 @@ class _MapScreenState extends State<MapScreen> {
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(),
                   ),
-                  const SizedBox(width: 14),
+                  const SizedBox(width: 10),
 
-                  // Middle Search SafeRoute Text
-                  Expanded(
-                    child: RichText(
-                      text: const TextSpan(
-                        style: TextStyle(
+                  // Search input
+                  const Expanded(
+                    child: TextField(
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 14,
+                        color: _primaryNavy,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: 'Search destination or hazard...',
+                        hintStyle: TextStyle(
                           fontFamily: 'Poppins',
-                          fontSize: 15,
+                          fontSize: 13,
+                          color: _secondaryGrey,
                         ),
-                        children: [
-                          TextSpan(
-                            text: 'Search ',
-                            style: TextStyle(
-                              color: _secondaryGrey,
-                              fontWeight: FontWeight.w400,
-                            ),
-                          ),
-                          TextSpan(
-                            text: 'Safe',
-                            style: TextStyle(
-                              color: _primaryNavy,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          TextSpan(
-                            text: 'Route',
-                            style: TextStyle(
-                              color: _routeBlue,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
+                        border: InputBorder.none,
+                        isDense: true,
+                        contentPadding: EdgeInsets.zero,
                       ),
                     ),
                   ),
 
-                  // Right SafeRoute route icon
+                  // LogoSR Asset branding
                   Image.asset(
                     'assets/image/LogoSR.png',
                     height: 24,
@@ -232,6 +466,24 @@ class _MapScreenState extends State<MapScreen> {
                   activeBg: Colors.white,
                   activeText: _primaryNavy,
                   activeIcon: _accentBlue,
+                ),
+                const SizedBox(width: 10),
+                _buildFilterChip(
+                  index: 3,
+                  label: 'Safety',
+                  icon: Icons.warning_amber_rounded,
+                  activeBg: Colors.white,
+                  activeText: _primaryNavy,
+                  activeIcon: const Color(0xFFEF4444),
+                ),
+                const SizedBox(width: 10),
+                _buildFilterChip(
+                  index: 4,
+                  label: 'Crime',
+                  icon: Icons.shield_outlined,
+                  activeBg: Colors.white,
+                  activeText: _primaryNavy,
+                  activeIcon: const Color(0xFF3B82F6),
                 ),
               ],
             ),
@@ -340,11 +592,11 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // MAP MARKERS & OVERLAYS (Integrated with FlutterMap MarkerLayer)
+  // MAP MARKERS & OVERLAYS
   // ---------------------------------------------------------------------------
   List<Marker> _buildMapMarkers() {
     final markers = <Marker>[
-      // 1. Current Location (always visible)
+      // 1. Current Location Marker (always visible)
       Marker(
         point: _currentLocation,
         width: 100,
@@ -354,29 +606,9 @@ class _MapScreenState extends State<MapScreen> {
       ),
     ];
 
-    // Filter index: 0 = All hazards, 1 = Roadwork, 2 = Flooding
-    if (_selectedFilterIndex == 0 || _selectedFilterIndex == 1) {
-      markers.add(
-        Marker(
-          point: _roadworkLocation,
-          width: 130,
-          height: 75,
-          alignment: Alignment.center,
-          child: _buildRoadworkMarker(),
-        ),
-      );
-    }
-
-    if (_selectedFilterIndex == 0 || _selectedFilterIndex == 2) {
-      markers.add(
-        Marker(
-          point: _floodingLocation,
-          width: 120,
-          height: 65,
-          alignment: Alignment.center,
-          child: _buildFloodingMarker(),
-        ),
-      );
+    // Add matching markers for every filtered hazard
+    for (final hazard in _filteredHazards) {
+      markers.add(_buildHazardMarker(hazard));
     }
 
     return markers;
@@ -389,7 +621,7 @@ class _MapScreenState extends State<MapScreen> {
         _recenterToCurrentLocation();
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('You are here: Safe Area (Osmeña Blvd)'),
+            content: Text('You are here (Current Location)'),
             duration: Duration(seconds: 2),
             behavior: SnackBarBehavior.floating,
           ),
@@ -476,166 +708,120 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  // 2. Roadwork Hazard Marker (Orange icon with pill)
-  Widget _buildRoadworkMarker() {
-    return GestureDetector(
-      onTap: () {
-        _mapController.move(_roadworkLocation, 17.0);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Roadwork: 200 m ahead on N. Escario St'),
-            duration: Duration(seconds: 2),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      },
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Pill label above
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.08),
-                  blurRadius: 6,
-                  offset: const Offset(0, 2),
-                ),
-              ],
+  // Generic Hazard Marker Matching Card
+  Marker _buildHazardMarker(_HazardItem hazard) {
+    return Marker(
+      point: hazard.location,
+      width: 140,
+      height: 75,
+      alignment: Alignment.center,
+      child: GestureDetector(
+        onTap: () {
+          _mapController.move(hazard.location, 17.0);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('${hazard.title}: ${hazard.subtitle}'),
+              duration: const Duration(seconds: 2),
+              behavior: SnackBarBehavior.floating,
             ),
-            child: RichText(
-              text: const TextSpan(
-                style: TextStyle(
-                  fontFamily: 'Poppins',
-                  fontSize: 11,
-                ),
-                children: [
-                  TextSpan(
-                    text: 'Roadwork ',
-                    style: TextStyle(
-                      color: _primaryNavy,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  TextSpan(
-                    text: '200 m',
-                    style: TextStyle(
-                      color: _secondaryGrey,
-                      fontWeight: FontWeight.w400,
-                    ),
+          );
+        },
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Pill label above
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.08),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
                   ),
                 ],
               ),
-            ),
-          ),
-          const SizedBox(height: 4),
-
-          // Orange hazard marker circle with barrier/hazard icon
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: _accentOrange,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2.5),
-              boxShadow: [
-                BoxShadow(
-                  color: _accentOrange.withValues(alpha: 0.35),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3),
+              child: RichText(
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                text: TextSpan(
+                  style: const TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 11,
+                  ),
+                  children: [
+                    TextSpan(
+                      text: '${hazard.title} ',
+                      style: const TextStyle(
+                        color: _primaryNavy,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    TextSpan(
+                      text: hazard.distance.split(' ').first,
+                      style: const TextStyle(
+                        color: _secondaryGrey,
+                        fontWeight: FontWeight.w400,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-            child: const Icon(
-              Icons.construction_rounded,
-              color: Colors.white,
-              size: 16,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // 3. Flooding Hazard Marker (Blue icon with pill)
-  Widget _buildFloodingMarker() {
-    return GestureDetector(
-      onTap: () {
-        _mapController.move(_floodingLocation, 17.0);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Flooding reported near Capitol Site'),
-            duration: Duration(seconds: 2),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      },
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Blue circle with water drop icon
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: _accentBlue,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2.5),
-              boxShadow: [
-                BoxShadow(
-                  color: _accentBlue.withValues(alpha: 0.35),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3),
-                ),
-              ],
-            ),
-            child: const Icon(
-              Icons.water_drop_rounded,
-              color: Colors.white,
-              size: 16,
-            ),
-          ),
-          const SizedBox(height: 4),
-
-          // Blue text label pill
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(10),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.08),
-                  blurRadius: 6,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: const Text(
-              'Minor flooding',
-              style: TextStyle(
-                fontFamily: 'Poppins',
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
-                color: _accentBlue,
               ),
             ),
-          ),
-        ],
+            const SizedBox(height: 4),
+
+            // Hazard marker circle
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: hazard.themeColor,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: hazard.themeColor.withValues(alpha: 0.35),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: Icon(
+                hazard.icon,
+                color: Colors.white,
+                size: 16,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  void _recenterToCurrentLocation() {
-    _mapController.move(_currentLocation, 16.0);
+  Future<void> _recenterToCurrentLocation() async {
+    final current = await LocationService.getCurrentLocation();
+    if (mounted) {
+      setState(() {
+        _currentLocation = current;
+        _currentLatitude = current.latitude;
+      });
+      _mapController.move(current, 16.0);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Centered on current location'),
+          duration: Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   void _toggleTileStyle() {
     setState(() {
       _tileStyleIndex = (_tileStyleIndex + 1) % _tileUrls.length;
+      _hasTileError = false;
     });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -646,15 +832,36 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  void _onHazardCardTap(_HazardItem hazard) {
+    // Ensure the marker is visible under the active filter
+    if (_selectedFilterIndex != 0 &&
+        _selectedFilterIndex != hazard.filterCategoryIndex) {
+      setState(() {
+        _selectedFilterIndex = hazard.filterCategoryIndex;
+      });
+    }
+
+    _mapController.move(hazard.location, 17.0);
+
+    if (_sheetController.isAttached) {
+      _sheetController.animateTo(
+        0.22,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // LAYER 3: FLOATING ACTION BUTTONS (Report hazard, Crosshair, Layers, Scale)
   // ---------------------------------------------------------------------------
   Widget _buildFloatingActionButtons(Size screenSize) {
     final collapsedOffset = screenSize.height * 0.22 + 12.0;
+    final scale = _calculateScale();
 
     return Stack(
       children: [
-        // Scale bar (100 m) on the map
+        // Dynamic Scale bar on the map
         Positioned(
           left: 20,
           top: screenSize.height * 0.29,
@@ -662,13 +869,13 @@ class _MapScreenState extends State<MapScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               CustomPaint(
-                size: const Size(44, 8),
+                size: Size(scale.width, 8),
                 painter: _ScaleLinePainter(),
               ),
               const SizedBox(width: 6),
-              const Text(
-                '100 m',
-                style: TextStyle(
+              Text(
+                scale.label,
+                style: const TextStyle(
                   fontFamily: 'Poppins',
                   fontSize: 11,
                   fontWeight: FontWeight.w500,
@@ -847,9 +1054,11 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // LAYER 5 (ABSOLUTE TOP): DRAGGABLE SCROLLABLE SHEET
+  // LAYER 4 (ABSOLUTE TOP): DRAGGABLE SCROLLABLE SHEET
   // ---------------------------------------------------------------------------
   Widget _buildDraggableScrollableSheet() {
+    final filtered = _filteredHazards;
+
     return DraggableScrollableSheet(
       controller: _sheetController,
       initialChildSize: 0.22,
@@ -920,7 +1129,7 @@ class _MapScreenState extends State<MapScreen> {
                         ),
                         SizedBox(height: 2),
                         Text(
-                          'Capitol Site, Cebu City',
+                          'Safe route monitored in real time',
                           style: TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: 13,
@@ -959,27 +1168,31 @@ class _MapScreenState extends State<MapScreen> {
                 },
                 child: Row(
                   children: [
-                    Container(
-                      width: 7,
-                      height: 7,
-                      decoration: const BoxDecoration(
-                        color: _accentOrange,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 5),
-                    Container(
-                      width: 7,
-                      height: 7,
-                      decoration: const BoxDecoration(
-                        color: _accentBlue,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    const Text(
-                      '2 nearby hazards',
-                      style: TextStyle(
+                    if (filtered.isEmpty)
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: const BoxDecoration(
+                          color: _secondaryGrey,
+                          shape: BoxShape.circle,
+                        ),
+                      )
+                    else
+                      for (final hazard in filtered) ...[
+                        Container(
+                          width: 7,
+                          height: 7,
+                          decoration: BoxDecoration(
+                            color: hazard.themeColor,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 5),
+                      ],
+                    const SizedBox(width: 3),
+                    Text(
+                      '${filtered.length} nearby hazard${filtered.length == 1 ? '' : 's'}',
+                      style: const TextStyle(
                         fontFamily: 'Poppins',
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
@@ -1026,82 +1239,29 @@ class _MapScreenState extends State<MapScreen> {
 
               const SizedBox(height: 14),
 
-              // 6. Hazard Cards (12px vertical spacing between cards)
-              // Card 1: High Severity (Safety - Red / Pale Pink)
-              _buildHazardReportCard(
-                overline: 'SAFETY',
-                title: 'Poor lighting area',
-                subtitle: 'Near University Avenue (around 2:14 PM)',
-                distance: '0.3 km away',
-                badgeText: 'High',
-                themeColor: const Color(0xFFEF4444),
-                bgColor: const Color(0xFFFFF5F5),
-                iconBgColor: const Color(0xFFFEE2E2),
-                badgeBgColor: const Color(0xFFFEE2E2),
-                icon: Icons.warning_amber_rounded,
-                onTap: () {
-                  _mapController.move(_lightingLocation, 17.0);
-                  if (_sheetController.isAttached) {
-                    _sheetController.animateTo(
-                      0.22,
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                    );
-                  }
-                },
-              ),
-
-              const SizedBox(height: 12),
-
-              // Card 2: Medium Severity (Obstruction - Orange/Amber / Pale Yellow)
-              _buildHazardReportCard(
-                overline: 'OBSTRUCTION',
-                title: 'Blocked sidewalk',
-                subtitle: 'Near Capitol Site (around 1:32 PM)',
-                distance: '0.6 km away',
-                badgeText: 'Medium',
-                themeColor: const Color(0xFFD97706),
-                bgColor: const Color(0xFFFFFDF5),
-                iconBgColor: const Color(0xFFFEF3C7),
-                badgeBgColor: const Color(0xFFFEF3C7),
-                icon: Icons.warning_amber_rounded,
-                onTap: () {
-                  _mapController.move(_roadworkLocation, 17.0);
-                  if (_sheetController.isAttached) {
-                    _sheetController.animateTo(
-                      0.22,
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                    );
-                  }
-                },
-              ),
-
-              const SizedBox(height: 12),
-
-              // Card 3: Low Severity (Crime - Blue / Pale Blue)
-              _buildHazardReportCard(
-                overline: 'CRIME',
-                title: 'Suspicious activity',
-                subtitle: 'Near Mango Square (around 12:45 PM)',
-                distance: '1.2 km away',
-                badgeText: 'Low',
-                themeColor: const Color(0xFF3B82F6),
-                bgColor: const Color(0xFFF5F9FF),
-                iconBgColor: const Color(0xFFDBEAFE),
-                badgeBgColor: const Color(0xFFDBEAFE),
-                icon: Icons.error_outline_rounded,
-                onTap: () {
-                  _mapController.move(_crimeLocation, 17.0);
-                  if (_sheetController.isAttached) {
-                    _sheetController.animateTo(
-                      0.22,
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                    );
-                  }
-                },
-              ),
+              // 6. Filtered Hazard Cards
+              if (filtered.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24.0),
+                  child: Center(
+                    child: Text(
+                      'No hazards reported for this category',
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 13,
+                        color: _secondaryGrey,
+                      ),
+                    ),
+                  ),
+                )
+              else
+                for (int i = 0; i < filtered.length; i++) ...[
+                  _buildHazardReportCard(
+                    hazard: filtered[i],
+                    onTap: () => _onHazardCardTap(filtered[i]),
+                  ),
+                  if (i < filtered.length - 1) const SizedBox(height: 12),
+                ],
 
               const SizedBox(height: 16),
 
@@ -1173,27 +1333,18 @@ class _MapScreenState extends State<MapScreen> {
 
   // Reusable Hazard Report Card
   Widget _buildHazardReportCard({
-    required String overline,
-    required String title,
-    required String subtitle,
-    required String distance,
-    required String badgeText,
-    required Color themeColor,
-    required Color bgColor,
-    required Color iconBgColor,
-    required Color badgeBgColor,
-    required IconData icon,
+    required _HazardItem hazard,
     VoidCallback? onTap,
   }) {
     return Container(
       decoration: BoxDecoration(
-        color: bgColor,
+        color: hazard.bgColor,
         borderRadius: BorderRadius.circular(12),
       ),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: onTap ?? () {},
+          onTap: onTap,
           borderRadius: BorderRadius.circular(12),
           child: Padding(
             padding: const EdgeInsets.all(14.0),
@@ -1205,12 +1356,12 @@ class _MapScreenState extends State<MapScreen> {
                   width: 38,
                   height: 38,
                   decoration: BoxDecoration(
-                    color: iconBgColor,
+                    color: hazard.iconBgColor,
                     shape: BoxShape.circle,
                   ),
                   child: Icon(
-                    icon,
-                    color: themeColor,
+                    hazard.icon,
+                    color: hazard.themeColor,
                     size: 20,
                   ),
                 ),
@@ -1222,18 +1373,18 @@ class _MapScreenState extends State<MapScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        overline,
+                        hazard.overline,
                         style: TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 10,
                           fontWeight: FontWeight.w700,
-                          color: themeColor,
+                          color: hazard.themeColor,
                           letterSpacing: 0.6,
                         ),
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        title,
+                        hazard.title,
                         style: const TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 14,
@@ -1243,7 +1394,7 @@ class _MapScreenState extends State<MapScreen> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        subtitle,
+                        hazard.subtitle,
                         style: const TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 11,
@@ -1261,7 +1412,7 @@ class _MapScreenState extends State<MapScreen> {
                           ),
                           const SizedBox(width: 3),
                           Text(
-                            distance,
+                            hazard.distance,
                             style: const TextStyle(
                               fontFamily: 'Poppins',
                               fontSize: 11,
@@ -1287,16 +1438,16 @@ class _MapScreenState extends State<MapScreen> {
                         vertical: 3,
                       ),
                       decoration: BoxDecoration(
-                        color: badgeBgColor,
+                        color: hazard.badgeBgColor,
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: Text(
-                        badgeText,
+                        hazard.badgeText,
                         style: TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 10,
                           fontWeight: FontWeight.w600,
-                          color: themeColor,
+                          color: hazard.themeColor,
                         ),
                       ),
                     ),
@@ -1345,7 +1496,7 @@ class _ScaleLinePainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..color = const Color(0xFF555555)
-      ..strokeWidth = 1.2
+      ..strokeWidth = 1.4
       ..style = PaintingStyle.stroke;
 
     final path = Path()
@@ -1358,5 +1509,5 @@ class _ScaleLinePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
