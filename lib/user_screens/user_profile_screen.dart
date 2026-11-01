@@ -3,6 +3,8 @@ import '../Authentication/auth_service.dart';
 import '../Authentication/login_page.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
+import '../navigation/app_navigation.dart';
+import 'user_leaderboard_screen.dart';
 
 const Color _primaryNavy = Color(0xFF233253);
 const Color _secondaryGrey = Color(0xFF8A94A6);
@@ -23,6 +25,7 @@ class UserProfileScreen extends StatefulWidget {
 class _UserProfileScreenState extends State<UserProfileScreen> {
   DateTime? _lastBackPressedAt;
   final AuthService _authService = AuthService();
+  bool _isNavigatingToLeaderboard = false;
 
   @override
   Widget build(BuildContext context) {
@@ -173,8 +176,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
           ],
         ),
       ),
-      bottomNavigationBar: const SafeRouteBottomNav(
+      bottomNavigationBar: SafeRouteBottomNav(
         currentIndex: 3,
+        onTap: (index) => AppNavigation.navigateTo(context, index, currentIndex: 3),
       ),
     ),
   );
@@ -385,7 +389,24 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       width: double.infinity,
       height: 46,
       child: ElevatedButton(
-        onPressed: () {},
+        onPressed: _isNavigatingToLeaderboard
+            ? null
+            : () async {
+                setState(() {
+                  _isNavigatingToLeaderboard = true;
+                });
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const UserLeaderboardScreen(),
+                  ),
+                );
+                if (mounted) {
+                  setState(() {
+                    _isNavigatingToLeaderboard = false;
+                  });
+                }
+              },
         style: ElevatedButton.styleFrom(
           backgroundColor: _primaryNavy,
           foregroundColor: Colors.white,
