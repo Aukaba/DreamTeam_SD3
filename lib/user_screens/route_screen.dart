@@ -4,6 +4,7 @@ import '../Authentication/login_page.dart';
 import '../map_screen.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
+import '../navigation/app_navigation.dart';
 
 class RouteScreen extends StatefulWidget {
   const RouteScreen({super.key});
@@ -176,8 +177,9 @@ class _RouteScreenState extends State<RouteScreen> {
             ],
           ),
         ),
-        bottomNavigationBar: const SafeRouteBottomNav(
+        bottomNavigationBar: SafeRouteBottomNav(
           currentIndex: 1,
+          onTap: (index) => AppNavigation.navigateTo(context, index, currentIndex: 1),
         ),
       ),
     );

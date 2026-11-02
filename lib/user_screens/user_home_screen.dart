@@ -8,6 +8,7 @@ import '../Authentication/auth_service.dart';
 import '../Authentication/login_page.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
+import '../navigation/app_navigation.dart';
 
 class UserHomeScreen extends StatefulWidget {
   const UserHomeScreen({super.key});
@@ -902,8 +903,9 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   // BOTTOM NAVIGATION BAR
   // ---------------------------------------------------------------------------
   Widget _buildBottomNavigationBar() {
-    return const SafeRouteBottomNav(
+    return SafeRouteBottomNav(
       currentIndex: 0,
+      onTap: (index) => AppNavigation.navigateTo(context, index, currentIndex: 0),
     );
   }
 }
