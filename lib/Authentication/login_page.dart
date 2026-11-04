@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'signup_page.dart';
 import 'reset_password_page.dart';
 import '../user_screens/user_home_screen.dart';
+import '../admin_screens/admin_dashboard_screen.dart';
 import 'auth_service.dart';
 import 'auth_error_handler.dart';
 
@@ -104,6 +105,11 @@ class _LoginPageState extends State<LoginPage> {
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (context) => const UserHomeScreen()),
+            );
+          } else if (role == 'admin') {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const AdminDashboardScreen()),
             );
           } else {
             // Handle other roles if needed

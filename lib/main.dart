@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'map_screen.dart';
 import 'Authentication/login_page.dart';
 import 'user_screens/user_home_screen.dart';
+import 'admin_screens/admin_dashboard_screen.dart';
 import 'Authentication/reset_password_page.dart';
 
 Future<void> main() async {
@@ -104,12 +105,44 @@ class _AuthWrapperState extends State<AuthWrapper> {
         final session = snapshot.data?.session;
 
         if (session != null) {
-          return const UserHomeScreen();
+          // Check user's role to determine which screen to show
+          return FutureBuilder<Map<String, dynamic>?>(
+            future: _getUserRole(session.user.id),
+            builder: (context, roleSnapshot) {
+              if (roleSnapshot.connectionState == ConnectionState.waiting) {
+                return const Scaffold(
+                  body: Center(child: CircularProgressIndicator()),
+                );
+              }
+
+              final role = roleSnapshot.data?['role'] as String?;
+
+              if (role == 'admin') {
+                return const AdminDashboardScreen();
+              } else {
+                return const UserHomeScreen();
+              }
+            },
+          );
         } else {
           return const LoginPage();
         }
       },
     );
+  }
+
+  Future<Map<String, dynamic>?> _getUserRole(String userId) async {
+    try {
+      final response = await Supabase.instance.client
+          .from('profiles')
+          .select('role')
+          .eq('id', userId)
+          .single();
+      return response;
+    } catch (e) {
+      debugPrint('Error fetching user role: $e');
+      return null;
+    }
   }
 }
 
