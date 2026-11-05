@@ -116,7 +116,7 @@ class _MapScreenState extends State<MapScreen> {
     null,
   ];
 
-  late final List<_HazardItem> _allHazards = [
+  late List<_HazardItem> _allHazards = [
     const _HazardItem(
       id: 'safety_1',
       overline: 'SAFETY',
@@ -1539,6 +1539,63 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  void _addReportedHazard(HazardReportData report) {
+    Color themeColor = const Color(0xFFD97706);
+    Color bgColor = const Color(0xFFFFFDF5);
+    Color iconBgColor = const Color(0xFFFEF3C7);
+    Color badgeBgColor = const Color(0xFFFEF3C7);
+    IconData icon = Icons.warning_amber_rounded;
+    int filterCategoryIndex = 3;
+
+    if (report.category.contains('Flood')) {
+      filterCategoryIndex = 2;
+      icon = Icons.water_drop_rounded;
+    } else if (report.category.contains('Road') ||
+        report.category.contains('Blocked') ||
+        report.category.contains('tree')) {
+      filterCategoryIndex = 1;
+      icon = Icons.construction_rounded;
+    } else {
+      filterCategoryIndex = 3;
+      icon = Icons.warning_amber_rounded;
+    }
+
+    final secLower = report.securityLevel.toLowerCase();
+    if (secLower.contains('high') || secLower.contains('critical')) {
+      themeColor = const Color(0xFFEF4444);
+      bgColor = const Color(0xFFFFF5F5);
+      iconBgColor = const Color(0xFFFEE2E2);
+      badgeBgColor = const Color(0xFFFEE2E2);
+    } else if (secLower.contains('low')) {
+      themeColor = const Color(0xFF3B82F6);
+      bgColor = const Color(0xFFF5F9FF);
+      iconBgColor = const Color(0xFFDBEAFE);
+      badgeBgColor = const Color(0xFFDBEAFE);
+    }
+
+    final newHazard = _HazardItem(
+      id: 'report_${DateTime.now().millisecondsSinceEpoch}',
+      overline: report.category.replaceAll(RegExp(r'[^\w\s]'), '').trim().toUpperCase(),
+      title: report.title,
+      subtitle: '${report.address} (Just now)',
+      distance: 'Nearby',
+      badgeText: report.securityLevel,
+      themeColor: themeColor,
+      bgColor: bgColor,
+      iconBgColor: iconBgColor,
+      badgeBgColor: badgeBgColor,
+      icon: icon,
+      location: report.location ?? _currentLocation,
+      filterCategoryIndex: filterCategoryIndex,
+    );
+
+    setState(() {
+      _allHazards.insert(0, newHazard);
+    });
+
+    _mapController.move(newHazard.location, 17.0);
+  }
+
   void _onHazardCardTap(_HazardItem hazard) {
     // Ensure the marker is visible under the active filter
     if (_selectedFilterIndex != 0 &&
@@ -1601,7 +1658,10 @@ class _MapScreenState extends State<MapScreen> {
             color: Colors.transparent,
             child: InkWell(
               onTap: () {
-                showReportHazardDialog(context);
+                showReportHazardDialog(
+                  context,
+                  onReportSubmitted: _addReportedHazard,
+                );
               },
               borderRadius: BorderRadius.circular(24),
               child: Container(

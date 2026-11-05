@@ -51,42 +51,25 @@ class AuthWrapper extends StatefulWidget {
 }
 
 class _AuthWrapperState extends State<AuthWrapper> {
+  bool _isPasswordRecovery = false;
+
   @override
   void initState() {
     super.initState();
-    _checkRememberMe();
-    _checkDeepLink();
+    _initSessionAccess();
   }
 
-  Future<void> _checkRememberMe() async {
+  Future<void> _initSessionAccess() async {
+    // Allow deep-link auth events (such as passwordRecovery) to settle first
+    await Future.delayed(const Duration(milliseconds: 350));
+    if (!mounted || _isPasswordRecovery) return;
+
     final prefs = await SharedPreferences.getInstance();
     final rememberMe = prefs.getBool('rememberMe') ?? false;
 
-    if (!rememberMe) {
-      // Sign out if remember me is not checked
+    if (!rememberMe && !_isPasswordRecovery) {
+      // Sign out on cold start if persistent sign-in is disabled
       await Supabase.instance.client.auth.signOut();
-    }
-  }
-
-  Future<void> _checkDeepLink() async {
-    // Check if app was opened via deep link
-    // Supabase Flutter handles deep links automatically
-    // We need to check if there's a recovery session
-    await Future.delayed(const Duration(milliseconds: 500)); // Wait for auth to initialize
-    
-    final session = Supabase.instance.client.auth.currentSession;
-    if (session != null) {
-      // Check if user is logged in - if not, this might be a recovery session
-      final user = Supabase.instance.client.auth.currentUser;
-      if (user == null) {
-        // Recovery session detected - navigate to reset password page
-        if (mounted) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => const ResetPasswordPage()),
-          );
-        }
-      }
     }
   }
 
@@ -101,7 +84,20 @@ class _AuthWrapperState extends State<AuthWrapper> {
           );
         }
 
+        final event = snapshot.data?.event;
+        if (event == AuthChangeEvent.passwordRecovery) {
+          _isPasswordRecovery = true;
+          return const ResetPasswordPage();
+        }
+        if (event == AuthChangeEvent.signedOut) {
+          _isPasswordRecovery = false;
+        }
+
         final session = snapshot.data?.session;
+
+        if (_isPasswordRecovery && session != null) {
+          return const ResetPasswordPage();
+        }
 
         if (session != null) {
           return const UserHomeScreen();

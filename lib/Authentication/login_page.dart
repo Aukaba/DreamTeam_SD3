@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'signup_page.dart';
 import 'reset_password_page.dart';
 import '../user_screens/user_home_screen.dart';
+import '../services/security_service.dart';
 import 'auth_service.dart';
 import 'auth_error_handler.dart';
 
@@ -22,7 +23,8 @@ class _LoginPageState extends State<LoginPage> {
   final FocusNode _emailFocusNode = FocusNode();
   final FocusNode _passwordFocusNode = FocusNode();
   final AuthService _authService = AuthService();
-  final SupabaseClient _supabase = Supabase.instance.client;
+  final SecurityService _securityService = SecurityService();
+  SupabaseClient get _supabase => Supabase.instance.client;
   bool _rememberMe = false;
   bool _obscurePassword = true;
   bool _isLoading = false;
@@ -121,6 +123,8 @@ class _LoginPageState extends State<LoginPage> {
         // Navigate based on role
         if (mounted) {
           if (role == 'user') {
+            await _securityService.recordLoginEvent(rememberMe: _rememberMe);
+            if (!mounted) return;
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (context) => const UserHomeScreen()),
