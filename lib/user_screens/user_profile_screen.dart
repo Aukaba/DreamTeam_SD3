@@ -1,9 +1,16 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../Authentication/auth_error_handler.dart';
 import '../Authentication/auth_service.dart';
 import '../Authentication/login_page.dart';
+import '../navigation/app_navigation.dart';
+import '../services/profile_service.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
-import '../navigation/app_navigation.dart';
+import 'personal_information_screen.dart';
+import 'saved_locations_screen.dart';
 import 'user_leaderboard_screen.dart';
 
 const Color _primaryNavy = Color(0xFF233253);
@@ -14,9 +21,19 @@ const Color _badgeBlue = Color(0xFFEAF2FB);
 const Color _accentBlue = Color(0xFF7098C2);
 const Color _alertRed = Color(0xFFE53935);
 const Color _lightRed = Color(0xFFFFEBEE);
+const Color _successGreen = Color(0xFF10B981);
 
 class UserProfileScreen extends StatefulWidget {
-  const UserProfileScreen({super.key});
+  final ProfileService? profileService;
+  final AuthService? authService;
+  final ImagePicker? imagePicker;
+
+  const UserProfileScreen({
+    super.key,
+    this.profileService,
+    this.authService,
+    this.imagePicker,
+  });
 
   @override
   State<UserProfileScreen> createState() => _UserProfileScreenState();
@@ -24,8 +41,312 @@ class UserProfileScreen extends StatefulWidget {
 
 class _UserProfileScreenState extends State<UserProfileScreen> {
   DateTime? _lastBackPressedAt;
-  final AuthService _authService = AuthService();
+  late final AuthService _authService;
+  late final ProfileService _profileService;
+  late final ImagePicker _picker;
+
+  UserProfile? _profile;
+  Uint8List? _pendingAvatarBytes;
+  bool _isLoadingProfile = true;
+  bool _isUploadingAvatar = false;
   bool _isNavigatingToLeaderboard = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _authService = widget.authService ?? AuthService();
+    _profileService = widget.profileService ?? ProfileService();
+    _picker = widget.imagePicker ?? ImagePicker();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _isLoadingProfile = true;
+      });
+    }
+
+    try {
+      final fetched = await _profileService.getProfile();
+      if (!mounted) return;
+      setState(() {
+        _profile = fetched;
+        _isLoadingProfile = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isLoadingProfile = false;
+      });
+    }
+  }
+
+  Future<void> _openPersonalInformation() async {
+    final result = await Navigator.of(context).push<UserProfile?>(
+      MaterialPageRoute(
+        builder: (context) => PersonalInformationScreen(
+          service: _profileService,
+          initialProfile: _profile,
+          imagePicker: _picker,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+    if (result != null) {
+      setState(() {
+        _profile = result;
+      });
+    } else {
+      _loadProfile(silent: true);
+    }
+  }
+
+  String _friendlyError(Object error) {
+    if (error is StorageException) {
+      return error.message.isNotEmpty
+          ? error.message
+          : 'Failed to upload profile photo. Please try again.';
+    }
+    if (error is AuthException || error is PostgrestException) {
+      return AuthErrorHandler.getErrorMessage(error);
+    }
+    final raw = error.toString();
+    if (raw.startsWith('Exception: ')) {
+      return raw.substring('Exception: '.length);
+    }
+    return AuthErrorHandler.getErrorMessage(error);
+  }
+
+  void _showAvatarOptionsSheet() {
+    if (_isUploadingAvatar) return;
+    final hasAvatar =
+        _profile?.avatarUrl != null && _profile!.avatarUrl!.isNotEmpty;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD1D5DB),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Profile Picture',
+                  style: TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    color: _primaryNavy,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Container(
+                    width: 40,
+                    height: 40,
+                    decoration: const BoxDecoration(
+                      color: _lightBlue,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.photo_library_outlined,
+                      color: _primaryNavy,
+                      size: 20,
+                    ),
+                  ),
+                  title: const Text(
+                    'Choose from Gallery',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: _primaryNavy,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    _pickAndUploadAvatar(ImageSource.gallery);
+                  },
+                ),
+                if (!kIsWeb)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Container(
+                      width: 40,
+                      height: 40,
+                      decoration: const BoxDecoration(
+                        color: _lightBlue,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.camera_alt_outlined,
+                        color: _primaryNavy,
+                        size: 20,
+                      ),
+                    ),
+                    title: const Text(
+                      'Take a Photo',
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: _primaryNavy,
+                      ),
+                    ),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      _pickAndUploadAvatar(ImageSource.camera);
+                    },
+                  ),
+                if (hasAvatar)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Container(
+                      width: 40,
+                      height: 40,
+                      decoration: const BoxDecoration(
+                        color: _lightRed,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.delete_outline_rounded,
+                        color: _alertRed,
+                        size: 20,
+                      ),
+                    ),
+                    title: const Text(
+                      'Remove Current Photo',
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: _alertRed,
+                      ),
+                    ),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      _removeAvatar();
+                    },
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _pickAndUploadAvatar(ImageSource source) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final picked = await _picker.pickImage(
+        source: source,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 85,
+      );
+      if (picked == null || !mounted) return;
+
+      final bytes = await picked.readAsBytes();
+      if (!mounted) return;
+
+      setState(() {
+        _pendingAvatarBytes = bytes;
+        _isUploadingAvatar = true;
+      });
+
+      final updated = await _profileService.uploadAvatar(
+        bytes: bytes,
+        fileName: picked.name.isNotEmpty ? picked.name : picked.path,
+        mimeType: picked.mimeType,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _profile = updated;
+        _pendingAvatarBytes = null;
+        _isUploadingAvatar = false;
+      });
+
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Profile picture updated!'),
+          backgroundColor: _successGreen,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _pendingAvatarBytes = null;
+        _isUploadingAvatar = false;
+      });
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(_friendlyError(e)),
+          backgroundColor: _alertRed,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _removeAvatar() async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() {
+      _isUploadingAvatar = true;
+    });
+
+    try {
+      final updated = await _profileService.removeAvatar();
+      if (!mounted) return;
+      setState(() {
+        _profile = updated;
+        _pendingAvatarBytes = null;
+        _isUploadingAvatar = false;
+      });
+
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Profile picture removed.'),
+          backgroundColor: _primaryNavy,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isUploadingAvatar = false;
+      });
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(_friendlyError(e)),
+          backgroundColor: _alertRed,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -43,274 +364,372 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       },
       child: Scaffold(
         backgroundColor: _bgBeige,
-      body: SingleChildScrollView(
-        physics: const BouncingScrollPhysics(),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // 1. Top Custom Wavy Header with SafeRoute Logo
-            const CustomWavyHeader(),
-
-            // 2. Main Scrollable Content pulled up into the wave curve
-            Transform.translate(
-              offset: const Offset(0, -36),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Profile Header Section (Avatar, Info, Edit Button)
-                    _buildProfileHeader(),
-
-                    const SizedBox(height: 28),
-
-                    // Stats Row (Reports, Helpful Votes, Safe Routes, Days Active)
-                    _buildStatsRow(),
-
-                    const SizedBox(height: 28),
-
-                    // View Leaderboard Button
-                    _buildLeaderboardButton(),
-
-                    const SizedBox(height: 26),
-
-                    // Contributor Badge Card (Safety Contributor Level 2)
-                    _buildContributorBadgeCard(),
-
-                    const SizedBox(height: 32),
-
-                    // Account Settings Section
-                    _buildSectionHeader('ACCOUNT'),
-                    _buildSettingsGroup(
-                      children: [
-                        _buildSettingsTile(
-                          icon: Icons.shield_outlined,
-                          title: 'Personal Information',
-                          subtitle: 'Name, email, and contact details',
-                          onTap: () {},
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.lock_outline_rounded,
-                          title: 'Security',
-                          subtitle: 'Change password and manage account access',
-                          onTap: () {},
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.notifications_none_rounded,
-                          title: 'Notification Settings',
-                          subtitle: 'Choose what updates you want to receive',
-                          onTap: () {},
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.location_on_outlined,
-                          title: 'Location Preferences',
-                          subtitle: 'Set your default location and travel options',
-                          showDivider: false,
-                          onTap: () {},
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 32),
-
-                    // Community Settings Section
-                    _buildSectionHeader('COMMUNITY'),
-                    _buildSettingsGroup(
-                      children: [
-                        _buildSettingsTile(
-                          icon: Icons.assignment_outlined,
-                          title: 'My Reports',
-                          subtitle: 'View and manage your submitted reports',
-                          onTap: () {},
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.favorite_border_rounded,
-                          title: 'Saved Locations',
-                          subtitle: 'Your favorite places and marked areas',
-                          onTap: () {},
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.alt_route_rounded,
-                          title: 'Saved Routes',
-                          subtitle: 'View and edit your saved routes',
-                          showDivider: false,
-                          onTap: () {},
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 32),
-
-                    // Support Settings Section
-                    _buildSectionHeader('SUPPORT'),
-                    _buildSettingsGroup(
-                      children: [
-                        _buildSettingsTile(
-                          icon: Icons.help_outline_rounded,
-                          title: 'Help & Support',
-                          subtitle: 'FAQs, guides, and contact support',
-                          onTap: () {},
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.settings_outlined,
-                          title: 'App Settings',
-                          subtitle: 'Appearance, language, and more',
-                          onTap: () {},
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.logout_rounded,
-                          title: 'Log Out',
-                          subtitle: 'Sign out from your account',
-                          isDestructive: true,
-                          showDivider: false,
-                          onTap: () => _showLogoutDialog(context),
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 36),
-                  ],
-                ),
-              ),
+        body: RefreshIndicator(
+          color: _primaryNavy,
+          onRefresh: () => _loadProfile(silent: true),
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(
+              parent: BouncingScrollPhysics(),
             ),
-          ],
-        ),
-      ),
-      bottomNavigationBar: SafeRouteBottomNav(
-        currentIndex: 3,
-        onTap: (index) => AppNavigation.navigateTo(context, index, currentIndex: 3),
-      ),
-    ),
-  );
-  }
-
-  /// Profile Header with Avatar, camera badge, User Info, and Edit Profile button
-  Widget _buildProfileHeader() {
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            // Circular avatar with camera badge
-            Stack(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                CircleAvatar(
-                  radius: 38,
-                  backgroundColor: _lightBlue,
-                  child: ClipOval(
-                    child: Image.network(
-                      'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200',
-                      width: 76,
-                      height: 76,
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) {
-                        return Container(
-                          width: 76,
-                          height: 76,
-                          color: _lightBlue,
-                          child: const Icon(
-                            Icons.person_rounded,
-                            size: 42,
-                            color: _primaryNavy,
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-                Positioned(
-                  bottom: 0,
-                  right: 0,
-                  child: Container(
-                    padding: const EdgeInsets.all(5),
-                    decoration: BoxDecoration(
-                      color: _primaryNavy,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2),
-                    ),
-                    child: const Icon(
-                      Icons.camera_alt_rounded,
-                      size: 11,
-                      color: Colors.white,
+                // 1. Top Custom Wavy Header with SafeRoute Logo
+                const CustomWavyHeader(),
+
+                // 2. Main Scrollable Content pulled up into the wave curve
+                Transform.translate(
+                  offset: const Offset(0, -36),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Profile Header Section (Avatar, Info, Edit Button)
+                        _buildProfileHeader(),
+
+                        const SizedBox(height: 28),
+
+                        // Stats Row (Reports, Helpful Votes, Safe Routes, Days Active)
+                        _buildStatsRow(),
+
+                        const SizedBox(height: 28),
+
+                        // View Leaderboard Button
+                        _buildLeaderboardButton(),
+
+                        const SizedBox(height: 26),
+
+                        // Contributor Badge Card (Safety Contributor Level 2)
+                        _buildContributorBadgeCard(),
+
+                        const SizedBox(height: 32),
+
+                        // Account Settings Section
+                        _buildSectionHeader('ACCOUNT'),
+                        _buildSettingsGroup(
+                          children: [
+                            _buildSettingsTile(
+                              icon: Icons.shield_outlined,
+                              title: 'Personal Information',
+                              subtitle: 'Name, email, and contact details',
+                              onTap: _openPersonalInformation,
+                            ),
+                            _buildSettingsTile(
+                              icon: Icons.lock_outline_rounded,
+                              title: 'Security',
+                              subtitle:
+                                  'Change password and manage account access',
+                              onTap: () {},
+                            ),
+                            _buildSettingsTile(
+                              icon: Icons.notifications_none_rounded,
+                              title: 'Notification Settings',
+                              subtitle: 'Choose what updates you want to receive',
+                              onTap: () {},
+                            ),
+                            _buildSettingsTile(
+                              icon: Icons.location_on_outlined,
+                              title: 'Location Preferences',
+                              subtitle:
+                                  'Set your default location and travel options',
+                              showDivider: false,
+                              onTap: () {},
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 32),
+
+                        // Community Settings Section
+                        _buildSectionHeader('COMMUNITY'),
+                        _buildSettingsGroup(
+                          children: [
+                            _buildSettingsTile(
+                              icon: Icons.assignment_outlined,
+                              title: 'My Reports',
+                              subtitle: 'View and manage your submitted reports',
+                              onTap: () {},
+                            ),
+                            _buildSettingsTile(
+                              icon: Icons.favorite_border_rounded,
+                              title: 'Saved Locations',
+                              subtitle: 'Your favorite places and marked areas',
+                              onTap: () {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (context) =>
+                                        const SavedLocationsScreen(),
+                                  ),
+                                );
+                              },
+                            ),
+                            _buildSettingsTile(
+                              icon: Icons.alt_route_rounded,
+                              title: 'Saved Routes',
+                              subtitle: 'View and edit your saved routes',
+                              showDivider: false,
+                              onTap: () {},
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 32),
+
+                        // Support Settings Section
+                        _buildSectionHeader('SUPPORT'),
+                        _buildSettingsGroup(
+                          children: [
+                            _buildSettingsTile(
+                              icon: Icons.help_outline_rounded,
+                              title: 'Help & Support',
+                              subtitle: 'FAQs, guides, and contact support',
+                              onTap: () {},
+                            ),
+                            _buildSettingsTile(
+                              icon: Icons.settings_outlined,
+                              title: 'App Settings',
+                              subtitle: 'Appearance, language, and more',
+                              onTap: () {},
+                            ),
+                            _buildSettingsTile(
+                              icon: Icons.logout_rounded,
+                              title: 'Log Out',
+                              subtitle: 'Sign out from your account',
+                              isDestructive: true,
+                              showDivider: false,
+                              onTap: () => _showLogoutDialog(context),
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 36),
+                      ],
                     ),
                   ),
                 ),
               ],
             ),
+          ),
+        ),
+        bottomNavigationBar: SafeRouteBottomNav(
+          currentIndex: 3,
+          onTap: (index) =>
+              AppNavigation.navigateTo(context, index, currentIndex: 3),
+        ),
+      ),
+    );
+  }
 
-            const SizedBox(width: 14),
+  /// Profile Header with Avatar, camera badge, User Info, and Edit Profile button
+  Widget _buildProfileHeader() {
+    final avatarUrl = _profile?.avatarUrl;
+    final displayName = _isLoadingProfile && _profile == null
+        ? 'Loading...'
+        : (_profile?.displayName ?? 'SafeRoute User');
+    final emailText = _profile?.email.trim() ?? '';
+    final usernameText = _profile?.formattedUsername;
+    final locationText = _profile?.displayLocation ?? 'Cebu City, Philippines';
+    final initials = _profile?.initials ?? 'U';
 
-            // User Info Column in the middle
-            const Expanded(
-              child: Padding(
-                padding: EdgeInsets.only(bottom: 2.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'Ma. Angelica May',
-                      style: TextStyle(
-                        fontFamily: 'Poppins',
-                        fontSize: 17,
-                        fontWeight: FontWeight.w700,
-                        color: _primaryNavy,
+    Widget avatarImage;
+    if (_pendingAvatarBytes != null) {
+      avatarImage = Image.memory(
+        _pendingAvatarBytes!,
+        width: 76,
+        height: 76,
+        fit: BoxFit.cover,
+      );
+    } else if (avatarUrl != null && avatarUrl.isNotEmpty) {
+      avatarImage = Image.network(
+        avatarUrl,
+        width: 76,
+        height: 76,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) {
+          return _buildAvatarFallback(initials);
+        },
+      );
+    } else {
+      avatarImage = _buildAvatarFallback(initials);
+    }
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        // Circular avatar with camera badge
+        GestureDetector(
+          key: const Key('profile_avatar_tap'),
+          onTap: _showAvatarOptionsSheet,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              CircleAvatar(
+                radius: 38,
+                backgroundColor: _lightBlue,
+                child: ClipOval(child: avatarImage),
+              ),
+              if (_isUploadingAvatar)
+                Container(
+                  width: 76,
+                  height: 76,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.35),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Center(
+                    child: SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.2,
+                        color: Colors.white,
                       ),
                     ),
-                    SizedBox(height: 2),
-                    Text(
-                      '@gelic',
-                      style: TextStyle(
-                        fontFamily: 'Poppins',
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        color: _secondaryGrey,
-                      ),
-                    ),
-                    SizedBox(height: 2),
-                    Text(
-                      'Cebu City, Philippines',
-                      style: TextStyle(
-                        fontFamily: 'Poppins',
-                        fontSize: 11,
-                        fontWeight: FontWeight.w400,
-                        color: _secondaryGrey,
-                      ),
-                    ),
-                  ],
+                  ),
+                ),
+              Positioned(
+                bottom: 0,
+                right: 0,
+                child: Container(
+                  padding: const EdgeInsets.all(5),
+                  decoration: BoxDecoration(
+                    color: _primaryNavy,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
+                  child: const Icon(
+                    Icons.camera_alt_rounded,
+                    size: 11,
+                    color: Colors.white,
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
 
-        // Edit Profile Button positioned on the bottom right, aligned horizontally with location text
-        Positioned(
-          bottom: 0,
-          right: 0,
-          child: InkWell(
-            onTap: () {},
-            borderRadius: BorderRadius.circular(20),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-              decoration: BoxDecoration(
-                color: _lightBlue,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: const Text(
-                'Edit Profile',
-                style: TextStyle(
-                  fontFamily: 'Poppins',
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w600,
-                  color: _primaryNavy,
+        const SizedBox(width: 14),
+
+        // User Info Column in the middle
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 2.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    color: _primaryNavy,
+                  ),
                 ),
+                if (usernameText != null) ...[
+                  const SizedBox(height: 1),
+                  Text(
+                    usernameText,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      color: _accentBlue,
+                    ),
+                  ),
+                ],
+                if (emailText.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    emailText,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: _secondaryGrey,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 2),
+                Text(
+                  locationText,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 11,
+                    fontWeight: FontWeight.w400,
+                    color: _secondaryGrey,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        const SizedBox(width: 8),
+
+        // Edit Profile Button aligned cleanly without overlapping long text
+        InkWell(
+          key: const Key('edit_profile_button'),
+          onTap: _openPersonalInformation,
+          borderRadius: BorderRadius.circular(20),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+            decoration: BoxDecoration(
+              color: _lightBlue,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Text(
+              'Edit Profile',
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                color: _primaryNavy,
               ),
             ),
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildAvatarFallback(String initials) {
+    if (_profile == null) {
+      return Container(
+        width: 76,
+        height: 76,
+        color: _lightBlue,
+        child: const Icon(
+          Icons.person_rounded,
+          size: 40,
+          color: _primaryNavy,
+        ),
+      );
+    }
+    return Container(
+      width: 76,
+      height: 76,
+      color: _lightBlue,
+      alignment: Alignment.center,
+      child: Text(
+        initials,
+        style: const TextStyle(
+          fontFamily: 'Poppins',
+          fontSize: 24,
+          fontWeight: FontWeight.w700,
+          color: _primaryNavy,
+        ),
+      ),
     );
   }
 
@@ -519,7 +938,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                         child: const LinearProgressIndicator(
                           value: 120 / 200,
                           backgroundColor: Color(0xFFD6E4F0),
-                          valueColor: AlwaysStoppedAnimation<Color>(_primaryNavy),
+                          valueColor:
+                              AlwaysStoppedAnimation<Color>(_primaryNavy),
                           minHeight: 6,
                         ),
                       ),

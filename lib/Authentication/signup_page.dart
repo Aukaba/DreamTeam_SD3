@@ -162,14 +162,18 @@ class _SignupPageState extends State<SignupPage> {
           );
         }
       } else {
-        setState(() {
-          _errorMessage = 'Unable to complete sign up. Please try again.';
-        });
+        if (mounted) {
+          setState(() {
+            _errorMessage = 'Unable to complete sign up. Please try again.';
+          });
+        }
       }
     } catch (e) {
-      setState(() {
-        _errorMessage = AuthErrorHandler.getErrorMessage(e);
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = AuthErrorHandler.getErrorMessage(e);
+        });
+      }
     } finally {
       if (mounted) {
         setState(() {
