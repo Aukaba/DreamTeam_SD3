@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login_page.dart';
 import 'auth_service.dart';
 import 'auth_error_handler.dart';
+import '../services/security_service.dart';
 
 class ResetPasswordPage extends StatefulWidget {
   const ResetPasswordPage({super.key});
@@ -21,7 +22,8 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
   final FocusNode _newPasswordFocusNode = FocusNode();
   final FocusNode _confirmPasswordFocusNode = FocusNode();
   final AuthService _authService = AuthService();
-  final SupabaseClient _supabase = Supabase.instance.client;
+  final SecurityService _securityService = SecurityService();
+  SupabaseClient get _supabase => Supabase.instance.client;
   bool _isLoading = false;
   bool _emailSent = false;
   bool _obscureNewPassword = true;
@@ -57,12 +59,14 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
 
   void _checkForRecoveryToken() {
     // Check if Supabase has a recovery session from deep link
-    final session = _supabase.auth.currentSession;
-    if (session != null) {
-      setState(() {
-        _emailSent = true; // Skip email step, show password fields
-      });
-    }
+    try {
+      final session = _supabase.auth.currentSession;
+      if (session != null) {
+        setState(() {
+          _emailSent = true; // Skip email step, show password fields
+        });
+      }
+    } catch (_) {}
   }
 
   Future<void> _sendResetEmail() async {
@@ -89,14 +93,19 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
 
     try {
       await _authService.resetPassword(email: email);
-      setState(() {
-        _successMessage = 'Password reset email sent! Please check your inbox and click the link to reset your password.';
-        _emailSent = true;
-      });
+      if (mounted) {
+        setState(() {
+          _successMessage =
+              'Password reset email sent! Please check your inbox and click the link to reset your password.';
+          _emailSent = true;
+        });
+      }
     } catch (e) {
-      setState(() {
-        _errorMessage = AuthErrorHandler.getErrorMessage(e);
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = AuthErrorHandler.getErrorMessage(e);
+        });
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -146,15 +155,21 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
 
     try {
       await _supabase.auth.updateUser(
-        UserAttributes(password: newPassword.trim()),
+        UserAttributes(password: newPassword),
       );
-      setState(() {
-        _successMessage = 'Password updated successfully! You can now log in with your new password.';
-      });
+      await _securityService.recordPasswordRecoveryCompletion();
+      if (mounted) {
+        setState(() {
+          _successMessage =
+              'Password updated successfully! You can now log in with your new password.';
+        });
+      }
     } catch (e) {
-      setState(() {
-        _errorMessage = AuthErrorHandler.getErrorMessage(e);
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = AuthErrorHandler.getErrorMessage(e);
+        });
+      }
     } finally {
       if (mounted) {
         setState(() {

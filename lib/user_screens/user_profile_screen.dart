@@ -7,10 +7,12 @@ import '../Authentication/auth_service.dart';
 import '../Authentication/login_page.dart';
 import '../navigation/app_navigation.dart';
 import '../services/profile_service.dart';
+import '../services/security_service.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
 import 'personal_information_screen.dart';
 import 'saved_locations_screen.dart';
+import 'security_screen.dart';
 import 'user_leaderboard_screen.dart';
 
 const Color _primaryNavy = Color(0xFF233253);
@@ -25,12 +27,14 @@ const Color _successGreen = Color(0xFF10B981);
 
 class UserProfileScreen extends StatefulWidget {
   final ProfileService? profileService;
+  final SecurityService? securityService;
   final AuthService? authService;
   final ImagePicker? imagePicker;
 
   const UserProfileScreen({
     super.key,
     this.profileService,
+    this.securityService,
     this.authService,
     this.imagePicker,
   });
@@ -43,6 +47,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   DateTime? _lastBackPressedAt;
   late final AuthService _authService;
   late final ProfileService _profileService;
+  late final SecurityService _securityService;
   late final ImagePicker _picker;
 
   UserProfile? _profile;
@@ -56,6 +61,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     super.initState();
     _authService = widget.authService ?? AuthService();
     _profileService = widget.profileService ?? ProfileService();
+    _securityService = widget.securityService ?? SecurityService();
     _picker = widget.imagePicker ?? ImagePicker();
     _loadProfile();
   }
@@ -101,6 +107,16 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     } else {
       _loadProfile(silent: true);
     }
+  }
+
+  Future<void> _openSecurity() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (context) => SecurityScreen(
+          service: _securityService,
+        ),
+      ),
+    );
   }
 
   String _friendlyError(Object error) {
@@ -420,7 +436,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                               title: 'Security',
                               subtitle:
                                   'Change password and manage account access',
-                              onTap: () {},
+                              onTap: _openSecurity,
                             ),
                             _buildSettingsTile(
                               icon: Icons.notifications_none_rounded,

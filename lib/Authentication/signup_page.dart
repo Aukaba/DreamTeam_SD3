@@ -23,7 +23,7 @@ class _SignupPageState extends State<SignupPage> {
   final FocusNode _passwordFocusNode = FocusNode();
   final FocusNode _confirmPasswordFocusNode = FocusNode();
   final AuthService _authService = AuthService();
-  final SupabaseClient _supabase = Supabase.instance.client;
+  SupabaseClient get _supabase => Supabase.instance.client;
   bool _agreeToTerms = false;
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;

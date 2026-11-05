@@ -1,5 +1,4 @@
 import 'dart:math';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -74,6 +73,20 @@ class HazardReportService {
   }) async {
     final reportId = generateUuidV4();
     final currentUserId = _client.auth.currentUser?.id;
+    bool reportAnonymously = false;
+    if (currentUserId != null) {
+      try {
+        final securityRow = await _client
+            .from('user_security_settings')
+            .select('anonymous_reporting')
+            .eq('user_id', currentUserId)
+            .maybeSingle();
+        reportAnonymously =
+            securityRow?['anonymous_reporting'] as bool? ?? false;
+      } catch (_) {
+        reportAnonymously = false;
+      }
+    }
 
     // 1. Upload photo to Supabase Storage if present
     String? imageUrl;
@@ -88,7 +101,7 @@ class HazardReportService {
     // 2. Prepare payload matching `ReportTable` columns
     final payload = <String, dynamic>{
       'reportID': reportId,
-      'user_id': currentUserId,
+      'user_id': reportAnonymously ? null : currentUserId,
       'hazard_category': cleanCategory(category),
       'detected_hazard': title.trim().isNotEmpty ? title.trim() : cleanCategory(category),
       'severity_level': securityLevel,
