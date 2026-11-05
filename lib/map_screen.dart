@@ -8,6 +8,7 @@ import 'services/cebu_landmark_service.dart';
 import 'services/location_service.dart';
 import 'services/nominatim_rate_limiter.dart';
 import 'widgets/report_hazard_modal.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class MapScreen extends StatefulWidget {
   final LatLng? initialLocation;
@@ -115,7 +116,7 @@ class _MapScreenState extends State<MapScreen> {
     null,
   ];
 
-  late final List<_HazardItem> _allHazards = [
+  late final List<_HazardItem> _presetHazards = [
     const _HazardItem(
       id: 'safety_1',
       overline: 'SAFETY',
@@ -178,6 +179,11 @@ class _MapScreenState extends State<MapScreen> {
     ),
   ];
 
+  List<_HazardItem> _submittedHazards = [];
+
+  List<_HazardItem> get _allHazards =>
+      [..._presetHazards, ..._submittedHazards];
+
   List<_HazardItem> get _filteredHazards {
     if (_selectedFilterIndex == 0) {
       return _allHazards;
@@ -187,6 +193,146 @@ class _MapScreenState extends State<MapScreen> {
         .toList();
   }
 
+  Future<void> _loadReportsFromSupabase() async {
+    try {
+      final response = await Supabase.instance.client
+          .from('ReportTable')
+          .select()
+          .order('created_at', ascending: false);
+
+      final List<_HazardItem> loaded = [];
+      for (final item in response) {
+        if (item['latitude'] != null && item['longitude'] != null) {
+          loaded.add(_mapReportToHazardItem(item));
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _submittedHazards = loaded;
+      });
+    } catch (e) {
+      debugPrint('Error loading hazard reports from ReportTable: $e');
+    }
+  }
+
+  _HazardItem _mapReportToHazardItem(Map<String, dynamic> row) {
+    final String category = (row['hazard_category'] ?? 'Other').toString();
+    final String title = (row['detected_hazard'] ?? category).toString();
+    final String subtitle =
+        (row['location_address'] ?? 'Reported location').toString();
+    final String severity = (row['severity_level'] ?? 'Low').toString();
+    final double lat =
+        (row['latitude'] as num?)?.toDouble() ?? _currentLocation.latitude;
+    final double lng =
+        (row['longitude'] as num?)?.toDouble() ?? _currentLocation.longitude;
+    final String reportId =
+        (row['reportID'] ?? row['id'] ?? '').toString();
+
+    int filterIndex;
+    Color themeColor;
+    Color bgColor;
+    Color iconBgColor;
+    Color badgeBgColor;
+    IconData icon;
+    String overline;
+
+    switch (category) {
+      case 'Flood':
+        filterIndex = 2;
+        themeColor = const Color(0xFF4A90E2);
+        bgColor = const Color(0xFFF0F9FF);
+        iconBgColor = const Color(0xFFE0F2FE);
+        badgeBgColor = const Color(0xFFE0F2FE);
+        icon = Icons.water_drop_rounded;
+        overline = 'FLOODING';
+        break;
+      case 'Road damage':
+      case 'Blocked road':
+        filterIndex = 1;
+        themeColor = const Color(0xFFD97706);
+        bgColor = const Color(0xFFFFFDF5);
+        iconBgColor = const Color(0xFFFEF3C7);
+        badgeBgColor = const Color(0xFFFEF3C7);
+        icon = Icons.construction_rounded;
+        overline = 'OBSTRUCTION';
+        break;
+      case 'Accident':
+        filterIndex = 3;
+        themeColor = const Color(0xFFEF4444);
+        bgColor = const Color(0xFFFFF5F5);
+        iconBgColor = const Color(0xFFFEE2E2);
+        badgeBgColor = const Color(0xFFFEE2E2);
+        icon = Icons.car_crash_rounded;
+        overline = 'ACCIDENT';
+        break;
+      case 'Fire':
+        filterIndex = 3;
+        themeColor = const Color(0xFFEF4444);
+        bgColor = const Color(0xFFFFF5F5);
+        iconBgColor = const Color(0xFFFEE2E2);
+        badgeBgColor = const Color(0xFFFEE2E2);
+        icon = Icons.local_fire_department_rounded;
+        overline = 'FIRE';
+        break;
+      case 'Broken streetlight':
+        filterIndex = 3;
+        themeColor = const Color(0xFFF59E0B);
+        bgColor = const Color(0xFFFFFDF5);
+        iconBgColor = const Color(0xFFFEF3C7);
+        badgeBgColor = const Color(0xFFFEF3C7);
+        icon = Icons.lightbulb_outline_rounded;
+        overline = 'SAFETY';
+        break;
+      case 'Fallen tree':
+        filterIndex = 1;
+        themeColor = const Color(0xFF10B981);
+        bgColor = const Color(0xFFF0FDF4);
+        iconBgColor = const Color(0xFFDCFCE7);
+        badgeBgColor = const Color(0xFFDCFCE7);
+        icon = Icons.park_rounded;
+        overline = 'OBSTRUCTION';
+        break;
+      default:
+        filterIndex = 3;
+        themeColor = severity == 'High' || severity == 'Critical'
+            ? const Color(0xFFEF4444)
+            : const Color(0xFF3B82F6);
+        bgColor = const Color(0xFFF5F9FF);
+        iconBgColor = const Color(0xFFDBEAFE);
+        badgeBgColor = const Color(0xFFDBEAFE);
+        icon = Icons.warning_amber_rounded;
+        overline = category.toUpperCase();
+        break;
+    }
+
+    String distStr = 'Nearby';
+    try {
+      final distMeters = const Distance()
+          .as(LengthUnit.Meter, _currentLocation, LatLng(lat, lng));
+      if (distMeters >= 1000) {
+        distStr = '${(distMeters / 1000).toStringAsFixed(1)} km away';
+      } else {
+        distStr = '${distMeters.round()} m away';
+      }
+    } catch (_) {}
+
+    return _HazardItem(
+      id: reportId,
+      overline: overline,
+      title: title,
+      subtitle: subtitle,
+      distance: distStr,
+      badgeText: severity,
+      themeColor: themeColor,
+      bgColor: bgColor,
+      iconBgColor: iconBgColor,
+      badgeBgColor: badgeBgColor,
+      icon: icon,
+      location: LatLng(lat, lng),
+      filterCategoryIndex: filterIndex,
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -194,6 +340,7 @@ class _MapScreenState extends State<MapScreen> {
     _currentLatitude = _currentLocation.latitude;
     _searchController.addListener(_onSearchChanged);
     _initDeviceLocation();
+    _loadReportsFromSupabase();
   }
 
   void _onSearchChanged() {
@@ -1530,7 +1677,10 @@ class _MapScreenState extends State<MapScreen> {
             color: Colors.transparent,
             child: InkWell(
               onTap: () {
-                showReportHazardDialog(context);
+                showReportHazardDialog(
+                  context,
+                  onReportSubmitted: _loadReportsFromSupabase,
+                );
               },
               borderRadius: BorderRadius.circular(24),
               child: Container(

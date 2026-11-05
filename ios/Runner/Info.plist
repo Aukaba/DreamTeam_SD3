@@ -58,5 +58,11 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>This app requires access to your photo library to select photos when reporting community hazards.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>This app requires access to your camera to take photos when reporting community hazards.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>This app requires access to your location to automatically place hazard reports on the map.</string>
 </dict>
 </plist>

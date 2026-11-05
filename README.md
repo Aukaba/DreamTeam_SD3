@@ -31,7 +31,11 @@ This project uses `.env` files to securely manage credentials. **Never commit yo
    ```bash
    cp .env.example .env
    ```
-2. Open the `.env` file and fill in the actual credentials for your database and Supabase instance.
+2. Open the `.env` file and fill in the required credentials:
+   - `DATABASE_URL`: PostgreSQL connection string used for dbmate migrations.
+   - `SUPABASE_URL`: Your Supabase project URL.
+   - `SUPABASE_ANON_KEY`: Your Supabase anon/publishable key.
+   - `GEMINI_API_KEY`: Google Gemini API key used for automatic hazard detection and photo classification. Obtain one from [Google AI Studio](https://aistudio.google.com/app/apikey).
 3. Ensure that your `pubspec.yaml` declares the `.env` file under the `assets` block:
    ```yaml
    flutter:
