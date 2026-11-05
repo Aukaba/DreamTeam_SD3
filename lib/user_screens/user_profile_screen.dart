@@ -3,6 +3,7 @@ import '../Authentication/auth_service.dart';
 import '../Authentication/login_page.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
+import 'saved_locations_screen.dart';
 
 const Color _primaryNavy = Color(0xFF233253);
 const Color _secondaryGrey = Color(0xFF8A94A6);
@@ -124,7 +125,14 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                           icon: Icons.favorite_border_rounded,
                           title: 'Saved Locations',
                           subtitle: 'Your favorite places and marked areas',
-                          onTap: () {},
+                          onTap: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (context) =>
+                                    const SavedLocationsScreen(),
+                              ),
+                            );
+                          },
                         ),
                         _buildSettingsTile(
                           icon: Icons.alt_route_rounded,
