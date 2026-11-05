@@ -7,6 +7,7 @@ import 'package:latlong2/latlong.dart' hide Path;
 import 'services/cebu_landmark_service.dart';
 import 'services/location_service.dart';
 import 'services/nominatim_rate_limiter.dart';
+import 'services/saved_location_service.dart';
 import 'widgets/report_hazard_modal.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -455,7 +456,7 @@ class _MapScreenState extends State<MapScreen> {
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                'Found ${landmark.name} (${landmark.categoryLabel})',
+                'Found ${landmark.name}',
                 style: const TextStyle(
                   fontFamily: 'Poppins',
                   fontWeight: FontWeight.w500,
@@ -464,10 +465,58 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ],
         ),
-        duration: const Duration(seconds: 2),
+        action: SnackBarAction(
+          label: 'Save Place',
+          textColor: const Color(0xFF6EE7B7),
+          onPressed: () => _saveLandmarkDirectly(landmark),
+        ),
+        duration: const Duration(seconds: 4),
         behavior: SnackBarBehavior.floating,
       ),
     );
+  }
+
+  Future<void> _saveLandmarkDirectly(CebuLandmark landmark) async {
+    try {
+      final savedService = SavedLocationService();
+      if (savedService.currentUser == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Please log in to save locations.'),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        return;
+      }
+
+      await savedService.saveLocation(
+        title: landmark.name,
+        address: landmark.address,
+        location: landmark.location,
+        category: landmark.category.name,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Saved "${landmark.name}" to your locations!'),
+            backgroundColor: const Color(0xFF10B981),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not save location: $e'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
   }
 
   String _formatDistanceTo(LatLng target) {
@@ -1015,6 +1064,19 @@ class _MapScreenState extends State<MapScreen> {
                                         ),
                                       ),
                                     ),
+                                    const SizedBox(width: 4),
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.bookmark_add_outlined,
+                                        size: 18,
+                                        color: _secondaryGrey,
+                                      ),
+                                      tooltip: 'Save Place',
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(),
+                                      onPressed: () =>
+                                          _saveLandmarkDirectly(landmark),
+                                    ),
                                   ],
                                 ),
                               ),
@@ -1337,6 +1399,15 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   ),
                   const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: () => _saveLandmarkDirectly(landmark),
+                    child: const Icon(
+                      Icons.bookmark_add_outlined,
+                      size: 15,
+                      color: Color(0xFF10B981),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
                   GestureDetector(
                     onTap: () {
                       setState(() {
