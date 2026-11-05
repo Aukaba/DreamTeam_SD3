@@ -517,7 +517,10 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
             color: Colors.transparent,
             child: InkWell(
               onTap: () {
-                showReportHazardModal(context);
+                showReportHazardModal(
+                  context,
+                  initialLocation: _currentLocation,
+                );
               },
               borderRadius: BorderRadius.circular(26),
               child: Ink(

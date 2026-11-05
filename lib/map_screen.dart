@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' hide Path;
 import 'services/cebu_landmark_service.dart';
+import 'services/gemini_hazard_service.dart';
+import 'services/hazard_report_service.dart';
 import 'services/location_service.dart';
 import 'services/nominatim_rate_limiter.dart';
 import 'services/saved_location_service.dart';
@@ -12,8 +14,47 @@ import 'widgets/report_hazard_modal.dart';
 
 class MapScreen extends StatefulWidget {
   final LatLng? initialLocation;
+  final HazardReportService? hazardReportService;
 
-  const MapScreen({super.key, this.initialLocation});
+  const MapScreen({
+    super.key,
+    this.initialLocation,
+    this.hazardReportService,
+  });
+
+  /// Maps any raw or emoji hazard category explicitly to a map filter index and icon.
+  /// Filter indices: 1 = Roadwork/Obstruction, 2 = Flooding, 3 = Safety, 4 = Crime.
+  static ({int filterCategoryIndex, IconData icon}) classifyHazardForMap(
+    String rawCategory,
+  ) {
+    switch (HazardCategories.normalize(rawCategory)) {
+      case HazardCategories.flood:
+        return (
+          filterCategoryIndex: 2,
+          icon: Icons.water_drop_rounded,
+        );
+      case HazardCategories.roadDamage:
+      case HazardCategories.blockedRoad:
+      case HazardCategories.fallenTree:
+        return (
+          filterCategoryIndex: 1,
+          icon: Icons.construction_rounded,
+        );
+      case HazardCategories.brokenStreetlight:
+        return (
+          filterCategoryIndex: 3,
+          icon: Icons.lightbulb_outline_rounded,
+        );
+      case HazardCategories.accident:
+      case HazardCategories.fire:
+      case HazardCategories.other:
+      default:
+        return (
+          filterCategoryIndex: 3,
+          icon: Icons.warning_amber_rounded,
+        );
+    }
+  }
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -116,8 +157,8 @@ class _MapScreenState extends State<MapScreen> {
     null,
   ];
 
-  late List<_HazardItem> _allHazards = [
-    const _HazardItem(
+  static const List<_HazardItem> _defaultHazards = [
+    _HazardItem(
       id: 'safety_1',
       overline: 'SAFETY',
       title: 'Poor lighting area',
@@ -132,7 +173,7 @@ class _MapScreenState extends State<MapScreen> {
       location: _lightingLocation,
       filterCategoryIndex: 3,
     ),
-    const _HazardItem(
+    _HazardItem(
       id: 'obstruction_1',
       overline: 'OBSTRUCTION',
       title: 'Blocked sidewalk',
@@ -147,7 +188,7 @@ class _MapScreenState extends State<MapScreen> {
       location: _roadworkLocation,
       filterCategoryIndex: 1,
     ),
-    const _HazardItem(
+    _HazardItem(
       id: 'crime_1',
       overline: 'CRIME',
       title: 'Suspicious activity',
@@ -162,7 +203,7 @@ class _MapScreenState extends State<MapScreen> {
       location: _crimeLocation,
       filterCategoryIndex: 4,
     ),
-    const _HazardItem(
+    _HazardItem(
       id: 'flooding_1',
       overline: 'FLOODING',
       title: 'Minor street flooding',
@@ -179,6 +220,15 @@ class _MapScreenState extends State<MapScreen> {
     ),
   ];
 
+  late final HazardReportService _hazardReportService;
+  StreamSubscription<HazardReportData>? _reportSubscription;
+  final List<_HazardItem> _reportedHazards = <_HazardItem>[];
+
+  List<_HazardItem> get _allHazards => <_HazardItem>[
+        ..._reportedHazards,
+        ..._defaultHazards,
+      ];
+
   List<_HazardItem> get _filteredHazards {
     if (_selectedFilterIndex == 0) {
       return _allHazards;
@@ -193,8 +243,82 @@ class _MapScreenState extends State<MapScreen> {
     super.initState();
     _currentLocation = widget.initialLocation ?? LocationService.defaultLocation;
     _currentLatitude = _currentLocation.latitude;
+    _hazardReportService = widget.hazardReportService ?? HazardReportService();
+    for (final sessionReport in HazardReportService.sessionReports) {
+      if (sessionReport.location != null) {
+        _upsertReportedHazardItem(_buildHazardItemFromReport(sessionReport));
+      }
+    }
+    _reportSubscription =
+        HazardReportService.reportStream.listen(_onExternalReportSubmitted);
     _searchController.addListener(_onSearchChanged);
+    _loadSavedReports();
     _initDeviceLocation();
+  }
+
+  Future<void> _loadSavedReports() async {
+    final savedReports = await _hazardReportService.fetchReports();
+    if (!mounted) return;
+    setState(() {
+      final mergedById = <String, _HazardItem>{};
+      for (final report in savedReports) {
+        if (report.location == null) continue;
+        final item = _buildHazardItemFromReport(report);
+        mergedById.putIfAbsent(item.id, () => item);
+      }
+      for (final existing in _reportedHazards) {
+        mergedById.putIfAbsent(existing.id, () => existing);
+      }
+      _reportedHazards
+        ..clear()
+        ..addAll(mergedById.values);
+    });
+  }
+
+  void _onExternalReportSubmitted(HazardReportData report) {
+    if (!mounted) return;
+    setState(() {
+      _upsertReportedHazardItem(
+        _buildHazardItemFromReport(report),
+        insertAtFront: true,
+      );
+    });
+  }
+
+  void _upsertReportedHazardItem(
+    _HazardItem hazard, {
+    bool insertAtFront = false,
+  }) {
+    final existingIdx = _reportedHazards.indexWhere((h) => h.id == hazard.id);
+    if (existingIdx != -1) {
+      _reportedHazards.removeAt(existingIdx);
+      _reportedHazards.insert(insertAtFront ? 0 : existingIdx, hazard);
+    } else if (insertAtFront) {
+      _reportedHazards.insert(0, hazard);
+    } else {
+      _reportedHazards.add(hazard);
+    }
+  }
+
+  void _refreshReportedHazardDistances() {
+    for (int i = 0; i < _reportedHazards.length; i++) {
+      final item = _reportedHazards[i];
+      _reportedHazards[i] = _HazardItem(
+        id: item.id,
+        overline: item.overline,
+        title: item.title,
+        subtitle: item.subtitle,
+        distance: _formatDistanceTo(item.location),
+        badgeText: item.badgeText,
+        themeColor: item.themeColor,
+        bgColor: item.bgColor,
+        iconBgColor: item.iconBgColor,
+        badgeBgColor: item.badgeBgColor,
+        icon: item.icon,
+        location: item.location,
+        filterCategoryIndex: item.filterCategoryIndex,
+      );
+    }
   }
 
   void _onSearchChanged() {
@@ -387,6 +511,7 @@ class _MapScreenState extends State<MapScreen> {
       setState(() {
         _currentLocation = lastKnown;
         _currentLatitude = lastKnown.latitude;
+        _refreshReportedHazardDistances();
       });
       _mapController.move(_currentLocation, _currentZoom);
     }
@@ -397,6 +522,7 @@ class _MapScreenState extends State<MapScreen> {
       setState(() {
         _currentLocation = current;
         _currentLatitude = current.latitude;
+        _refreshReportedHazardDistances();
       });
       _mapController.move(_currentLocation, _currentZoom);
     }
@@ -435,6 +561,7 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   void dispose() {
+    _reportSubscription?.cancel();
     _searchDebounceTimer?.cancel();
     _reverseGeocodeDebounceTimer?.cancel();
     _searchController.removeListener(_onSearchChanged);
@@ -1188,7 +1315,7 @@ class _MapScreenState extends State<MapScreen> {
       Marker(
         point: _currentLocation,
         width: 100,
-        height: 115,
+        height: 124,
         alignment: Alignment.center,
         child: _buildCurrentLocationMarker(),
       ),
@@ -1512,6 +1639,7 @@ class _MapScreenState extends State<MapScreen> {
       setState(() {
         _currentLocation = current;
         _currentLatitude = current.latitude;
+        _refreshReportedHazardDistances();
       });
       _mapController.move(current, 16.0);
       _reverseGeocode(current);
@@ -1539,26 +1667,26 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  void _addReportedHazard(HazardReportData report) {
+  String _formatRelativeTime(DateTime timestamp) {
+    final diff = DateTime.now().difference(timestamp);
+    if (diff.isNegative || diff.inMinutes < 2) {
+      return 'Just now';
+    }
+    if (diff.inMinutes < 60) {
+      return '${diff.inMinutes}m ago';
+    }
+    if (diff.inHours < 24) {
+      return '${diff.inHours}h ago';
+    }
+    return '${diff.inDays}d ago';
+  }
+
+  _HazardItem _buildHazardItemFromReport(HazardReportData report) {
+    final classification = MapScreen.classifyHazardForMap(report.category);
     Color themeColor = const Color(0xFFD97706);
     Color bgColor = const Color(0xFFFFFDF5);
     Color iconBgColor = const Color(0xFFFEF3C7);
     Color badgeBgColor = const Color(0xFFFEF3C7);
-    IconData icon = Icons.warning_amber_rounded;
-    int filterCategoryIndex = 3;
-
-    if (report.category.contains('Flood')) {
-      filterCategoryIndex = 2;
-      icon = Icons.water_drop_rounded;
-    } else if (report.category.contains('Road') ||
-        report.category.contains('Blocked') ||
-        report.category.contains('tree')) {
-      filterCategoryIndex = 1;
-      icon = Icons.construction_rounded;
-    } else {
-      filterCategoryIndex = 3;
-      icon = Icons.warning_amber_rounded;
-    }
 
     final secLower = report.securityLevel.toLowerCase();
     if (secLower.contains('high') || secLower.contains('critical')) {
@@ -1573,24 +1701,37 @@ class _MapScreenState extends State<MapScreen> {
       badgeBgColor = const Color(0xFFDBEAFE);
     }
 
-    final newHazard = _HazardItem(
-      id: 'report_${DateTime.now().millisecondsSinceEpoch}',
-      overline: report.category.replaceAll(RegExp(r'[^\w\s]'), '').trim().toUpperCase(),
+    final resolvedLocation = report.location ?? _currentLocation;
+    final normalizedCategory = HazardCategories.normalize(report.category);
+    final overline =
+        HazardReportService.cleanCategory(normalizedCategory).toUpperCase();
+    final stableId =
+        (report.reportId != null && report.reportId!.trim().isNotEmpty)
+            ? 'report_${report.reportId!.trim()}'
+            : 'report_${report.timestamp.microsecondsSinceEpoch}_${report.title.hashCode}';
+
+    return _HazardItem(
+      id: stableId,
+      overline: overline,
       title: report.title,
-      subtitle: '${report.address} (Just now)',
-      distance: 'Nearby',
+      subtitle: '${report.address} (${_formatRelativeTime(report.timestamp)})',
+      distance: _formatDistanceTo(resolvedLocation),
       badgeText: report.securityLevel,
       themeColor: themeColor,
       bgColor: bgColor,
       iconBgColor: iconBgColor,
       badgeBgColor: badgeBgColor,
-      icon: icon,
-      location: report.location ?? _currentLocation,
-      filterCategoryIndex: filterCategoryIndex,
+      icon: classification.icon,
+      location: resolvedLocation,
+      filterCategoryIndex: classification.filterCategoryIndex,
     );
+  }
+
+  void _addReportedHazard(HazardReportData report) {
+    final newHazard = _buildHazardItemFromReport(report);
 
     setState(() {
-      _allHazards.insert(0, newHazard);
+      _upsertReportedHazardItem(newHazard, insertAtFront: true);
     });
 
     _mapController.move(newHazard.location, 17.0);
@@ -1660,6 +1801,7 @@ class _MapScreenState extends State<MapScreen> {
               onTap: () {
                 showReportHazardDialog(
                   context,
+                  initialLocation: _currentLocation,
                   onReportSubmitted: _addReportedHazard,
                 );
               },

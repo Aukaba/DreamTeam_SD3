@@ -4,48 +4,23 @@ import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:dreamteam_sd3/services/gemini_hazard_service.dart';
 import 'package:dreamteam_sd3/services/hazard_report_service.dart';
+import 'package:dreamteam_sd3/services/location_service.dart';
 import 'package:dreamteam_sd3/widgets/interactive_location_picker.dart';
+
+export 'package:dreamteam_sd3/services/hazard_report_service.dart'
+    show HazardReportData;
 
 /// Shared color constants used by the report hazard modal and dialog.
 const Color _primaryNavy = Color(0xFF233253);
 const Color _secondaryGrey = Color(0xFF8A94A6);
 const Color _borderGrey = Color(0xFFE2E8F0);
 const Color _accentBlue = Color(0xFF3B82F6);
-const Color _accentAmber = Color(0xFFD97706);
 const Color _accentRed = Color(0xFFEF4444);
-
-/// Data model representing a submitted hazard report.
-class HazardReportData {
-  final String? reportId;
-  final String category;
-  final String securityLevel;
-  final String title;
-  final String description;
-  final String address;
-  final LatLng? location;
-  final Uint8List? imageBytes;
-  final String? imageUrl;
-  final int confidence;
-  final DateTime timestamp;
-
-  const HazardReportData({
-    this.reportId,
-    required this.category,
-    required this.securityLevel,
-    required this.title,
-    required this.description,
-    required this.address,
-    this.location,
-    this.imageBytes,
-    this.imageUrl,
-    this.confidence = 98,
-    required this.timestamp,
-  });
-}
 
 /// Shows the "Report a hazard" bottom sheet modal (used on home screen).
 void showReportHazardModal(
   BuildContext context, {
+  LatLng? initialLocation,
   void Function(HazardReportData report)? onReportSubmitted,
 }) {
   showModalBottomSheet(
@@ -83,6 +58,7 @@ void showReportHazardModal(
                 // Content
                 ReportHazardContentWidget(
                   onClose: () => Navigator.pop(modalContext),
+                  initialLocation: initialLocation,
                   onReportSubmitted: onReportSubmitted,
                 ),
               ],
@@ -98,6 +74,7 @@ void showReportHazardModal(
 /// exactly as shown in the map design.
 void showReportHazardDialog(
   BuildContext context, {
+  LatLng? initialLocation,
   void Function(HazardReportData report)? onReportSubmitted,
 }) {
   showDialog(
@@ -121,6 +98,7 @@ void showReportHazardDialog(
             padding: EdgeInsets.fromLTRB(20.0, 20.0, 20.0, 20.0 + bottomInset),
             child: ReportHazardContentWidget(
               onClose: () => Navigator.pop(dialogContext),
+              initialLocation: initialLocation,
               onReportSubmitted: onReportSubmitted,
             ),
           ),
@@ -134,16 +112,22 @@ void showReportHazardDialog(
 /// and interactive location picker support.
 class ReportHazardContentWidget extends StatefulWidget {
   final VoidCallback onClose;
+  final LatLng? initialLocation;
   final void Function(HazardReportData report)? onReportSubmitted;
   final GeminiHazardService? geminiService;
   final HazardReportService? hazardReportService;
+  final ImagePicker? imagePicker;
+  final Future<LatLng> Function()? currentLocationResolver;
 
   const ReportHazardContentWidget({
     super.key,
     required this.onClose,
+    this.initialLocation,
     this.onReportSubmitted,
     this.geminiService,
     this.hazardReportService,
+    this.imagePicker,
+    this.currentLocationResolver,
   });
 
   @override
@@ -154,7 +138,7 @@ class ReportHazardContentWidget extends StatefulWidget {
 class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
   late final GeminiHazardService _geminiService;
   late final HazardReportService _hazardReportService;
-  final ImagePicker _picker = ImagePicker();
+  late final ImagePicker _picker;
 
   LatLng? _selectedLocation;
   String _selectedAddress = 'Current Location';
@@ -179,6 +163,14 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
     super.initState();
     _geminiService = widget.geminiService ?? GeminiHazardService();
     _hazardReportService = widget.hazardReportService ?? HazardReportService();
+    _picker = widget.imagePicker ?? ImagePicker();
+    _selectedLocation = widget.initialLocation;
+  }
+
+  Future<LatLng> _resolveCurrentLocation() async {
+    final resolver =
+        widget.currentLocationResolver ?? LocationService.getCurrentLocation;
+    return resolver();
   }
 
   @override
@@ -545,6 +537,18 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
     );
   }
 
+  static double? _parseCoord(dynamic value) {
+    if (value is num) {
+      final d = value.toDouble();
+      return d.isFinite ? d : null;
+    }
+    if (value is String && value.trim().isNotEmpty) {
+      final parsed = double.tryParse(value.trim());
+      if (parsed != null && parsed.isFinite) return parsed;
+    }
+    return null;
+  }
+
   Future<void> _submitReport() async {
     if (_selectedImageBytes == null || _aiResult == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -569,46 +573,75 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
       return;
     }
 
+    // Snapshot all report fields before awaiting any async operations so late UI
+    // mutations cannot cause the map marker to diverge from the persisted row.
+    final submittedCategory = _selectedCategory;
+    final submittedSecurityLevel = _selectedSecurityLevel;
+    final submittedTitle = _titleController.text.trim().isNotEmpty
+        ? _titleController.text.trim()
+        : _aiResult!.title;
+    final submittedDescription = _descriptionController.text.trim().isNotEmpty
+        ? _descriptionController.text.trim()
+        : _aiResult!.description;
+    final submittedAddress = _selectedAddress;
+    final submittedImageBytes = Uint8List.fromList(_selectedImageBytes!);
+    final submittedMimeType = _imageMimeType;
+    final submittedConfidence = _aiResult?.confidence ?? 98;
+    final capturedLocation = _selectedLocation;
+    final submittedTimestamp = DateTime.now();
+
     setState(() {
       _isSubmitting = true;
     });
 
     try {
-      final title = _titleController.text.trim().isNotEmpty
-          ? _titleController.text.trim()
-          : _aiResult!.title;
-      final description = _descriptionController.text.trim().isNotEmpty
-          ? _descriptionController.text.trim()
-          : _aiResult!.description;
+      final resolvedLocation =
+          capturedLocation ?? await _resolveCurrentLocation();
 
       // Submit to Supabase `ReportTable` and Storage bucket `hazard-reports`
       final insertedRow = await _hazardReportService.submitReport(
-        category: _selectedCategory,
-        securityLevel: _selectedSecurityLevel,
-        title: title,
-        description: description,
-        locationAddress: _selectedAddress,
-        location: _selectedLocation,
-        imageBytes: _selectedImageBytes,
-        confidence: _aiResult?.confidence ?? 98,
-        mimeType: _imageMimeType,
+        category: submittedCategory,
+        securityLevel: submittedSecurityLevel,
+        title: submittedTitle,
+        description: submittedDescription,
+        locationAddress: submittedAddress,
+        location: resolvedLocation,
+        imageBytes: submittedImageBytes,
+        confidence: submittedConfidence,
+        mimeType: submittedMimeType,
       );
+
+      final savedLat = _parseCoord(insertedRow['latitude']);
+      final savedLng = _parseCoord(insertedRow['longitude']);
+      final persistedLocation =
+          (savedLat != null && savedLng != null)
+              ? LatLng(savedLat, savedLng)
+              : resolvedLocation;
+      final persistedTimestamp = insertedRow['created_at'] != null
+          ? (DateTime.tryParse(insertedRow['created_at'].toString())?.toLocal() ??
+              submittedTimestamp)
+          : submittedTimestamp;
 
       final report = HazardReportData(
         reportId: insertedRow['reportID']?.toString(),
-        category: _selectedCategory,
-        securityLevel: _selectedSecurityLevel,
-        title: title,
-        description: description,
-        address: _selectedAddress,
-        location: _selectedLocation,
-        imageBytes: _selectedImageBytes,
+        category: submittedCategory,
+        securityLevel: submittedSecurityLevel,
+        title: submittedTitle,
+        description: submittedDescription,
+        address: submittedAddress,
+        location: persistedLocation,
+        imageBytes: submittedImageBytes,
         imageUrl: insertedRow['image_url']?.toString(),
-        confidence: _aiResult?.confidence ?? 98,
-        timestamp: DateTime.now(),
+        confidence: submittedConfidence,
+        timestamp: persistedTimestamp,
       );
 
+      HazardReportService.recordSubmittedReport(report);
+
       if (!mounted) return;
+      setState(() {
+        _isSubmitting = false;
+      });
       widget.onReportSubmitted?.call(report);
 
       // Show success feedback
@@ -727,7 +760,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
           child: Material(
             color: Colors.transparent,
             child: InkWell(
-              onTap: _openLocationPicker,
+              onTap: (_isAnalyzing || _isSubmitting) ? null : _openLocationPicker,
               borderRadius: BorderRadius.circular(14),
               child: Padding(
                 padding: const EdgeInsets.symmetric(
@@ -873,10 +906,10 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
           borderRadius: BorderRadius.circular(14),
           border: Border.all(color: const Color(0xFFCBD5E1), width: 1.2),
         ),
-        child: Column(
+        child: const Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const SizedBox(
+            SizedBox(
               width: 28,
               height: 28,
               child: CircularProgressIndicator(
@@ -884,8 +917,8 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
                 valueColor: AlwaysStoppedAnimation<Color>(_primaryNavy),
               ),
             ),
-            const SizedBox(height: 12),
-            const Text(
+            SizedBox(height: 12),
+            Text(
               'Analyzing photo with Gemini AI...',
               style: TextStyle(
                 fontFamily: 'Poppins',
@@ -894,8 +927,8 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
                 color: _primaryNavy,
               ),
             ),
-            const SizedBox(height: 4),
-            const Text(
+            SizedBox(height: 4),
+            Text(
               'Determining hazard category and security level',
               style: TextStyle(
                 fontFamily: 'Poppins',
@@ -965,7 +998,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
                     color: Colors.white.withValues(alpha: 0.9),
                     shape: const CircleBorder(),
                     child: InkWell(
-                      onTap: _showPhotoSourceSheet,
+                      onTap: _isSubmitting ? null : _showPhotoSourceSheet,
                       customBorder: const CircleBorder(),
                       child: const Padding(
                         padding: EdgeInsets.all(6.0),
@@ -996,7 +1029,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
                     ),
                   ),
                   TextButton(
-                    onPressed: _showPhotoSourceSheet,
+                    onPressed: _isSubmitting ? null : _showPhotoSourceSheet,
                     style: TextButton.styleFrom(
                       padding: EdgeInsets.zero,
                       minimumSize: const Size(50, 24),
@@ -1218,13 +1251,15 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
                         child: Text(cat),
                       );
                     }).toList(),
-                    onChanged: (newCat) {
-                      if (newCat != null) {
-                        setState(() {
-                          _selectedCategory = newCat;
-                        });
-                      }
-                    },
+                    onChanged: _isSubmitting
+                        ? null
+                        : (newCat) {
+                            if (newCat != null) {
+                              setState(() {
+                                _selectedCategory = newCat;
+                              });
+                            }
+                          },
                   ),
                 ),
               ),
@@ -1325,6 +1360,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
               const SizedBox(height: 8),
               TextField(
                 controller: _titleController,
+                readOnly: _isSubmitting,
                 style: const TextStyle(
                   fontFamily: 'Poppins',
                   fontSize: 13,
@@ -1348,6 +1384,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
               const SizedBox(height: 10),
               TextField(
                 controller: _descriptionController,
+                readOnly: _isSubmitting,
                 maxLines: 2,
                 style: const TextStyle(
                   fontFamily: 'Poppins',
@@ -1379,11 +1416,13 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
     final isSelected = _selectedSecurityLevel.toLowerCase() == level.toLowerCase();
     return Expanded(
       child: GestureDetector(
-        onTap: () {
-          setState(() {
-            _selectedSecurityLevel = level;
-          });
-        },
+        onTap: _isSubmitting
+            ? null
+            : () {
+                setState(() {
+                  _selectedSecurityLevel = level;
+                });
+              },
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
           padding: const EdgeInsets.symmetric(vertical: 10),

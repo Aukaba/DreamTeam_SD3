@@ -1,6 +1,6 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -159,6 +159,62 @@ void main() {
       final result = await service.analyzeHazardImage(imageBytes: fakeBytes);
       expect(result.isHazard, isFalse);
       expect(result.errorMessage, contains('domestic cat'));
+    });
+
+    test('rejects LogoSR.png as non-hazard deterministically with mocked Gemini client', () async {
+      final logoBytes = await File('assets/image/LogoSR.png').readAsBytes();
+
+      final mockClient = MockClient((request) async {
+        expect(request.url.path, contains('gemini-3-flash-preview:generateContent'));
+        final decodedBody = jsonDecode(request.body) as Map<String, dynamic>;
+        final parts = ((decodedBody['contents'] as List).first
+            as Map<String, dynamic>)['parts'] as List<dynamic>;
+        final inlineData = (parts[1] as Map<String, dynamic>)['inlineData']
+            as Map<String, dynamic>;
+        expect(inlineData['mimeType'], 'image/png');
+        expect(inlineData['data'], base64Encode(logoBytes));
+
+        final responsePayload = {
+          'candidates': [
+            {
+              'content': {
+                'parts': [
+                  {
+                    'text': jsonEncode({
+                      'is_hazard': false,
+                      'hazard_category': null,
+                      'security_level': null,
+                      'title': null,
+                      'description': null,
+                      'error_message':
+                          'The uploaded image shows an application logo rather than a road or safety hazard.',
+                    })
+                  }
+                ]
+              }
+            }
+          ]
+        };
+
+        return http.Response(
+          jsonEncode(responsePayload),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+
+      final service = GeminiHazardService(
+        client: mockClient,
+        apiKey: 'deterministic_test_key',
+      );
+
+      final result = await service.analyzeHazardImage(
+        imageBytes: logoBytes,
+        mimeType: 'image/png',
+      );
+      expect(result.isHazard, isFalse);
+      expect(result.errorMessage, isNotNull);
+      expect(result.errorMessage, contains('application logo'));
     });
   });
 }
