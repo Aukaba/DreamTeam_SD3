@@ -1,7 +1,134 @@
+import 'dart:async';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'gemini_hazard_service.dart';
+import 'location_service.dart';
+
+/// Data model representing a submitted or persisted hazard report.
+class HazardReportData {
+  final String? reportId;
+  final String category;
+  final String securityLevel;
+  final String title;
+  final String description;
+  final String address;
+  final LatLng? location;
+  final Uint8List? imageBytes;
+  final String? imageUrl;
+  final int confidence;
+  final DateTime timestamp;
+
+  const HazardReportData({
+    this.reportId,
+    required this.category,
+    required this.securityLevel,
+    required this.title,
+    required this.description,
+    required this.address,
+    this.location,
+    this.imageBytes,
+    this.imageUrl,
+    this.confidence = 98,
+    required this.timestamp,
+  });
+
+  static double? _parseCoordinate(dynamic value) {
+    if (value is num) {
+      final asDouble = value.toDouble();
+      return asDouble.isFinite ? asDouble : null;
+    }
+    if (value is String && value.trim().isNotEmpty) {
+      final parsed = double.tryParse(value.trim());
+      if (parsed != null && parsed.isFinite) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
+  /// Creates a [HazardReportData] from a `public.ReportTable` row.
+  factory HazardReportData.fromReportRow(Map<String, dynamic> row) {
+    final rawCategory = row['hazard_category']?.toString();
+    final normalizedCategory = HazardCategories.normalize(rawCategory);
+    final rawSeverity = row['severity_level']?.toString();
+    final normalizedSecurity = HazardSecurityLevels.normalize(rawSeverity);
+
+    final rawTitle = row['detected_hazard']?.toString().trim() ?? '';
+    final title = rawTitle.isNotEmpty
+        ? rawTitle
+        : HazardReportService.cleanCategory(normalizedCategory);
+
+    final rawAddress = row['location_address']?.toString().trim() ?? '';
+    final address = rawAddress.isNotEmpty ? rawAddress : 'Current Location';
+
+    final lat = _parseCoordinate(row['latitude']);
+    final lng = _parseCoordinate(row['longitude']);
+    final LatLng? parsedLocation = (lat != null &&
+            lng != null &&
+            lat >= -90.0 &&
+            lat <= 90.0 &&
+            lng >= -180.0 &&
+            lng <= 180.0)
+        ? LatLng(lat, lng)
+        : null;
+
+    final rawConfidence = row['confidence'];
+    final int confidence = rawConfidence is num
+        ? rawConfidence.round().clamp(1, 100)
+        : (int.tryParse(rawConfidence?.toString() ?? '')?.clamp(1, 100) ?? 98);
+
+    final rawCreatedAt = row['created_at']?.toString();
+    final DateTime timestamp = rawCreatedAt != null
+        ? (DateTime.tryParse(rawCreatedAt)?.toLocal() ?? DateTime.now())
+        : DateTime.now();
+
+    final rawId =
+        row['reportID']?.toString() ?? row['report_id']?.toString();
+
+    return HazardReportData(
+      reportId: (rawId != null && rawId.trim().isNotEmpty) ? rawId.trim() : null,
+      category: normalizedCategory,
+      securityLevel: normalizedSecurity,
+      title: title,
+      description: row['description']?.toString() ?? '',
+      address: address,
+      location: parsedLocation,
+      imageUrl: row['image_url']?.toString(),
+      confidence: confidence,
+      timestamp: timestamp,
+    );
+  }
+
+  HazardReportData copyWith({
+    String? reportId,
+    String? category,
+    String? securityLevel,
+    String? title,
+    String? description,
+    String? address,
+    LatLng? location,
+    Uint8List? imageBytes,
+    String? imageUrl,
+    int? confidence,
+    DateTime? timestamp,
+  }) {
+    return HazardReportData(
+      reportId: reportId ?? this.reportId,
+      category: category ?? this.category,
+      securityLevel: securityLevel ?? this.securityLevel,
+      title: title ?? this.title,
+      description: description ?? this.description,
+      address: address ?? this.address,
+      location: location ?? this.location,
+      imageBytes: imageBytes ?? this.imageBytes,
+      imageUrl: imageUrl ?? this.imageUrl,
+      confidence: confidence ?? this.confidence,
+      timestamp: timestamp ?? this.timestamp,
+    );
+  }
+}
 
 /// Helper to generate a standard RFC 4122 version 4 UUID string.
 String generateUuidV4() {
@@ -18,13 +145,54 @@ String generateUuidV4() {
   ].join('-');
 }
 
-/// Service that uploads hazard details and images to Supabase (`ReportTable` and `hazard-reports` bucket).
+/// Service that uploads and retrieves hazard details and images in Supabase (`ReportTable` and `hazard-reports` bucket).
 class HazardReportService {
   final SupabaseClient? _explicitClient;
+  final Future<LatLng> Function()? _locationResolver;
 
-  HazardReportService({SupabaseClient? client}) : _explicitClient = client;
+  static final List<HazardReportData> _sessionReports = <HazardReportData>[];
+  static final StreamController<HazardReportData> _reportStreamController =
+      StreamController<HazardReportData>.broadcast();
+
+  HazardReportService({
+    SupabaseClient? client,
+    Future<LatLng> Function()? locationResolver,
+  })  : _explicitClient = client,
+        _locationResolver = locationResolver;
 
   SupabaseClient get _client => _explicitClient ?? Supabase.instance.client;
+
+  SupabaseClient? _tryGetClient() {
+    if (_explicitClient != null) return _explicitClient;
+    try {
+      return Supabase.instance.client;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Broadcast stream emitting newly submitted hazard reports across screens.
+  static Stream<HazardReportData> get reportStream =>
+      _reportStreamController.stream;
+
+  /// Snapshot of reports submitted during the active app session.
+  static List<HazardReportData> get sessionReports =>
+      List<HazardReportData>.unmodifiable(_sessionReports);
+
+  /// Records a newly submitted report in session state and notifies listeners (e.g. [MapScreen]).
+  static void recordSubmittedReport(HazardReportData report) {
+    final reportId = report.reportId;
+    if (reportId != null && reportId.isNotEmpty) {
+      _sessionReports.removeWhere((existing) => existing.reportId == reportId);
+    }
+    _sessionReports.insert(0, report);
+    _reportStreamController.add(report);
+  }
+
+  @visibleForTesting
+  static void clearSessionReports() {
+    _sessionReports.clear();
+  }
 
   /// Strips leading emoji for clean database storage, matching the `ReportTable` format.
   /// Example: "🚧 Road damage" -> "Road damage", "🌳 Fallen tree" -> "Fallen tree"
@@ -51,7 +219,8 @@ class HazardReportService {
             ),
           );
 
-      final publicUrl = _client.storage.from('hazard-reports').getPublicUrl(storagePath);
+      final publicUrl =
+          _client.storage.from('hazard-reports').getPublicUrl(storagePath);
       return publicUrl;
     } catch (e) {
       debugPrint('Warning: Failed to upload hazard photo to storage: $e');
@@ -72,6 +241,8 @@ class HazardReportService {
     String? mimeType,
   }) async {
     final reportId = generateUuidV4();
+    final effectiveLocation = location ??
+        await (_locationResolver ?? LocationService.getCurrentLocation)();
     final currentUserId = _client.auth.currentUser?.id;
     bool reportAnonymously = false;
     if (currentUserId != null) {
@@ -103,23 +274,89 @@ class HazardReportService {
       'reportID': reportId,
       'user_id': reportAnonymously ? null : currentUserId,
       'hazard_category': cleanCategory(category),
-      'detected_hazard': title.trim().isNotEmpty ? title.trim() : cleanCategory(category),
+      'detected_hazard':
+          title.trim().isNotEmpty ? title.trim() : cleanCategory(category),
       'severity_level': securityLevel,
       'confidence': confidence,
-      'location_address': locationAddress.trim().isNotEmpty ? locationAddress.trim() : 'Current Location',
-      'latitude': location?.latitude,
-      'longitude': location?.longitude,
+      'location_address': locationAddress.trim().isNotEmpty
+          ? locationAddress.trim()
+          : 'Current Location',
+      'latitude': effectiveLocation.latitude,
+      'longitude': effectiveLocation.longitude,
       'image_url': imageUrl,
       'created_at': DateTime.now().toUtc().toIso8601String(),
     };
 
     // 3. Insert into Supabase `ReportTable`
     try {
-      final response = await _client.from('ReportTable').insert(payload).select().maybeSingle();
-      return response ?? payload;
+      final response = await _client
+          .from('ReportTable')
+          .insert(payload)
+          .select()
+          .maybeSingle();
+      final savedRow = response ?? payload;
+      recordSubmittedReport(
+        HazardReportData.fromReportRow(savedRow).copyWith(
+          category: HazardCategories.normalize(category),
+          securityLevel: HazardSecurityLevels.normalize(securityLevel),
+          description: description,
+          location: effectiveLocation,
+          imageBytes: imageBytes,
+        ),
+      );
+      return savedRow;
     } catch (e) {
       debugPrint('Error inserting into ReportTable: $e');
       rethrow;
     }
+  }
+
+  /// Loads saved hazard reports from `public.ReportTable` (with usable coordinates),
+  /// merged with any reports submitted during the current app session.
+  Future<List<HazardReportData>> fetchReports({int limit = 100}) async {
+    final mergedById = <String, HazardReportData>{};
+    final unkeyed = <HazardReportData>[];
+
+    void addReport(HazardReportData report) {
+      if (report.location == null) return;
+      final id = report.reportId;
+      if (id != null && id.isNotEmpty) {
+        mergedById.putIfAbsent(id, () => report);
+      } else {
+        unkeyed.add(report);
+      }
+    }
+
+    for (final sessionReport in _sessionReports) {
+      addReport(sessionReport);
+    }
+
+    final client = _tryGetClient();
+    if (client != null) {
+      try {
+        final rawRows = await client
+            .from('ReportTable')
+            .select()
+            .not('latitude', 'is', null)
+            .not('longitude', 'is', null)
+            .order('created_at', ascending: false)
+            .limit(limit);
+
+        for (final dynamic item in (rawRows as List<dynamic>)) {
+          if (item is Map<String, dynamic>) {
+            addReport(HazardReportData.fromReportRow(item));
+          }
+        }
+      } catch (e) {
+        debugPrint('Warning: Failed to fetch reports from ReportTable: $e');
+      }
+    }
+
+    final combined = <HazardReportData>[
+      ...mergedById.values,
+      ...unkeyed,
+    ];
+    combined.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    return combined;
   }
 }
