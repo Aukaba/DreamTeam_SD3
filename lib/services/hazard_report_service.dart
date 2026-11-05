@@ -18,6 +18,7 @@ class HazardReportData {
   final Uint8List? imageBytes;
   final String? imageUrl;
   final int confidence;
+  final String status;
   final DateTime timestamp;
 
   const HazardReportData({
@@ -31,6 +32,7 @@ class HazardReportData {
     this.imageBytes,
     this.imageUrl,
     this.confidence = 98,
+    this.status = 'active',
     required this.timestamp,
   });
 
@@ -87,16 +89,21 @@ class HazardReportData {
     final rawId =
         row['reportID']?.toString() ?? row['report_id']?.toString();
 
+    final rawStatus = row['status']?.toString().trim().toLowerCase() ?? '';
+    final status =
+        (rawStatus == 'resolved' || rawStatus == 'archived') ? rawStatus : 'active';
+
     return HazardReportData(
       reportId: (rawId != null && rawId.trim().isNotEmpty) ? rawId.trim() : null,
       category: normalizedCategory,
       securityLevel: normalizedSecurity,
       title: title,
-      description: row['description']?.toString() ?? '',
+      description: row['description']?.toString().trim() ?? '',
       address: address,
       location: parsedLocation,
       imageUrl: row['image_url']?.toString(),
       confidence: confidence,
+      status: status,
       timestamp: timestamp,
     );
   }
@@ -112,6 +119,7 @@ class HazardReportData {
     Uint8List? imageBytes,
     String? imageUrl,
     int? confidence,
+    String? status,
     DateTime? timestamp,
   }) {
     return HazardReportData(
@@ -125,6 +133,7 @@ class HazardReportData {
       imageBytes: imageBytes ?? this.imageBytes,
       imageUrl: imageUrl ?? this.imageUrl,
       confidence: confidence ?? this.confidence,
+      status: status ?? this.status,
       timestamp: timestamp ?? this.timestamp,
     );
   }
@@ -179,7 +188,7 @@ class HazardReportService {
   static List<HazardReportData> get sessionReports =>
       List<HazardReportData>.unmodifiable(_sessionReports);
 
-  /// Records a newly submitted report in session state and notifies listeners (e.g. [MapScreen]).
+  /// Records a newly submitted report in session state and notifies listeners (e.g. [MapScreen], Home, Alerts).
   static void recordSubmittedReport(HazardReportData report) {
     final reportId = report.reportId;
     if (reportId != null && reportId.isNotEmpty) {
@@ -199,6 +208,30 @@ class HazardReportService {
   static String cleanCategory(String category) {
     final stripped = category.replaceAll(RegExp(r'^[^\w\s]+\s*'), '').trim();
     return stripped.isNotEmpty ? stripped : category.trim();
+  }
+
+  /// Formats a human-readable relative timestamp (e.g. "Just now", "5m ago", "2h ago").
+  static String formatRelativeTime(DateTime timestamp, {DateTime? now}) {
+    final diff = (now ?? DateTime.now()).difference(timestamp);
+    if (diff.isNegative || diff.inMinutes < 2) {
+      return 'Just now';
+    }
+    if (diff.inMinutes < 60) {
+      return '${diff.inMinutes}m ago';
+    }
+    if (diff.inHours < 24) {
+      return '${diff.inHours}h ago';
+    }
+    return '${diff.inDays}d ago';
+  }
+
+  /// Formats distance in meters or kilometers from [origin] to [target].
+  static String formatDistanceBetween(LatLng origin, LatLng target) {
+    final meters = const Distance().distance(origin, target);
+    if (meters < 1000) {
+      return '${meters.round()}m away';
+    }
+    return '${(meters / 1000.0).toStringAsFixed(1)} km away';
   }
 
   static String _extensionForMimeType(String? mimeType) {
@@ -243,6 +276,8 @@ class HazardReportService {
   }
 
   /// Submits the hazard report details into `public.ReportTable` in Supabase.
+  /// Note: Database trigger `on_report_table_sync_alert` automatically publishes
+  /// the corresponding Hazard or Community alert into `public.alerts`.
   Future<Map<String, dynamic>> submitReport({
     required String category,
     required String securityLevel,
@@ -283,6 +318,8 @@ class HazardReportService {
       );
     }
 
+    final trimmedDescription = description.trim();
+
     // 2. Prepare payload matching `ReportTable` columns
     final payload = <String, dynamic>{
       'reportID': reportId,
@@ -290,6 +327,7 @@ class HazardReportService {
       'hazard_category': cleanCategory(category),
       'detected_hazard':
           title.trim().isNotEmpty ? title.trim() : cleanCategory(category),
+      'description': trimmedDescription.isNotEmpty ? trimmedDescription : null,
       'severity_level': securityLevel,
       'confidence': confidence,
       'location_address': locationAddress.trim().isNotEmpty
@@ -298,6 +336,7 @@ class HazardReportService {
       'latitude': effectiveLocation.latitude,
       'longitude': effectiveLocation.longitude,
       'image_url': imageUrl,
+      'status': 'active',
       'created_at': DateTime.now().toUtc().toIso8601String(),
     };
 
@@ -313,9 +352,10 @@ class HazardReportService {
         HazardReportData.fromReportRow(savedRow).copyWith(
           category: HazardCategories.normalize(category),
           securityLevel: HazardSecurityLevels.normalize(securityLevel),
-          description: description,
+          description: trimmedDescription,
           location: effectiveLocation,
           imageBytes: imageBytes,
+          status: 'active',
         ),
       );
       return savedRow;
@@ -327,12 +367,16 @@ class HazardReportService {
 
   /// Loads saved hazard reports from `public.ReportTable` (with usable coordinates),
   /// merged with any reports submitted during the current app session.
-  Future<List<HazardReportData>> fetchReports({int limit = 100}) async {
+  Future<List<HazardReportData>> fetchReports({
+    int limit = 100,
+    bool activeOnly = true,
+  }) async {
     final mergedById = <String, HazardReportData>{};
     final unkeyed = <HazardReportData>[];
 
     void addReport(HazardReportData report) {
       if (report.location == null) return;
+      if (activeOnly && report.status != 'active') return;
       final id = report.reportId;
       if (id != null && id.isNotEmpty) {
         mergedById.putIfAbsent(id, () => report);
@@ -348,11 +392,15 @@ class HazardReportService {
     final client = _tryGetClient();
     if (client != null) {
       try {
-        final rawRows = await client
+        var query = client
             .from('ReportTable')
             .select()
             .not('latitude', 'is', null)
-            .not('longitude', 'is', null)
+            .not('longitude', 'is', null);
+        if (activeOnly) {
+          query = query.eq('status', 'active');
+        }
+        final rawRows = await query
             .order('created_at', ascending: false)
             .limit(limit);
 
@@ -371,6 +419,35 @@ class HazardReportService {
       ...unkeyed,
     ];
     combined.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    if (combined.length > limit) {
+      return combined.sublist(0, limit);
+    }
     return combined;
+  }
+
+  /// Fetches recent active hazard reports for the Home screen.
+  /// Prioritizes recent reports within [preferredRadiusMeters] of [nearLocation]
+  /// when available, falling back to the latest active reports overall.
+  Future<List<HazardReportData>> fetchRecentHazards({
+    LatLng? nearLocation,
+    int limit = 4,
+    double preferredRadiusMeters = 25000,
+  }) async {
+    final allActive = await fetchReports(limit: 100, activeOnly: true);
+    if (allActive.isEmpty) return const <HazardReportData>[];
+
+    if (nearLocation != null) {
+      const distanceCalc = Distance();
+      final withinRadius = allActive
+          .where((r) =>
+              r.location != null &&
+              distanceCalc.distance(nearLocation, r.location!) <=
+                  preferredRadiusMeters)
+          .toList();
+      if (withinRadius.isNotEmpty) {
+        return withinRadius.take(limit).toList();
+      }
+    }
+    return allActive.take(limit).toList();
   }
 }

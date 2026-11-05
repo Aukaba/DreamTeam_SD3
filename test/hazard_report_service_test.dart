@@ -55,12 +55,14 @@ void main() {
         'reportID': 'rep-001',
         'hazard_category': 'Broken streetlight',
         'detected_hazard': 'Dark Corner Streetlight Out',
+        'description': 'Streetlight completely out near pedestrian crossing.',
         'severity_level': 'High',
         'confidence': 96,
         'location_address': 'Osmena Blvd, Cebu City',
         'latitude': 10.3102,
         'longitude': 123.8914,
         'image_url': 'https://example.com/photo.jpg',
+        'status': 'active',
         'created_at': '2026-11-05T17:19:52Z',
       };
 
@@ -69,6 +71,11 @@ void main() {
       expect(parsed.category, HazardCategories.brokenStreetlight);
       expect(parsed.securityLevel, HazardSecurityLevels.high);
       expect(parsed.title, 'Dark Corner Streetlight Out');
+      expect(
+        parsed.description,
+        'Streetlight completely out near pedestrian crossing.',
+      );
+      expect(parsed.status, 'active');
       expect(parsed.address, 'Osmena Blvd, Cebu City');
       expect(parsed.location, const LatLng(10.3102, 123.8914));
       expect(parsed.confidence, 96);

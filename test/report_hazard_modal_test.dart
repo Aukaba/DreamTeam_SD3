@@ -89,6 +89,7 @@ class FakeHazardReportService extends HazardReportService {
       'reportID': 'fake-uuid-1234',
       'hazard_category': HazardReportService.cleanCategory(category),
       'detected_hazard': title,
+      'description': description,
       'severity_level': securityLevel,
       'confidence': confidence,
       'location_address': locationAddress,
@@ -96,6 +97,7 @@ class FakeHazardReportService extends HazardReportService {
       'longitude': location?.longitude,
       'image_url':
           'https://wupbsnrtrsontoajxkir.supabase.co/storage/v1/object/public/hazard-reports/fake-uuid-1234.jpg',
+      'status': 'active',
       'created_at': '2026-11-06T00:00:00Z',
     };
 
@@ -106,17 +108,22 @@ class FakeHazardReportService extends HazardReportService {
   }
 
   @override
-  Future<List<HazardReportData>> fetchReports({int limit = 100}) async {
+  Future<List<HazardReportData>> fetchReports({
+    int limit = 100,
+    bool activeOnly = true,
+  }) async {
     final byId = <String, HazardReportData>{};
     for (final s in HazardReportService.sessionReports) {
+      if (activeOnly && s.status != 'active') continue;
       if (s.reportId != null) byId[s.reportId!] = s;
     }
     for (final db in storedDbReports) {
+      if (activeOnly && db.status != 'active') continue;
       if (db.reportId != null) {
         byId.putIfAbsent(db.reportId!, () => db);
       }
     }
-    return byId.values.toList();
+    return byId.values.take(limit).toList();
   }
 }
 
@@ -328,8 +335,8 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 200));
 
-    // Expand bottom sheet so both map markers and list cards are visible
-    await tester.tap(find.text('6 nearby hazards'));
+    // Expand bottom sheet so both map markers and list cards are visible (pure DB/session count = 2)
+    await tester.tap(find.text('2 nearby hazards'));
     await tester.pump(const Duration(milliseconds: 350));
 
     expect(
