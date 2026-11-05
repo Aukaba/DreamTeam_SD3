@@ -34,6 +34,23 @@ class FakeImagePicker extends ImagePicker {
   }
 }
 
+class SequenceGeminiHazardService extends GeminiHazardService {
+  final List<GeminiHazardResult> results;
+  int _index = 0;
+
+  SequenceGeminiHazardService(this.results) : super(apiKey: 'fake_key');
+
+  @override
+  Future<GeminiHazardResult> analyzeHazardImage({
+    required Uint8List imageBytes,
+    String mimeType = 'image/jpeg',
+  }) async {
+    final current = results[_index < results.length ? _index : results.length - 1];
+    _index++;
+    return current;
+  }
+}
+
 class FakeGeminiHazardService extends GeminiHazardService {
   final GeminiHazardResult returnResult;
 
@@ -347,5 +364,131 @@ void main() {
       find.textContaining('Fallen Acacia Blocking Lane', findRichText: true),
       findsNothing,
     );
+  });
+
+  testWidgets('Category and Security Level are strictly AI-evaluated and read-only while Title and Description remain editable', (tester) async {
+    final fakeReportService = FakeHazardReportService();
+    HazardReportData? submittedReport;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: ReportHazardContentWidget(
+              onClose: () {},
+              initialLocation: const LatLng(10.3157, 123.8920),
+              imagePicker: FakeImagePicker(_validPngBytes),
+              geminiService: FakeGeminiHazardService(
+                const GeminiHazardResult(
+                  isHazard: true,
+                  category: HazardCategories.roadDamage,
+                  securityLevel: HazardSecurityLevels.high,
+                  confidence: 99,
+                  title: 'Road Cliff Collapse',
+                  description: 'Major lane collapse along steep embankment.',
+                  modelUsed: 'gemini-3-flash-preview',
+                ),
+              ),
+              hazardReportService: fakeReportService,
+              onReportSubmitted: (report) => submittedReport = report,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    // Upload and analyze photo
+    await tester.tap(find.text('Add a photo'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Choose from Gallery / Files'));
+    await tester.pumpAndSettle();
+
+    // 1. Verify NO DropdownButton exists for category, and AI-evaluated category is displayed
+    expect(find.byType(DropdownButton<String>), findsNothing);
+    expect(find.byKey(const ValueKey('ai_locked_category_box')), findsOneWidget);
+    expect(find.text(HazardCategories.roadDamage), findsOneWidget);
+
+    // 2. Attempt tapping the category box and tapping "Low" / "Medium" security pills -> cannot override AI
+    await tester.tap(find.byKey(const ValueKey('ai_locked_category_box')), warnIfMissed: false);
+    await tester.pumpAndSettle();
+    expect(find.text(HazardCategories.flood), findsNothing);
+
+    await tester.tap(find.text('Low'), warnIfMissed: false);
+    await tester.tap(find.text('Medium'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+
+    // 3. Verify Title & Description remain editable by the user
+    final textFields = find.byType(TextField);
+    expect(textFields, findsNWidgets(2));
+    await tester.enterText(textFields.at(0), 'Severe Road Washout Near Bridge');
+    await tester.enterText(textFields.at(1), 'Half of the asphalt lane has caved into the ravine.');
+    await tester.pump();
+
+    // 4. Submit and confirm AI category & level are preserved alongside user-edited details
+    await tester.ensureVisible(find.text('Submit Report'));
+    await tester.tap(find.text('Submit Report'));
+    await tester.pumpAndSettle();
+
+    expect(submittedReport, isNotNull);
+    expect(submittedReport!.category, HazardCategories.roadDamage);
+    expect(submittedReport!.securityLevel, HazardSecurityLevels.high);
+    expect(submittedReport!.title, 'Severe Road Washout Near Bridge');
+    expect(submittedReport!.description, 'Half of the asphalt lane has caved into the ravine.');
+    expect(fakeReportService.lastSubmittedPayload!['hazard_category'], 'Road damage');
+    expect(fakeReportService.lastSubmittedPayload!['severity_level'], 'High');
+  });
+
+  testWidgets('Replacing a verified hazard photo with a rejected non-hazard clears stale AI category and level', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: ReportHazardContentWidget(
+              onClose: () {},
+              initialLocation: const LatLng(10.3157, 123.8920),
+              imagePicker: FakeImagePicker(_validPngBytes),
+              geminiService: SequenceGeminiHazardService([
+                const GeminiHazardResult(
+                  isHazard: true,
+                  category: HazardCategories.flood,
+                  securityLevel: HazardSecurityLevels.high,
+                  confidence: 96,
+                  title: 'Deep Street Flooding',
+                  description: 'Water covering road.',
+                  modelUsed: 'gemini-3-flash-preview',
+                ),
+                GeminiHazardResult.notAHazard(
+                  reason: 'This image shows a coffee mug indoors.',
+                  modelUsed: 'gemini-3-flash-preview',
+                ),
+              ]),
+              hazardReportService: FakeHazardReportService(),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    // First photo: valid hazard
+    await tester.tap(find.text('Add a photo'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Choose from Gallery / Files'));
+    await tester.pumpAndSettle();
+    expect(find.text(HazardCategories.flood), findsOneWidget);
+
+    // Second photo via "Change": non-hazard rejected -> stale AI evaluation must disappear
+    await tester.tap(find.text('Change'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Choose from Gallery / Files'));
+    await tester.pumpAndSettle();
+
+    // Dismiss "Not a Hazard" dialog
+    expect(find.text('Not a Hazard'), findsOneWidget);
+    await tester.tap(find.text('Dismiss'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('ai_locked_category_box')), findsNothing);
+    expect(find.text(HazardCategories.flood), findsNothing);
+    expect(find.text('Add a photo'), findsOneWidget);
   });
 }

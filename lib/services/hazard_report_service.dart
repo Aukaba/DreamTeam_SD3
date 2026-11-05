@@ -201,6 +201,19 @@ class HazardReportService {
     return stripped.isNotEmpty ? stripped : category.trim();
   }
 
+  static String _extensionForMimeType(String? mimeType) {
+    switch (mimeType?.trim().toLowerCase()) {
+      case 'image/png':
+        return 'png';
+      case 'image/webp':
+        return 'webp';
+      case 'image/gif':
+        return 'gif';
+      default:
+        return 'jpg';
+    }
+  }
+
   /// Uploads photo binary to Supabase Storage bucket `hazard-reports`
   /// and returns the public object URL.
   Future<String?> uploadHazardPhoto({
@@ -208,7 +221,8 @@ class HazardReportService {
     required Uint8List bytes,
     String? mimeType,
   }) async {
-    final storagePath = '$reportId.jpg';
+    final ext = _extensionForMimeType(mimeType);
+    final storagePath = '$reportId.$ext';
     try {
       await _client.storage.from('hazard-reports').uploadBinary(
             storagePath,

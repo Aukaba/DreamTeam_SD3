@@ -152,9 +152,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
   String? _errorMessage;
   GeminiHazardResult? _aiResult;
 
-  // Form Fields
-  String _selectedCategory = HazardCategories.roadDamage;
-  String _selectedSecurityLevel = HazardSecurityLevels.medium;
+  // Editable Details Fields (Category & Security Level are strictly AI-evaluated)
   final TextEditingController _titleController = TextEditingController();
   final TextEditingController _descriptionController = TextEditingController();
 
@@ -220,7 +218,57 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
     );
   }
 
+  static String _detectMimeType({
+    required Uint8List bytes,
+    String? fileName,
+    String? rawMimeType,
+  }) {
+    if (bytes.length >= 8 &&
+        bytes[0] == 0x89 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x4E &&
+        bytes[3] == 0x47) {
+      return 'image/png';
+    }
+    if (bytes.length >= 3 &&
+        bytes[0] == 0xFF &&
+        bytes[1] == 0xD8 &&
+        bytes[2] == 0xFF) {
+      return 'image/jpeg';
+    }
+    if (bytes.length >= 12 &&
+        bytes[0] == 0x52 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x46 &&
+        bytes[8] == 0x57 &&
+        bytes[9] == 0x45 &&
+        bytes[10] == 0x42 &&
+        bytes[11] == 0x50) {
+      return 'image/webp';
+    }
+    if (bytes.length >= 4 &&
+        bytes[0] == 0x47 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x38) {
+      return 'image/gif';
+    }
+
+    final normalizedMime = rawMimeType?.trim().toLowerCase() ?? '';
+    if (normalizedMime.startsWith('image/')) {
+      return normalizedMime;
+    }
+
+    final lowerName = fileName?.trim().toLowerCase() ?? '';
+    if (lowerName.endsWith('.png')) return 'image/png';
+    if (lowerName.endsWith('.webp')) return 'image/webp';
+    if (lowerName.endsWith('.gif')) return 'image/gif';
+    return 'image/jpeg';
+  }
+
   Future<void> _showPhotoSourceSheet() async {
+    if (_isAnalyzing || _isSubmitting) return;
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
@@ -317,6 +365,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
   }
 
   Future<void> _pickAndProcessImage(ImageSource source) async {
+    if (_isAnalyzing || _isSubmitting) return;
     try {
       final XFile? file = await _picker.pickImage(
         source: source,
@@ -325,16 +374,23 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
         imageQuality: 85,
       );
 
-      if (file == null) return;
+      if (file == null || !mounted) return;
 
       final bytes = await file.readAsBytes();
-      final mimeType = file.name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+      if (!mounted) return;
+
+      final mimeType = _detectMimeType(
+        bytes: bytes,
+        fileName: file.name,
+        rawMimeType: file.mimeType,
+      );
 
       setState(() {
         _isAnalyzing = true;
         _errorMessage = null;
+        _aiResult = null;
         _selectedImageBytes = bytes;
-        _imageFileName = file.name;
+        _imageFileName = file.name.trim().isNotEmpty ? file.name.trim() : null;
         _imageMimeType = mimeType;
       });
 
@@ -352,18 +408,19 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
           _isAnalyzing = false;
           _selectedImageBytes = null;
           _imageFileName = null;
+          _imageMimeType = null;
           _aiResult = null;
+          _titleController.clear();
+          _descriptionController.clear();
           _errorMessage = result.errorMessage ??
               'The uploaded image is not a recognized road or safety hazard. Please upload a photo of a hazard.';
         });
         _showNotAHazardDialog(result.errorMessage);
       } else {
-        // Valid hazard detected
+        // Valid hazard detected: category & security level are locked to AI evaluation
         setState(() {
           _isAnalyzing = false;
           _aiResult = result;
-          _selectedCategory = result.category;
-          _selectedSecurityLevel = result.securityLevel;
           _titleController.text = result.title;
           _descriptionController.text = result.description;
           _errorMessage = null;
@@ -374,6 +431,11 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
       setState(() {
         _isAnalyzing = false;
         _selectedImageBytes = null;
+        _imageFileName = null;
+        _imageMimeType = null;
+        _aiResult = null;
+        _titleController.clear();
+        _descriptionController.clear();
         _errorMessage = 'Failed to analyze image: ${e.toString().replaceAll('Exception: ', '')}';
       });
       _showErrorDialog(_errorMessage!);
@@ -575,18 +637,19 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
 
     // Snapshot all report fields before awaiting any async operations so late UI
     // mutations cannot cause the map marker to diverge from the persisted row.
-    final submittedCategory = _selectedCategory;
-    final submittedSecurityLevel = _selectedSecurityLevel;
+    final aiEvaluation = _aiResult!;
+    final submittedCategory = aiEvaluation.category;
+    final submittedSecurityLevel = aiEvaluation.securityLevel;
     final submittedTitle = _titleController.text.trim().isNotEmpty
         ? _titleController.text.trim()
-        : _aiResult!.title;
+        : aiEvaluation.title;
     final submittedDescription = _descriptionController.text.trim().isNotEmpty
         ? _descriptionController.text.trim()
-        : _aiResult!.description;
+        : aiEvaluation.description;
     final submittedAddress = _selectedAddress;
     final submittedImageBytes = Uint8List.fromList(_selectedImageBytes!);
     final submittedMimeType = _imageMimeType;
-    final submittedConfidence = _aiResult?.confidence ?? 98;
+    final submittedConfidence = aiEvaluation.confidence;
     final capturedLocation = _selectedLocation;
     final submittedTimestamp = DateTime.now();
 
@@ -1170,12 +1233,15 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
     );
   }
 
-  /// The AI Results section presenting the Category and Security Level.
+  /// The AI Results section presenting the read-only AI-evaluated Category and Security Level,
+  /// followed by user-editable Hazard Details.
   Widget _buildAiResultsSection() {
+    final aiEvaluation = _aiResult!;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Hazard Category Card
+        // Hazard Category Card (Read-only, AI-evaluated)
         Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
@@ -1226,41 +1292,38 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
               ),
               const SizedBox(height: 8),
 
-              // Category Selector Dropdown
+              // Read-only AI Category Display (non-editable by user)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                key: const ValueKey('ai_locked_category_box'),
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(color: _borderGrey),
                 ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: _selectedCategory,
-                    isExpanded: true,
-                    icon: const Icon(Icons.keyboard_arrow_down, color: _primaryNavy),
-                    style: const TextStyle(
-                      fontFamily: 'Poppins',
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: _primaryNavy,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        aiEvaluation.category,
+                        style: const TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: _primaryNavy,
+                        ),
+                      ),
                     ),
-                    items: HazardCategories.all.map((cat) {
-                      return DropdownMenuItem<String>(
-                        value: cat,
-                        child: Text(cat),
-                      );
-                    }).toList(),
-                    onChanged: _isSubmitting
-                        ? null
-                        : (newCat) {
-                            if (newCat != null) {
-                              setState(() {
-                                _selectedCategory = newCat;
-                              });
-                            }
-                          },
-                  ),
+                    const Tooltip(
+                      message: 'Evaluated automatically by Gemini AI',
+                      child: Icon(
+                        Icons.lock_outline_rounded,
+                        size: 16,
+                        color: _secondaryGrey,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -1269,7 +1332,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
 
         const SizedBox(height: 12),
 
-        // Security Level Card
+        // Security Level Card (Read-only, AI-evaluated)
         Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
@@ -1320,14 +1383,30 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
               ),
               const SizedBox(height: 10),
 
-              // Segmented Security Level Choices: Low, Medium, High
+              // Read-only Security Level Indicator: Low, Medium, High
               Row(
+                key: const ValueKey('ai_locked_security_level_row'),
                 children: [
-                  _buildSecurityLevelChip('Low', const Color(0xFF3B82F6), const Color(0xFFDBEAFE)),
+                  _buildSecurityLevelIndicator(
+                    'Low',
+                    aiEvaluation.securityLevel,
+                    const Color(0xFF3B82F6),
+                    const Color(0xFFDBEAFE),
+                  ),
                   const SizedBox(width: 8),
-                  _buildSecurityLevelChip('Medium', const Color(0xFFD97706), const Color(0xFFFEF3C7)),
+                  _buildSecurityLevelIndicator(
+                    'Medium',
+                    aiEvaluation.securityLevel,
+                    const Color(0xFFD97706),
+                    const Color(0xFFFEF3C7),
+                  ),
                   const SizedBox(width: 8),
-                  _buildSecurityLevelChip('High', const Color(0xFFEF4444), const Color(0xFFFEE2E2)),
+                  _buildSecurityLevelIndicator(
+                    'High',
+                    aiEvaluation.securityLevel,
+                    const Color(0xFFEF4444),
+                    const Color(0xFFFEE2E2),
+                  ),
                 ],
               ),
             ],
@@ -1412,41 +1491,47 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
     );
   }
 
-  Widget _buildSecurityLevelChip(String level, Color activeColor, Color activeBg) {
-    final isSelected = _selectedSecurityLevel.toLowerCase() == level.toLowerCase();
+  Widget _buildSecurityLevelIndicator(
+    String level,
+    String evaluatedLevel,
+    Color activeColor,
+    Color activeBg,
+  ) {
+    final isSelected = evaluatedLevel.toLowerCase() == level.toLowerCase();
     return Expanded(
-      child: GestureDetector(
-        onTap: _isSubmitting
-            ? null
-            : () {
-                setState(() {
-                  _selectedSecurityLevel = level;
-                });
-              },
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          decoration: BoxDecoration(
-            color: isSelected ? activeBg : Colors.white,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: isSelected ? activeColor : _borderGrey,
-              width: isSelected ? 1.8 : 1.0,
-            ),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected ? activeBg : Colors.white.withValues(alpha: 0.75),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isSelected ? activeColor : _borderGrey,
+            width: isSelected ? 1.8 : 1.0,
           ),
-          child: Column(
-            children: [
-              Text(
-                level,
-                style: TextStyle(
-                  fontFamily: 'Poppins',
-                  fontSize: 13,
-                  fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                  color: isSelected ? activeColor : _secondaryGrey,
-                ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (isSelected) ...[
+              Icon(
+                Icons.lock_outline_rounded,
+                size: 13,
+                color: activeColor,
               ),
+              const SizedBox(width: 4),
             ],
-          ),
+            Text(
+              level,
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 13,
+                fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                color: isSelected
+                    ? activeColor
+                    : _secondaryGrey.withValues(alpha: 0.65),
+              ),
+            ),
+          ],
         ),
       ),
     );
