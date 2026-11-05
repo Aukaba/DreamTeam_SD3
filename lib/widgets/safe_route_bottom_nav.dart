@@ -1,13 +1,10 @@
 import 'package:flutter/material.dart';
-import '../user_screens/user_home_screen.dart';
-import '../user_screens/route_screen.dart';
-import '../user_screens/alerts_screen.dart';
-import '../user_screens/user_profile_screen.dart';
 
 const Color _primaryNavy = Color(0xFF233253);
 const Color _secondaryGrey = Color(0xFF8A94A6);
 
-/// Shared bottom navigation bar for SafeRoute with dynamic screen-to-screen navigation.
+/// Shared bottom navigation bar for SafeRoute.
+/// Takes [currentIndex] and an optional [onTap] callback.
 class SafeRouteBottomNav extends StatelessWidget {
   final int currentIndex;
   final ValueChanged<int>? onTap;
@@ -17,59 +14,6 @@ class SafeRouteBottomNav extends StatelessWidget {
     required this.currentIndex,
     this.onTap,
   });
-
-  /// Static helper allowing any screen or callback to execute shared navigation logic.
-  static void navigateTo(BuildContext context, int targetIndex, {int? currentIndex}) {
-    if (currentIndex != null && targetIndex == currentIndex) return;
-
-    switch (targetIndex) {
-      case 0:
-        Navigator.pushReplacement(
-          context,
-          PageRouteBuilder(
-            pageBuilder: (context, anim1, anim2) => const UserHomeScreen(),
-            transitionDuration: Duration.zero,
-          ),
-        );
-        break;
-      case 1:
-        Navigator.pushReplacement(
-          context,
-          PageRouteBuilder(
-            pageBuilder: (context, anim1, anim2) => const RouteScreen(),
-            transitionDuration: Duration.zero,
-          ),
-        );
-        break;
-      case 2:
-        Navigator.pushReplacement(
-          context,
-          PageRouteBuilder(
-            pageBuilder: (context, anim1, anim2) => const AlertsScreen(),
-            transitionDuration: Duration.zero,
-          ),
-        );
-        break;
-      case 3:
-        Navigator.pushReplacement(
-          context,
-          PageRouteBuilder(
-            pageBuilder: (context, anim1, anim2) => const UserProfileScreen(),
-            transitionDuration: Duration.zero,
-          ),
-        );
-        break;
-    }
-  }
-
-  void _handleNavigation(BuildContext context, int index) {
-    if (onTap != null) {
-      onTap!(index);
-      return;
-    }
-
-    navigateTo(context, index, currentIndex: currentIndex);
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -88,7 +32,7 @@ class SafeRouteBottomNav extends StatelessWidget {
         top: false,
         child: BottomNavigationBar(
           currentIndex: currentIndex,
-          onTap: (index) => _handleNavigation(context, index),
+          onTap: onTap,
           type: BottomNavigationBarType.fixed,
           backgroundColor: Colors.white,
           elevation: 0,

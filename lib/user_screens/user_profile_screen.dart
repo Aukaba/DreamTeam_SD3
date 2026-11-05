@@ -3,7 +3,6 @@ import '../Authentication/auth_service.dart';
 import '../Authentication/login_page.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
-import 'saved_locations_screen.dart';
 
 const Color _primaryNavy = Color(0xFF233253);
 const Color _secondaryGrey = Color(0xFF8A94A6);
@@ -24,6 +23,7 @@ class UserProfileScreen extends StatefulWidget {
 class _UserProfileScreenState extends State<UserProfileScreen> {
   DateTime? _lastBackPressedAt;
   final AuthService _authService = AuthService();
+  bool _isNavigatingToLeaderboard = false;
 
   @override
   Widget build(BuildContext context) {
@@ -41,151 +41,155 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       },
       child: Scaffold(
         backgroundColor: _bgBeige,
-      body: SingleChildScrollView(
-        physics: const BouncingScrollPhysics(),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // 1. Top Custom Wavy Header with SafeRoute Logo
-            const CustomWavyHeader(),
+        body: SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // 1. Top Custom Wavy Header with SafeRoute Logo
+              const CustomWavyHeader(),
 
-            // 2. Main Scrollable Content pulled up into the wave curve
-            Transform.translate(
-              offset: const Offset(0, -36),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Profile Header Section (Avatar, Info, Edit Button)
-                    _buildProfileHeader(),
+              // 2. Main Scrollable Content pulled up into the wave curve
+              Transform.translate(
+                offset: const Offset(0, -36),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Profile Header Section (Avatar, Info, Edit Button)
+                      _buildProfileHeader(),
 
-                    const SizedBox(height: 28),
+                      const SizedBox(height: 28),
 
-                    // Stats Row (Reports, Helpful Votes, Safe Routes, Days Active)
-                    _buildStatsRow(),
+                      // Stats Row (Reports, Helpful Votes, Safe Routes, Days Active)
+                      _buildStatsRow(),
 
-                    const SizedBox(height: 28),
+                      const SizedBox(height: 28),
 
-                    // View Leaderboard Button
-                    _buildLeaderboardButton(),
+                      // View Leaderboard Button
+                      _buildLeaderboardButton(),
 
-                    const SizedBox(height: 26),
+                      const SizedBox(height: 26),
 
-                    // Contributor Badge Card (Safety Contributor Level 2)
-                    _buildContributorBadgeCard(),
+                      // Contributor Badge Card (Safety Contributor Level 2)
+                      _buildContributorBadgeCard(),
 
-                    const SizedBox(height: 32),
+                      const SizedBox(height: 32),
 
-                    // Account Settings Section
-                    _buildSectionHeader('ACCOUNT'),
-                    _buildSettingsGroup(
-                      children: [
-                        _buildSettingsTile(
-                          icon: Icons.shield_outlined,
-                          title: 'Personal Information',
-                          subtitle: 'Name, email, and contact details',
-                          onTap: () {},
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.lock_outline_rounded,
-                          title: 'Security',
-                          subtitle: 'Change password and manage account access',
-                          onTap: () {},
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.notifications_none_rounded,
-                          title: 'Notification Settings',
-                          subtitle: 'Choose what updates you want to receive',
-                          onTap: () {},
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.location_on_outlined,
-                          title: 'Location Preferences',
-                          subtitle: 'Set your default location and travel options',
-                          showDivider: false,
-                          onTap: () {},
-                        ),
-                      ],
-                    ),
+                      // Account Settings Section
+                      _buildSectionHeader('ACCOUNT'),
+                      _buildSettingsGroup(
+                        children: [
+                          _buildSettingsTile(
+                            icon: Icons.shield_outlined,
+                            title: 'Personal Information',
+                            subtitle: 'Name, email, and contact details',
+                            onTap: () {},
+                          ),
+                          _buildSettingsTile(
+                            icon: Icons.lock_outline_rounded,
+                            title: 'Security',
+                            subtitle:
+                                'Change password and manage account access',
+                            onTap: () {},
+                          ),
+                          _buildSettingsTile(
+                            icon: Icons.notifications_none_rounded,
+                            title: 'Notification Settings',
+                            subtitle: 'Choose what updates you want to receive',
+                            onTap: () {},
+                          ),
+                          _buildSettingsTile(
+                            icon: Icons.location_on_outlined,
+                            title: 'Location Preferences',
+                            subtitle:
+                                'Set your default location and travel options',
+                            showDivider: false,
+                            onTap: () {},
+                          ),
+                        ],
+                      ),
 
-                    const SizedBox(height: 32),
+                      const SizedBox(height: 32),
 
-                    // Community Settings Section
-                    _buildSectionHeader('COMMUNITY'),
-                    _buildSettingsGroup(
-                      children: [
-                        _buildSettingsTile(
-                          icon: Icons.assignment_outlined,
-                          title: 'My Reports',
-                          subtitle: 'View and manage your submitted reports',
-                          onTap: () {},
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.favorite_border_rounded,
-                          title: 'Saved Locations',
-                          subtitle: 'Your favorite places and marked areas',
-                          onTap: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    const SavedLocationsScreen(),
-                              ),
-                            );
-                          },
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.alt_route_rounded,
-                          title: 'Saved Routes',
-                          subtitle: 'View and edit your saved routes',
-                          showDivider: false,
-                          onTap: () {},
-                        ),
-                      ],
-                    ),
+                      // Community Settings Section
+                      _buildSectionHeader('COMMUNITY'),
+                      _buildSettingsGroup(
+                        children: [
+                          _buildSettingsTile(
+                            icon: Icons.assignment_outlined,
+                            title: 'My Reports',
+                            subtitle: 'View and manage your submitted reports',
+                            onTap: () {},
+                          ),
+                          _buildSettingsTile(
+                            icon: Icons.favorite_border_rounded,
+                            title: 'Saved Locations',
+                            subtitle: 'Your favorite places and marked areas',
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (context) =>
+                                      const SavedLocationsScreen(),
+                                ),
+                              );
+                            },
+                          ),
+                          _buildSettingsTile(
+                            icon: Icons.alt_route_rounded,
+                            title: 'Saved Routes',
+                            subtitle: 'View and edit your saved routes',
+                            showDivider: false,
+                            onTap: () {},
+                          ),
+                        ],
+                      ),
 
-                    const SizedBox(height: 32),
+                      const SizedBox(height: 32),
 
-                    // Support Settings Section
-                    _buildSectionHeader('SUPPORT'),
-                    _buildSettingsGroup(
-                      children: [
-                        _buildSettingsTile(
-                          icon: Icons.help_outline_rounded,
-                          title: 'Help & Support',
-                          subtitle: 'FAQs, guides, and contact support',
-                          onTap: () {},
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.settings_outlined,
-                          title: 'App Settings',
-                          subtitle: 'Appearance, language, and more',
-                          onTap: () {},
-                        ),
-                        _buildSettingsTile(
-                          icon: Icons.logout_rounded,
-                          title: 'Log Out',
-                          subtitle: 'Sign out from your account',
-                          isDestructive: true,
-                          showDivider: false,
-                          onTap: () => _showLogoutDialog(context),
-                        ),
-                      ],
-                    ),
+                      // Support Settings Section
+                      _buildSectionHeader('SUPPORT'),
+                      _buildSettingsGroup(
+                        children: [
+                          _buildSettingsTile(
+                            icon: Icons.help_outline_rounded,
+                            title: 'Help & Support',
+                            subtitle: 'FAQs, guides, and contact support',
+                            onTap: () {},
+                          ),
+                          _buildSettingsTile(
+                            icon: Icons.settings_outlined,
+                            title: 'App Settings',
+                            subtitle: 'Appearance, language, and more',
+                            onTap: () {},
+                          ),
+                          _buildSettingsTile(
+                            icon: Icons.logout_rounded,
+                            title: 'Log Out',
+                            subtitle: 'Sign out from your account',
+                            isDestructive: true,
+                            showDivider: false,
+                            onTap: () => _showLogoutDialog(context),
+                          ),
+                        ],
+                      ),
 
-                    const SizedBox(height: 36),
-                  ],
+                      const SizedBox(height: 36),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
+        ),
+        bottomNavigationBar: SafeRouteBottomNav(
+          currentIndex: 3,
+          onTap: (index) =>
+              AppNavigation.navigateTo(context, index, currentIndex: 3),
         ),
       ),
-      bottomNavigationBar: const SafeRouteBottomNav(
-        currentIndex: 3,
-      ),
-    ),
-  );
+    );
   }
 
   /// Profile Header with Avatar, camera badge, User Info, and Edit Profile button
@@ -393,7 +397,24 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       width: double.infinity,
       height: 46,
       child: ElevatedButton(
-        onPressed: () {},
+        onPressed: _isNavigatingToLeaderboard
+            ? null
+            : () async {
+                setState(() {
+                  _isNavigatingToLeaderboard = true;
+                });
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const UserLeaderboardScreen(),
+                  ),
+                );
+                if (mounted) {
+                  setState(() {
+                    _isNavigatingToLeaderboard = false;
+                  });
+                }
+              },
         style: ElevatedButton.styleFrom(
           backgroundColor: _primaryNavy,
           foregroundColor: Colors.white,
@@ -506,7 +527,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                         child: const LinearProgressIndicator(
                           value: 120 / 200,
                           backgroundColor: Color(0xFFD6E4F0),
-                          valueColor: AlwaysStoppedAnimation<Color>(_primaryNavy),
+                          valueColor:
+                              AlwaysStoppedAnimation<Color>(_primaryNavy),
                           minHeight: 6,
                         ),
                       ),

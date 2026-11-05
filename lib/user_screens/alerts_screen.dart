@@ -3,6 +3,7 @@ import '../Authentication/auth_service.dart';
 import '../Authentication/login_page.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
+import '../navigation/app_navigation.dart';
 
 const Color _primaryNavy = Color(0xFF233253);
 const Color _secondaryGrey = Color(0xFF8A94A6);
@@ -242,8 +243,9 @@ class _AlertsScreenState extends State<AlertsScreen> {
             ],
           ),
         ),
-        bottomNavigationBar: const SafeRouteBottomNav(
+        bottomNavigationBar: SafeRouteBottomNav(
           currentIndex: 2,
+          onTap: (index) => AppNavigation.navigateTo(context, index, currentIndex: 2),
         ),
       ),
     );
