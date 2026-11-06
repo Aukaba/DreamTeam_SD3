@@ -354,6 +354,18 @@ class _InteractiveLocationPickerState extends State<InteractiveLocationPicker> {
             TileLayer(
               urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
               userAgentPackageName: 'com.dreamteam.sd3',
+              evictErrorTileStrategy: EvictErrorTileStrategy.dispose,
+              tileBuilder: (context, tileWidget, tile) {
+                return ColorFiltered(
+                  colorFilter: const ColorFilter.matrix(<double>[
+                    0.75, 0.15, 0.10, 0.0, 15.0,
+                    0.05, 0.85, 0.10, 0.0, 15.0,
+                    0.40, 0.40, 0.20, 0.0, 15.0,
+                    0.00, 0.00, 0.00, 1.0, 0.0,
+                  ]),
+                  child: tileWidget,
+                );
+              },
               errorTileCallback: (tile, error, stackTrace) {},
             ),
             MarkerLayer(
