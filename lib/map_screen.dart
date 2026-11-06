@@ -14,11 +14,17 @@ import 'widgets/report_hazard_modal.dart';
 
 class MapScreen extends StatefulWidget {
   final LatLng? initialLocation;
+  final LatLng? focusHazardLocation;
+  final String? focusedReportId;
+  final int initialFilterIndex;
   final HazardReportService? hazardReportService;
 
   const MapScreen({
     super.key,
     this.initialLocation,
+    this.focusHazardLocation,
+    this.focusedReportId,
+    this.initialFilterIndex = 0,
     this.hazardReportService,
   });
 
@@ -65,9 +71,14 @@ typedef UserFullMapScreen = MapScreen;
 
 class _HazardItem {
   final String id;
+  final String? reportId;
   final String overline;
   final String title;
   final String subtitle;
+  final String description;
+  final String address;
+  final String? imageUrl;
+  final int confidence;
   final String distance;
   final String badgeText;
   final Color themeColor;
@@ -80,9 +91,14 @@ class _HazardItem {
 
   const _HazardItem({
     required this.id,
+    this.reportId,
     required this.overline,
     required this.title,
     required this.subtitle,
+    this.description = '',
+    this.address = '',
+    this.imageUrl,
+    this.confidence = 98,
     required this.distance,
     required this.badgeText,
     required this.themeColor,
@@ -121,12 +137,7 @@ class _MapScreenState extends State<MapScreen> {
 
   // Device location initialized dynamically
   late LatLng _currentLocation;
-
-  // Landmark hazard coordinates
-  static const LatLng _roadworkLocation = LatLng(10.3182, 123.8895);
-  static const LatLng _floodingLocation = LatLng(10.3135, 123.8880);
-  static const LatLng _lightingLocation = LatLng(10.3195, 123.8940);
-  static const LatLng _crimeLocation = LatLng(10.3115, 123.8945);
+  late LatLng _initialCameraCenter;
 
   static const List<double> _scaleDistances = [
     10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000
@@ -157,77 +168,14 @@ class _MapScreenState extends State<MapScreen> {
     null,
   ];
 
-  static const List<_HazardItem> _defaultHazards = [
-    _HazardItem(
-      id: 'safety_1',
-      overline: 'SAFETY',
-      title: 'Poor lighting area',
-      subtitle: 'Near University Avenue (around 2:14 PM)',
-      distance: '0.3 km away',
-      badgeText: 'High',
-      themeColor: Color(0xFFEF4444),
-      bgColor: Color(0xFFFFF5F5),
-      iconBgColor: Color(0xFFFEE2E2),
-      badgeBgColor: Color(0xFFFEE2E2),
-      icon: Icons.lightbulb_outline_rounded,
-      location: _lightingLocation,
-      filterCategoryIndex: 3,
-    ),
-    _HazardItem(
-      id: 'obstruction_1',
-      overline: 'OBSTRUCTION',
-      title: 'Blocked sidewalk',
-      subtitle: 'Near Capitol Site (around 1:32 PM)',
-      distance: '0.6 km away',
-      badgeText: 'Medium',
-      themeColor: Color(0xFFD97706),
-      bgColor: Color(0xFFFFFDF5),
-      iconBgColor: Color(0xFFFEF3C7),
-      badgeBgColor: Color(0xFFFEF3C7),
-      icon: Icons.construction_rounded,
-      location: _roadworkLocation,
-      filterCategoryIndex: 1,
-    ),
-    _HazardItem(
-      id: 'crime_1',
-      overline: 'CRIME',
-      title: 'Suspicious activity',
-      subtitle: 'Near Mango Square (around 12:45 PM)',
-      distance: '1.2 km away',
-      badgeText: 'Low',
-      themeColor: Color(0xFF3B82F6),
-      bgColor: Color(0xFFF5F9FF),
-      iconBgColor: Color(0xFFDBEAFE),
-      badgeBgColor: Color(0xFFDBEAFE),
-      icon: Icons.error_outline_rounded,
-      location: _crimeLocation,
-      filterCategoryIndex: 4,
-    ),
-    _HazardItem(
-      id: 'flooding_1',
-      overline: 'FLOODING',
-      title: 'Minor street flooding',
-      subtitle: 'Near Capitol Site (around 1:50 PM)',
-      distance: '0.4 km away',
-      badgeText: 'Low',
-      themeColor: Color(0xFF4A90E2),
-      bgColor: Color(0xFFF0F9FF),
-      iconBgColor: Color(0xFFE0F2FE),
-      badgeBgColor: Color(0xFFE0F2FE),
-      icon: Icons.water_drop_rounded,
-      location: _floodingLocation,
-      filterCategoryIndex: 2,
-    ),
-  ];
-
   late final HazardReportService _hazardReportService;
   StreamSubscription<HazardReportData>? _reportSubscription;
   final List<_HazardItem> _reportedHazards = <_HazardItem>[];
+  bool _isLoadingReports = true;
+  bool _hasHandledInitialFocus = false;
 
-  List<_HazardItem> get _allHazards => <_HazardItem>[
-        ..._reportedHazards,
-        ..._defaultHazards,
-      ];
+  List<_HazardItem> get _allHazards =>
+      List<_HazardItem>.unmodifiable(_reportedHazards);
 
   List<_HazardItem> get _filteredHazards {
     if (_selectedFilterIndex == 0) {
@@ -241,11 +189,16 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
+    _selectedFilterIndex = widget.initialFilterIndex.clamp(0, 4);
     _currentLocation = widget.initialLocation ?? LocationService.defaultLocation;
-    _currentLatitude = _currentLocation.latitude;
+    _initialCameraCenter = widget.focusHazardLocation ?? _currentLocation;
+    if (widget.focusHazardLocation != null) {
+      _currentZoom = 17.0;
+    }
+    _currentLatitude = _initialCameraCenter.latitude;
     _hazardReportService = widget.hazardReportService ?? HazardReportService();
     for (final sessionReport in HazardReportService.sessionReports) {
-      if (sessionReport.location != null) {
+      if (sessionReport.location != null && sessionReport.status == 'active') {
         _upsertReportedHazardItem(_buildHazardItemFromReport(sessionReport));
       }
     }
@@ -259,7 +212,9 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _loadSavedReports() async {
     final savedReports = await _hazardReportService.fetchReports();
     if (!mounted) return;
+    _HazardItem? focusedItem;
     setState(() {
+      _isLoadingReports = false;
       final mergedById = <String, _HazardItem>{};
       for (final report in savedReports) {
         if (report.location == null) continue;
@@ -272,7 +227,28 @@ class _MapScreenState extends State<MapScreen> {
       _reportedHazards
         ..clear()
         ..addAll(mergedById.values);
+
+      if (!_hasHandledInitialFocus &&
+          widget.focusedReportId != null &&
+          widget.focusedReportId!.trim().isNotEmpty) {
+        final targetId = widget.focusedReportId!.trim();
+        for (final item in _reportedHazards) {
+          if (item.reportId == targetId || item.id == 'report_$targetId') {
+            focusedItem = item;
+            break;
+          }
+        }
+      }
     });
+
+    if (focusedItem != null && !_hasHandledInitialFocus) {
+      _hasHandledInitialFocus = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _mapController.move(focusedItem!.location, 17.0);
+        _showHazardDetailSheet(focusedItem!);
+      });
+    }
   }
 
   void _onExternalReportSubmitted(HazardReportData report) {
@@ -305,9 +281,14 @@ class _MapScreenState extends State<MapScreen> {
       final item = _reportedHazards[i];
       _reportedHazards[i] = _HazardItem(
         id: item.id,
+        reportId: item.reportId,
         overline: item.overline,
         title: item.title,
         subtitle: item.subtitle,
+        description: item.description,
+        address: item.address,
+        imageUrl: item.imageUrl,
+        confidence: item.confidence,
         distance: _formatDistanceTo(item.location),
         badgeText: item.badgeText,
         themeColor: item.themeColor,
@@ -505,26 +486,44 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _initDeviceLocation() async {
+    final hasExplicitHazardFocus = widget.focusHazardLocation != null ||
+        (widget.focusedReportId != null &&
+            widget.focusedReportId!.trim().isNotEmpty);
+
     final lastKnown = await LocationService.getLastKnownLocation();
-    if (_hasUserInteracted || _selectedLandmark != null) return;
     if (lastKnown != null && mounted) {
       setState(() {
         _currentLocation = lastKnown;
-        _currentLatitude = lastKnown.latitude;
+        if (!hasExplicitHazardFocus &&
+            !_hasUserInteracted &&
+            _selectedLandmark == null) {
+          _currentLatitude = lastKnown.latitude;
+        }
         _refreshReportedHazardDistances();
       });
-      _mapController.move(_currentLocation, _currentZoom);
+      if (!hasExplicitHazardFocus &&
+          !_hasUserInteracted &&
+          _selectedLandmark == null) {
+        _mapController.move(_currentLocation, _currentZoom);
+      }
     }
 
     final current = await LocationService.getCurrentLocation();
-    if (_hasUserInteracted || _selectedLandmark != null) return;
     if (mounted) {
       setState(() {
         _currentLocation = current;
-        _currentLatitude = current.latitude;
+        if (!hasExplicitHazardFocus &&
+            !_hasUserInteracted &&
+            _selectedLandmark == null) {
+          _currentLatitude = current.latitude;
+        }
         _refreshReportedHazardDistances();
       });
-      _mapController.move(_currentLocation, _currentZoom);
+      if (!hasExplicitHazardFocus &&
+          !_hasUserInteracted &&
+          _selectedLandmark == null) {
+        _mapController.move(_currentLocation, _currentZoom);
+      }
     }
   }
 
@@ -621,7 +620,7 @@ class _MapScreenState extends State<MapScreen> {
             child: FlutterMap(
               mapController: _mapController,
               options: MapOptions(
-                initialCenter: _currentLocation,
+                initialCenter: _initialCameraCenter,
                 initialZoom: _currentZoom,
                 minZoom: 3.0,
                 maxZoom: 19.0,
@@ -1551,13 +1550,7 @@ class _MapScreenState extends State<MapScreen> {
       child: GestureDetector(
         onTap: () {
           _mapController.move(hazard.location, 17.0);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('${hazard.title}: ${hazard.subtitle}'),
-              duration: const Duration(seconds: 2),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+          _showHazardDetailSheet(hazard);
         },
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1712,9 +1705,14 @@ class _MapScreenState extends State<MapScreen> {
 
     return _HazardItem(
       id: stableId,
+      reportId: report.reportId,
       overline: overline,
       title: report.title,
       subtitle: '${report.address} (${_formatRelativeTime(report.timestamp)})',
+      description: report.description,
+      address: report.address,
+      imageUrl: report.imageUrl,
+      confidence: report.confidence,
       distance: _formatDistanceTo(resolvedLocation),
       badgeText: report.securityLevel,
       themeColor: themeColor,
@@ -1755,6 +1753,176 @@ class _MapScreenState extends State<MapScreen> {
         curve: Curves.easeInOut,
       );
     }
+
+    _showHazardDetailSheet(hazard);
+  }
+
+  void _showHazardDetailSheet(_HazardItem hazard) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.white,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetCtx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD1D5DB),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (hazard.imageUrl != null &&
+                    hazard.imageUrl!.trim().isNotEmpty) ...[
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: SizedBox(
+                      height: 180,
+                      width: double.infinity,
+                      child: Image.network(
+                        hazard.imageUrl!,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          color: hazard.bgColor,
+                          alignment: Alignment.center,
+                          child: Icon(
+                            hazard.icon,
+                            size: 42,
+                            color: hazard.themeColor,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ],
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: hazard.badgeBgColor,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '${hazard.overline} • ${hazard.badgeText.toUpperCase()}',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          color: hazard.themeColor,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEEF2FF),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '✨ AI ${hazard.confidence}%',
+                        style: const TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF4338CA),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  hazard.title,
+                  style: const TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: _primaryNavy,
+                  ),
+                ),
+                if (hazard.description.trim().isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    hazard.description.trim(),
+                    style: const TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 13,
+                      fontWeight: FontWeight.w400,
+                      color: Color(0xFF4B5563),
+                      height: 1.4,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.location_on_outlined,
+                      size: 16,
+                      color: _secondaryGrey,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        hazard.subtitle,
+                        style: const TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          color: _secondaryGrey,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.near_me_outlined,
+                      size: 15,
+                      color: _secondaryGrey,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      hazard.distance,
+                      style: const TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: _primaryNavy,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1967,6 +2135,34 @@ class _MapScreenState extends State<MapScreen> {
   // ---------------------------------------------------------------------------
   Widget _buildDraggableScrollableSheet() {
     final filtered = _filteredHazards;
+    const distanceCalc = Distance();
+    final nearbyWithin500m = _allHazards
+        .where((h) => distanceCalc.distance(_currentLocation, h.location) <= 500)
+        .toList();
+    final hasHighNearby = nearbyWithin500m
+        .any((h) => h.badgeText.toLowerCase().contains('high'));
+
+    final Color statusBgColor = hasHighNearby
+        ? const Color(0xFFFEE2E2)
+        : (nearbyWithin500m.isNotEmpty
+            ? const Color(0xFFFEF3C7)
+            : _safeGreenBg);
+    final Color statusIconColor = hasHighNearby
+        ? const Color(0xFFEF4444)
+        : (nearbyWithin500m.isNotEmpty
+            ? const Color(0xFFD97706)
+            : _safeGreen);
+    final IconData statusIcon = nearbyWithin500m.isNotEmpty
+        ? Icons.warning_amber_rounded
+        : Icons.shield_outlined;
+    final String statusTitle = hasHighNearby
+        ? 'Caution: High-risk hazard nearby'
+        : (nearbyWithin500m.isNotEmpty
+            ? '${nearbyWithin500m.length} hazard${nearbyWithin500m.length == 1 ? '' : 's'} within 500m'
+            : 'You are in a safe area');
+    final String statusSubtitle = nearbyWithin500m.isNotEmpty
+        ? 'Stay alert along nearby streets'
+        : 'Safe route monitored in real time';
 
     return DraggableScrollableSheet(
       controller: _sheetController,
@@ -2006,40 +2202,40 @@ class _MapScreenState extends State<MapScreen> {
 
               const SizedBox(height: 14),
 
-              // 2. Status Row: Green safe area
+              // 2. Status Row: Dynamic area safety status based on nearby DB hazards
               Row(
                 children: [
                   Container(
                     width: 44,
                     height: 44,
                     decoration: BoxDecoration(
-                      color: _safeGreenBg,
+                      color: statusBgColor,
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Icon(
-                      Icons.shield_outlined,
-                      color: _safeGreen,
+                    child: Icon(
+                      statusIcon,
+                      color: statusIconColor,
                       size: 24,
                     ),
                   ),
                   const SizedBox(width: 14),
-                  const Expanded(
+                  Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'You are in a safe area',
-                          style: TextStyle(
+                          statusTitle,
+                          style: const TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: 16,
                             fontWeight: FontWeight.w600,
                             color: _primaryNavy,
                           ),
                         ),
-                        SizedBox(height: 2),
+                        const SizedBox(height: 2),
                         Text(
-                          'Safe route monitored in real time',
-                          style: TextStyle(
+                          statusSubtitle,
+                          style: const TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: 13,
                             fontWeight: FontWeight.w400,
@@ -2087,7 +2283,7 @@ class _MapScreenState extends State<MapScreen> {
                         ),
                       )
                     else
-                      for (final hazard in filtered) ...[
+                      for (final hazard in filtered.take(6)) ...[
                         Container(
                           width: 7,
                           height: 7,
@@ -2101,7 +2297,9 @@ class _MapScreenState extends State<MapScreen> {
                     const SizedBox(width: 3),
                     Flexible(
                       child: Text(
-                        '${filtered.length} nearby hazard${filtered.length == 1 ? '' : 's'}',
+                        _isLoadingReports && filtered.isEmpty
+                            ? 'Loading hazards...'
+                            : '${filtered.length} nearby hazard${filtered.length == 1 ? '' : 's'}',
                         style: const TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 13,
@@ -2153,7 +2351,21 @@ class _MapScreenState extends State<MapScreen> {
               const SizedBox(height: 14),
 
               // 6. Filtered Hazard Cards
-              if (filtered.isEmpty)
+              if (_isLoadingReports && filtered.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24.0),
+                  child: Center(
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
+                        color: _primaryNavy,
+                      ),
+                    ),
+                  ),
+                )
+              else if (filtered.isEmpty)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 24.0),
                   child: Center(

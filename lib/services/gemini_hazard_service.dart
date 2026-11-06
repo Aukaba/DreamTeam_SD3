@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
@@ -149,7 +148,9 @@ class GeminiHazardResult {
   }
 
   factory GeminiHazardResult.fromAiJson(Map<String, dynamic> json, {required String model}) {
-    final bool isHazard = json['is_hazard'] == true;
+    final rawIsHazard = json['is_hazard'];
+    final bool isHazard = rawIsHazard == true ||
+        rawIsHazard?.toString().trim().toLowerCase() == 'true';
     final String? errorMsg = json['error_message']?.toString();
 
     if (!isHazard) {
@@ -255,7 +256,7 @@ class GeminiHazardService {
     final apiKey = _getApiKey();
     final base64Image = base64Encode(imageBytes);
 
-    final prompt = '''
+    const prompt = '''
 You are an expert AI road safety, community incident, and municipal hazard inspector.
 Analyze this photo and determine if it depicts a real-world community, traffic, road, pedestrian, infrastructure, or environmental HAZARD.
 
@@ -354,9 +355,16 @@ Return your answer strictly as a JSON object matching this schema:
           debugPrint('Gemini model $model returned ${response.statusCode}, trying fallback model...');
           lastError = 'Model $model busy (${response.statusCode})';
           continue;
+        } else if (response.statusCode == 400 ||
+            response.statusCode == 401 ||
+            response.statusCode == 403) {
+          // Non-retryable client / credential / payload error: preserve root error immediately
+          debugPrint('Gemini model $model returned client error ${response.statusCode}: ${response.body}');
+          lastError = 'Gemini error ${response.statusCode}: ${response.body}';
+          break;
         } else {
           debugPrint('Gemini model $model returned error ${response.statusCode}: ${response.body}');
-          lastError = 'Gemini error ${response.statusCode}: ${response.body}';
+          lastError ??= 'Gemini error ${response.statusCode}: ${response.body}';
         }
       } catch (e) {
         debugPrint('Failed to query Gemini model $model: $e');
