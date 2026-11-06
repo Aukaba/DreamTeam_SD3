@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -580,6 +581,30 @@ void main() {
       expect(find.text('Save Route'), findsOneWidget);
       expect(find.text('Start Turn-by-Turn'), findsOneWidget);
       expect(find.textContaining('General Maxilom Avenue'), findsWidgets);
+
+      // Verify Suggested Route mini-map applies the Natural Modern desaturated tone filter
+      final miniMapTileLayer = tester.widget<TileLayer>(find.byType(TileLayer));
+      expect(miniMapTileLayer.tileBuilder, isNotNull);
+      final dummyContext = tester.element(find.byType(TileLayer));
+      final styledTile = miniMapTileLayer.tileBuilder!(
+        dummyContext,
+        const SizedBox.shrink(),
+        TileImage(
+          coordinates: const TileCoordinates(0, 0, 0),
+          imageProvider: const AssetImage('assets/images/placeholder.png'),
+          tileDisplay: const TileDisplay.fadeIn(),
+          cancelLoading: Completer<void>(),
+          errorImage: null,
+          vsync: const TestVSync(),
+          onLoadError: (_, __, ___) {},
+          onLoadComplete: (_) {},
+        ),
+      );
+      expect(styledTile, isA<ColorFiltered>());
+      expect(
+        (styledTile as ColorFiltered).colorFilter,
+        equals(RouteScreen.naturalMapColorFilter),
+      );
 
       // Cycle travel mode Walking -> Cycling
       await tester.tap(find.text('Walking').first);

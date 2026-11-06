@@ -23,6 +23,15 @@ class RouteScreen extends StatefulWidget {
   final LatLng? initialLocation;
   final bool skipLocationLookup;
   final bool skipAutoSuggestion;
+  final TileProvider? tileProvider;
+
+  /// Natural Modern desaturated map color matrix matching MapScreen & UserHomeScreen.
+  static const ColorFilter naturalMapColorFilter = ColorFilter.matrix(<double>[
+    0.75, 0.15, 0.10, 0.0, 15.0,
+    0.05, 0.85, 0.10, 0.0, 15.0,
+    0.40, 0.40, 0.20, 0.0, 15.0,
+    0.00, 0.00, 0.00, 1.0, 0.0,
+  ]);
 
   const RouteScreen({
     super.key,
@@ -32,6 +41,7 @@ class RouteScreen extends StatefulWidget {
     this.initialLocation,
     this.skipLocationLookup = false,
     this.skipAutoSuggestion = false,
+    this.tileProvider,
   });
 
   @override
@@ -1361,13 +1371,13 @@ class _RouteScreenState extends State<RouteScreen> {
                     const BorderRadius.vertical(top: Radius.circular(16)),
                 child: GestureDetector(
                   onTap: _navigateToPlainMap,
-                  child: SizedBox(
+                  child: Container(
                     height: 146,
                     width: double.infinity,
+                    color: const Color(0xFFEDF2F7),
                     child: (planned != null &&
                             primary != null &&
-                            primary.polyline.length >= 2 &&
-                            !_previewTileError)
+                            primary.polyline.length >= 2)
                         ? _buildLiveRouteMiniMap(planned, primary)
                         : CustomPaint(
                             painter: _SuggestedRouteMapSnippetPainter(),
@@ -1637,77 +1647,151 @@ class _RouteScreenState extends State<RouteScreen> {
     final poly = primary.polyline;
     final midPt = poly[poly.length ~/ 2];
 
-    return IgnorePointer(
-      child: FlutterMap(
-        key: ValueKey<String>(
-          'mini_${planned.origin.latitude}_${planned.destination.latitude}_${primary.id}',
-        ),
-        options: MapOptions(
-          initialCenter: midPt,
-          initialZoom: 13.8,
-          interactionOptions: const InteractionOptions(
-            flags: InteractiveFlag.none,
-          ),
-        ),
-        children: [
-          TileLayer(
-            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-            userAgentPackageName: 'com.dreamteam.sd3',
-            errorTileCallback: (_, __, ___) {
-              if (!_previewTileError && mounted) {
-                setState(() => _previewTileError = true);
-              }
-            },
-          ),
-          PolylineLayer(
-            polylines: [
-              Polyline(
-                points: poly,
-                strokeWidth: 6.5,
-                color: Colors.white,
-              ),
-              Polyline(
-                points: poly,
-                strokeWidth: 4.0,
-                color: const Color(0xFF2563EB),
-              ),
-            ],
-          ),
-          MarkerLayer(
-            markers: [
-              Marker(
-                point: poly.first,
-                width: 18,
-                height: 18,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF10B981),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 2),
+    double minLat = poly.first.latitude;
+    double maxLat = poly.first.latitude;
+    double minLng = poly.first.longitude;
+    double maxLng = poly.first.longitude;
+    for (final pt in poly) {
+      if (pt.latitude < minLat) minLat = pt.latitude;
+      if (pt.latitude > maxLat) maxLat = pt.latitude;
+      if (pt.longitude < minLng) minLng = pt.longitude;
+      if (pt.longitude > maxLng) maxLng = pt.longitude;
+    }
+    final hasSpan =
+        (maxLat - minLat).abs() >= 0.0004 || (maxLng - minLng).abs() >= 0.0004;
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        IgnorePointer(
+          child: FlutterMap(
+            key: ValueKey<String>(
+              'mini_${planned.origin.latitude}_${planned.destination.latitude}_${primary.id}',
+            ),
+            options: hasSpan
+                ? MapOptions(
+                    initialCameraFit: CameraFit.bounds(
+                      bounds: LatLngBounds(
+                        LatLng(minLat, minLng),
+                        LatLng(maxLat, maxLng),
+                      ),
+                      padding: const EdgeInsets.all(22),
+                      maxZoom: 16.5,
+                    ),
+                    backgroundColor: const Color(0xFFEDF2F7),
+                    interactionOptions: const InteractionOptions(
+                      flags: InteractiveFlag.none,
+                    ),
+                  )
+                : MapOptions(
+                    initialCenter: midPt,
+                    initialZoom: 14.5,
+                    backgroundColor: const Color(0xFFEDF2F7),
+                    interactionOptions: const InteractionOptions(
+                      flags: InteractiveFlag.none,
+                    ),
                   ),
-                ),
+            children: [
+              TileLayer(
+                tileProvider: widget.tileProvider,
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.dreamteam.sd3',
+                tileBuilder: (context, tileWidget, tile) {
+                  return ColorFiltered(
+                    colorFilter: RouteScreen.naturalMapColorFilter,
+                    child: tileWidget,
+                  );
+                },
+                errorTileCallback: (_, __, ___) {
+                  if (!_previewTileError && mounted) {
+                    setState(() => _previewTileError = true);
+                  }
+                },
               ),
-              Marker(
-                point: poly.last,
-                width: 22,
-                height: 22,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFDC2626),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 2),
-                  ),
-                  child: const Icon(
-                    Icons.flag_rounded,
-                    size: 11,
+              PolylineLayer(
+                polylines: [
+                  Polyline(
+                    points: poly,
+                    strokeWidth: 6.5,
                     color: Colors.white,
                   ),
-                ),
+                  Polyline(
+                    points: poly,
+                    strokeWidth: 4.0,
+                    color: const Color(0xFF2563EB),
+                  ),
+                ],
+              ),
+              MarkerLayer(
+                markers: [
+                  Marker(
+                    point: poly.first,
+                    width: 18,
+                    height: 18,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF10B981),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 2),
+                      ),
+                    ),
+                  ),
+                  Marker(
+                    point: poly.last,
+                    width: 22,
+                    height: 22,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFDC2626),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 2),
+                      ),
+                      child: const Icon(
+                        Icons.flag_rounded,
+                        size: 11,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
-        ],
-      ),
+        ),
+        if (_previewTileError)
+          Positioned(
+            bottom: 8,
+            left: 10,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.92),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.wifi_off_rounded,
+                    size: 10,
+                    color: _secondaryGrey,
+                  ),
+                  SizedBox(width: 4),
+                  Text(
+                    'Offline map',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 8.5,
+                      color: _secondaryGrey,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
     );
   }
 
