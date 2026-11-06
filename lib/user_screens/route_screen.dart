@@ -1,42 +1,684 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' hide Path;
 import '../Authentication/auth_service.dart';
 import '../Authentication/login_page.dart';
 import '../map_screen.dart';
-import '../widgets/custom_wavy_header.dart';
-import '../widgets/safe_route_bottom_nav.dart';
 import '../navigation/app_navigation.dart';
+import '../services/cebu_landmark_service.dart';
+import '../services/hazard_report_service.dart';
+import '../services/location_service.dart';
+import '../services/safe_route_service.dart';
+import '../services/saved_location_service.dart';
+import '../widgets/custom_wavy_header.dart';
+import '../widgets/route_place_picker_sheet.dart';
+import '../widgets/safe_route_bottom_nav.dart';
+import '../widgets/turn_by_turn_navigation_overlay.dart';
 
 class RouteScreen extends StatefulWidget {
-  const RouteScreen({super.key});
+  final SafeRouteService? safeRouteService;
+  final HazardReportService? hazardReportService;
+  final SavedLocationService? savedLocationService;
+  final LatLng? initialLocation;
+  final bool skipLocationLookup;
+  final bool skipAutoSuggestion;
+
+  const RouteScreen({
+    super.key,
+    this.safeRouteService,
+    this.hazardReportService,
+    this.savedLocationService,
+    this.initialLocation,
+    this.skipLocationLookup = false,
+    this.skipAutoSuggestion = false,
+  });
 
   @override
   State<RouteScreen> createState() => _RouteScreenState();
 }
 
 class _RouteScreenState extends State<RouteScreen> {
-  // Route Planning Toggles - Persisted outside disposed RouteScreen state
+  // Persisted route planning preferences across tab switches
   static bool _avoidHazard = true;
+  static RouteTravelMode _travelMode = RouteTravelMode.walking;
 
   // System back press and logout guard
   DateTime? _lastBackPressedAt;
   final AuthService _authService = AuthService();
 
-  // Navigation guard to prevent multiple MapScreen instances
-  bool _isNavigatingToMap = false;
+  // Services
+  late final HazardReportService _hazardReportService;
+  late final SafeRouteService _safeRouteService;
+  late final SavedLocationService _savedLocationService;
+  StreamSubscription<HazardReportData>? _hazardStreamSub;
 
-  void _navigateToMap() {
+  // Endpoint & Route State
+  late LatLng _currentLocation;
+  late LatLng _originLocation;
+  String _originLabel = 'Your current location';
+  bool _originUsesCurrentGps = true;
+
+  LatLng? _destinationLocation;
+  String? _destinationLabel;
+
+  PlannedRouteResult? _plannedRoute;
+  bool _isFindingRoute = false;
+  bool _isSavedCurrentPlan = false;
+  bool _isLoadingSavedRoutes = true;
+  bool _isNavigatingToMap = false;
+  bool _previewTileError = false;
+
+  List<HazardReportData> _activeHazards = <HazardReportData>[];
+  List<SavedRouteRecord> _savedRoutes = <SavedRouteRecord>[];
+  List<SavedLocation> _savedPlaces = <SavedLocation>[];
+
+  // Design Colors matching Figma
+  static const Color _bgWarm = Color(0xFFF8F7F4);
+  static const Color _primaryNavy = Color(0xFF263354);
+  static const Color _secondaryGrey = Color(0xFF8A94A6);
+  static const Color _cardBg = Color(0xFFFFFFFF);
+  static const Color _inputBg = Color(0xFFF4F6F9);
+  static const Color _accentBlue = Color(0xFF4A90E2);
+  static const Color _lightBlue = Color(0xFFEBF3FE);
+  static const Color _safeGreen = Color(0xFF2E7D32);
+  static const Color _safeGreenBg = Color(0xFFE8F5E9);
+  static const Color _warningAmber = Color(0xFFD97706);
+  static const Color _warningAmberBg = Color(0xFFFEF3C7);
+  static const Color _dangerRed = Color(0xFFDC2626);
+  static const Color _dangerRedBg = Color(0xFFFEE2E2);
+
+  @override
+  void initState() {
+    super.initState();
+    _currentLocation = widget.initialLocation ?? LocationService.defaultLocation;
+    _originLocation = _currentLocation;
+    _hazardReportService = widget.hazardReportService ?? HazardReportService();
+    _safeRouteService = widget.safeRouteService ??
+        SafeRouteService(hazardReportService: _hazardReportService);
+    _savedLocationService =
+        widget.savedLocationService ?? SavedLocationService();
+
+    _hazardStreamSub = HazardReportService.reportStream.listen((_) {
+      _refreshDataAndReevaluate();
+    });
+
+    _initializeScreenData();
+    if (!widget.skipLocationLookup) {
+      _resolveDeviceGps();
+    }
+  }
+
+  @override
+  void dispose() {
+    _hazardStreamSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _resolveDeviceGps() async {
+    final lastKnown = await LocationService.getLastKnownLocation();
+    if (lastKnown != null && mounted) {
+      setState(() {
+        _currentLocation = lastKnown;
+        if (_originUsesCurrentGps) {
+          _originLocation = lastKnown;
+        }
+      });
+    }
+    final live = await LocationService.getCurrentLocation();
+    if (!mounted) return;
+    setState(() {
+      _currentLocation = live;
+      if (_originUsesCurrentGps) {
+        _originLocation = live;
+      }
+    });
+  }
+
+  Future<void> _initializeScreenData() async {
+    final hazardsFuture =
+        _hazardReportService.fetchReports(limit: 120, activeOnly: true);
+    Future<List<SavedLocation>> placesFuture;
+    try {
+      placesFuture = _savedLocationService.getSavedLocations();
+    } catch (_) {
+      placesFuture = Future<List<SavedLocation>>.value(<SavedLocation>[]);
+    }
+
+    final hazards = await hazardsFuture;
+    final savedRoutes =
+        await _safeRouteService.fetchSavedRoutes(activeHazards: hazards);
+    final places = await placesFuture;
+
+    if (!mounted) return;
+    setState(() {
+      _activeHazards = hazards;
+      _savedRoutes = savedRoutes;
+      _savedPlaces = places;
+      _isLoadingSavedRoutes = false;
+    });
+
+    // Populate Suggested Route automatically if user hasn't picked a destination yet
+    if (!widget.skipAutoSuggestion && _destinationLocation == null) {
+      if (savedRoutes.isNotEmpty) {
+        final top = savedRoutes.first;
+        unawaited(
+          _computePlannedRoute(
+            origin: top.origin,
+            originLabel: top.originLabel,
+            destination: top.destination,
+            destinationLabel: top.destinationLabel,
+            savedRouteId: top.id,
+            updateInputs: false,
+          ),
+        );
+      } else if (places.isNotEmpty) {
+        final place = places.first;
+        unawaited(
+          _computePlannedRoute(
+            origin: _originLocation,
+            originLabel: _originLabel,
+            destination: place.location,
+            destinationLabel: place.title,
+            updateInputs: false,
+          ),
+        );
+      } else if (CebuLandmarkService.landmarks.isNotEmpty) {
+        final fallbackLm = CebuLandmarkService.landmarks.firstWhere(
+          (l) =>
+              const Distance().distance(_originLocation, l.location) > 400 &&
+              const Distance().distance(_originLocation, l.location) < 6000,
+          orElse: () => CebuLandmarkService.landmarks.first,
+        );
+        unawaited(
+          _computePlannedRoute(
+            origin: _originLocation,
+            originLabel: _originLabel,
+            destination: fallbackLm.location,
+            destinationLabel: fallbackLm.name,
+            updateInputs: false,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _refreshDataAndReevaluate() async {
+    final hazards =
+        await _hazardReportService.fetchReports(limit: 120, activeOnly: true);
+    final routes =
+        await _safeRouteService.fetchSavedRoutes(activeHazards: hazards);
+    if (!mounted) return;
+    setState(() {
+      _activeHazards = hazards;
+      _savedRoutes = routes;
+    });
+    if (_plannedRoute != null) {
+      await _computePlannedRoute(
+        origin: _plannedRoute!.origin,
+        originLabel: _plannedRoute!.originLabel,
+        destination: _plannedRoute!.destination,
+        destinationLabel: _plannedRoute!.destinationLabel,
+        savedRouteId: _plannedRoute!.savedRouteId,
+        updateInputs: false,
+      );
+    }
+  }
+
+  Future<PlannedRouteResult?> _computePlannedRoute({
+    required LatLng origin,
+    required String originLabel,
+    required LatLng destination,
+    required String destinationLabel,
+    String? savedRouteId,
+    bool updateInputs = true,
+  }) async {
+    if (!mounted) return null;
+    setState(() {
+      _isFindingRoute = true;
+      if (updateInputs) {
+        _originLocation = origin;
+        _originLabel = originLabel;
+        _destinationLocation = destination;
+        _destinationLabel = destinationLabel;
+      }
+    });
+
+    final result = await _safeRouteService.findSafeRoute(
+      origin: origin,
+      originLabel: originLabel,
+      destination: destination,
+      destinationLabel: destinationLabel,
+      travelMode: _travelMode,
+      avoidHazards: _avoidHazard,
+    );
+
+    if (!mounted) return null;
+    final withSavedId =
+        savedRouteId != null ? result.copyWith(savedRouteId: savedRouteId) : result;
+    setState(() {
+      _plannedRoute = withSavedId;
+      _isFindingRoute = false;
+      _isSavedCurrentPlan = savedRouteId != null;
+    });
+    return withSavedId;
+  }
+
+  Future<void> _pickOrigin() async {
+    final selected = await showRoutePlacePickerSheet(
+      context,
+      title: 'Choose Starting Point',
+      currentLocation: _currentLocation,
+      allowCurrentLocationOption: true,
+      savedLocationService: _savedLocationService,
+    );
+    if (selected == null || !mounted) return;
+
+    setState(() {
+      _originLocation = selected.location;
+      _originLabel = selected.label;
+      _originUsesCurrentGps = selected.isCurrentLocation;
+      _isSavedCurrentPlan = false;
+    });
+
+    if (_destinationLocation != null && _destinationLabel != null) {
+      await _computePlannedRoute(
+        origin: _originLocation,
+        originLabel: _originLabel,
+        destination: _destinationLocation!,
+        destinationLabel: _destinationLabel!,
+      );
+    }
+  }
+
+  Future<void> _pickDestination({bool launchMapAfterPick = false}) async {
+    final selected = await showRoutePlacePickerSheet(
+      context,
+      title: 'Choose Destination',
+      currentLocation: _currentLocation,
+      allowCurrentLocationOption: false,
+      savedLocationService: _savedLocationService,
+    );
+    if (selected == null || !mounted) return;
+
+    final computed = await _computePlannedRoute(
+      origin: _originLocation,
+      originLabel: _originLabel,
+      destination: selected.location,
+      destinationLabel: selected.label,
+    );
+
+    if (launchMapAfterPick && computed != null && mounted) {
+      await _openRouteOnMap(computed, autoStartNavigation: false);
+    }
+  }
+
+  Future<void> _swapOriginAndDestination() async {
+    if (_destinationLocation == null || _destinationLabel == null) return;
+    final prevOrigin = _originLocation;
+    final prevOriginLabel = _originLabel;
+    final prevDest = _destinationLocation!;
+    final prevDestLabel = _destinationLabel!;
+
+    setState(() {
+      _originUsesCurrentGps = false;
+      _isSavedCurrentPlan = false;
+    });
+
+    await _computePlannedRoute(
+      origin: prevDest,
+      originLabel: prevDestLabel,
+      destination: prevOrigin,
+      destinationLabel: prevOriginLabel,
+    );
+  }
+
+  Future<void> _onFindRoutePressed() async {
+    if (_isFindingRoute) return;
+    if (_destinationLocation == null || _destinationLabel == null) {
+      await _pickDestination(launchMapAfterPick: true);
+      return;
+    }
+
+    final result = await _computePlannedRoute(
+      origin: _originLocation,
+      originLabel: _originLabel,
+      destination: _destinationLocation!,
+      destinationLabel: _destinationLabel!,
+    );
+    if (result != null && mounted) {
+      await _openRouteOnMap(result, autoStartNavigation: false);
+    }
+  }
+
+  Future<void> _openRouteOnMap(
+    PlannedRouteResult route, {
+    required bool autoStartNavigation,
+  }) async {
     if (_isNavigatingToMap) return;
+    _isNavigatingToMap = true;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => MapScreen(
+          initialLocation: _currentLocation,
+          hazardReportService: _hazardReportService,
+          safeRouteService: _safeRouteService,
+          initialRoute: route,
+          autoStartNavigation: autoStartNavigation,
+        ),
+      ),
+    );
+    if (mounted) {
+      setState(() => _isNavigatingToMap = false);
+      await _refreshDataAndReevaluate();
+    }
+  }
+
+  void _navigateToPlainMap() {
+    if (_isNavigatingToMap) return;
+    if (_plannedRoute != null) {
+      _openRouteOnMap(_plannedRoute!, autoStartNavigation: false);
+      return;
+    }
     _isNavigatingToMap = true;
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => const MapScreen()),
+      MaterialPageRoute(
+        builder: (context) => MapScreen(
+          initialLocation: _currentLocation,
+          hazardReportService: _hazardReportService,
+          safeRouteService: _safeRouteService,
+        ),
+      ),
     ).then((_) {
       if (mounted) {
-        setState(() {
-          _isNavigatingToMap = false;
-        });
+        setState(() => _isNavigatingToMap = false);
+        _refreshDataAndReevaluate();
       }
     });
+  }
+
+  Future<void> _saveCurrentPlannedRoute() async {
+    final planned = _plannedRoute;
+    if (planned == null) return;
+    final saved = await _safeRouteService.savePlannedRoute(planned: planned);
+    final updatedList =
+        await _safeRouteService.fetchSavedRoutes(activeHazards: _activeHazards);
+    if (!mounted) return;
+    setState(() {
+      _plannedRoute = planned.copyWith(savedRouteId: saved.id);
+      _isSavedCurrentPlan = true;
+      _savedRoutes = updatedList;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Saved "${saved.title}" to Saved Routes'),
+        backgroundColor: const Color(0xFF10B981),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _launchSavedRoute(
+    SavedRouteRecord record, {
+    required bool startNavigationImmediately,
+  }) async {
+    setState(() {
+      _avoidHazard = record.avoidHazards;
+      _travelMode = record.travelMode;
+      _isFindingRoute = true;
+    });
+
+    PlannedRouteResult routeToOpen;
+    try {
+      final liveResult = await _safeRouteService.findSafeRoute(
+        origin: record.origin,
+        originLabel: record.originLabel,
+        destination: record.destination,
+        destinationLabel: record.destinationLabel,
+        travelMode: record.travelMode,
+        avoidHazards: record.avoidHazards,
+      );
+      routeToOpen = liveResult.copyWith(savedRouteId: record.id);
+    } catch (_) {
+      routeToOpen = record.toCachedPlannedResult(activeHazards: _activeHazards);
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isFindingRoute = false;
+      _plannedRoute = routeToOpen;
+      _isSavedCurrentPlan = true;
+      _originLocation = record.origin;
+      _originLabel = record.originLabel;
+      _originUsesCurrentGps = false;
+      _destinationLocation = record.destination;
+      _destinationLabel = record.destinationLabel;
+    });
+
+    await _openRouteOnMap(
+      routeToOpen,
+      autoStartNavigation: startNavigationImmediately,
+    );
+  }
+
+  Future<void> _showSavedRouteMenu(SavedRouteRecord record) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (sheetCtx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 38,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFD1D5DB),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                  child: Text(
+                    record.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: _primaryNavy,
+                    ),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(
+                    Icons.navigation_rounded,
+                    color: _accentBlue,
+                  ),
+                  title: const Text(
+                    'Start Turn-by-Turn Navigation',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                      color: _primaryNavy,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    _launchSavedRoute(record, startNavigationImmediately: true);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.map_outlined, color: _primaryNavy),
+                  title: const Text(
+                    'Preview Route on Map',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w500,
+                      color: _primaryNavy,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    _launchSavedRoute(record, startNavigationImmediately: false);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.edit_outlined, color: _primaryNavy),
+                  title: const Text(
+                    'Rename Saved Route',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w500,
+                      color: _primaryNavy,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    _promptRenameSavedRoute(record);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(
+                    Icons.delete_outline_rounded,
+                    color: Colors.redAccent,
+                  ),
+                  title: const Text(
+                    'Delete Saved Route',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.redAccent,
+                    ),
+                  ),
+                  onTap: () async {
+                    Navigator.pop(sheetCtx);
+                    await _safeRouteService.deleteSavedRoute(record.id);
+                    final refreshed = await _safeRouteService.fetchSavedRoutes(
+                      activeHazards: _activeHazards,
+                    );
+                    if (!mounted) return;
+                    setState(() {
+                      _savedRoutes = refreshed;
+                      if (_plannedRoute?.savedRouteId == record.id) {
+                        _isSavedCurrentPlan = false;
+                      }
+                    });
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _promptRenameSavedRoute(SavedRouteRecord record) async {
+    final controller = TextEditingController(text: record.title);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text(
+          'Rename Route',
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            color: _primaryNavy,
+          ),
+        ),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(fontFamily: 'Poppins', fontSize: 14),
+          decoration: InputDecoration(
+            hintText: 'e.g. Home to University',
+            filled: true,
+            fillColor: _inputBg,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(fontFamily: 'Poppins', color: _secondaryGrey),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogCtx, controller.text.trim()),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _primaryNavy,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            child: const Text(
+              'Save',
+              style: TextStyle(fontFamily: 'Poppins', fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (newName != null && newName.isNotEmpty) {
+      await _safeRouteService.renameSavedRoute(record.id, newName);
+      final refreshed = await _safeRouteService.fetchSavedRoutes(
+        activeHazards: _activeHazards,
+      );
+      if (mounted) {
+        setState(() => _savedRoutes = refreshed);
+      }
+    }
+  }
+
+  void _cycleTravelMode() {
+    const modes = RouteTravelMode.values;
+    final next = modes[(_travelMode.index + 1) % modes.length];
+    setState(() {
+      _travelMode = next;
+    });
+    if (_destinationLocation != null && _destinationLabel != null) {
+      _computePlannedRoute(
+        origin: _originLocation,
+        originLabel: _originLabel,
+        destination: _destinationLocation!,
+        destinationLabel: _destinationLabel!,
+        savedRouteId: _plannedRoute?.savedRouteId,
+      );
+    } else if (_plannedRoute != null) {
+      _computePlannedRoute(
+        origin: _plannedRoute!.origin,
+        originLabel: _plannedRoute!.originLabel,
+        destination: _plannedRoute!.destination,
+        destinationLabel: _plannedRoute!.destinationLabel,
+        savedRouteId: _plannedRoute!.savedRouteId,
+        updateInputs: false,
+      );
+    }
   }
 
   Future<bool> _showLogoutDialog() async {
@@ -106,19 +748,6 @@ class _RouteScreenState extends State<RouteScreen> {
     return result ?? false;
   }
 
-  // Design Colors matching Figma
-  static const Color _bgWarm = Color(0xFFF8F7F4);
-  static const Color _primaryNavy = Color(0xFF263354);
-  static const Color _secondaryGrey = Color(0xFF8A94A6);
-  static const Color _cardBg = Color(0xFFFFFFFF);
-  static const Color _inputBg = Color(0xFFF4F6F9);
-  static const Color _accentBlue = Color(0xFF4A90E2);
-  static const Color _lightBlue = Color(0xFFEBF3FE);
-  static const Color _safeGreen = Color(0xFF2E7D32);
-  static const Color _safeGreenBg = Color(0xFFE8F5E9);
-  static const Color _warningAmber = Color(0xFFD97706);
-  static const Color _warningAmberBg = Color(0xFFFEF3C7);
-
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -135,51 +764,44 @@ class _RouteScreenState extends State<RouteScreen> {
       },
       child: Scaffold(
         backgroundColor: _bgWarm,
-        body: SingleChildScrollView(
-          physics: const BouncingScrollPhysics(),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // 1. Shared Inline Scrollable Header with SafeRoute wave & logo
-              const CustomWavyHeader(),
-
-              // 2. Main Scrollable Content pulled up into the wave curve
-              Transform.translate(
-                offset: const Offset(0, -36),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Header Text Section
-                      _buildHeaderTextSection(),
-
-                      const SizedBox(height: 18),
-
-                      // Route Planning Card (From / To / Avoid Hazard / Walking / Find Route)
-                      _buildRoutePlanningCard(),
-
-                      const SizedBox(height: 24),
-
-                      // Suggested Route Section
-                      _buildSuggestedRouteSection(),
-
-                      const SizedBox(height: 24),
-
-                      // Saved Routes Section
-                      _buildSavedRoutesSection(),
-
-                      const SizedBox(height: 36),
-                    ],
+        body: RefreshIndicator(
+          color: _primaryNavy,
+          onRefresh: _refreshDataAndReevaluate,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(
+              parent: BouncingScrollPhysics(),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const CustomWavyHeader(),
+                Transform.translate(
+                  offset: const Offset(0, -36),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildHeaderTextSection(),
+                        const SizedBox(height: 18),
+                        _buildRoutePlanningCard(),
+                        const SizedBox(height: 24),
+                        _buildSuggestedRouteSection(),
+                        const SizedBox(height: 24),
+                        _buildSavedRoutesSection(),
+                        const SizedBox(height: 36),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
         bottomNavigationBar: SafeRouteBottomNav(
           currentIndex: 1,
-          onTap: (index) => AppNavigation.navigateTo(context, index, currentIndex: 1),
+          onTap: (index) =>
+              AppNavigation.navigateTo(context, index, currentIndex: 1),
         ),
       ),
     );
@@ -216,7 +838,7 @@ class _RouteScreenState extends State<RouteScreen> {
         ),
         SizedBox(height: 6),
         Text(
-          'Find the safest way to your destination with real-time alerts and community reports.',
+          'Find the safest way to your destination with real-time hazard avoidance and turn-by-turn navigation.',
           style: TextStyle(
             fontFamily: 'Poppins',
             fontSize: 12,
@@ -233,6 +855,9 @@ class _RouteScreenState extends State<RouteScreen> {
   // 2. ROUTE PLANNING CARD
   // ---------------------------------------------------------------------------
   Widget _buildRoutePlanningCard() {
+    final hasDestination =
+        _destinationLabel != null && _destinationLabel!.trim().isNotEmpty;
+
     return Container(
       decoration: BoxDecoration(
         color: _cardBg,
@@ -247,6 +872,7 @@ class _RouteScreenState extends State<RouteScreen> {
       ),
       padding: const EdgeInsets.all(16.0),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // "From" Input Row
           _buildLocationInputRow(
@@ -254,7 +880,22 @@ class _RouteScreenState extends State<RouteScreen> {
             iconColor: _accentBlue,
             iconBgColor: _lightBlue,
             label: 'From',
-            value: 'Your current location',
+            value: _originLabel,
+            isPlaceholder: false,
+            onTap: _pickOrigin,
+            trailingAction: hasDestination
+                ? IconButton(
+                    icon: const Icon(
+                      Icons.swap_vert_rounded,
+                      color: _primaryNavy,
+                      size: 19,
+                    ),
+                    tooltip: 'Swap From & To',
+                    onPressed: _swapOriginAndDestination,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  )
+                : null,
           ),
 
           const SizedBox(height: 10),
@@ -265,12 +906,52 @@ class _RouteScreenState extends State<RouteScreen> {
             iconColor: _accentBlue,
             iconBgColor: _lightBlue,
             label: 'To',
-            value: 'Enter destination',
+            value: hasDestination ? _destinationLabel! : 'Enter destination',
+            isPlaceholder: !hasDestination,
+            onTap: () => _pickDestination(launchMapAfterPick: false),
+          ),
+
+          // Quick Saved Places / Popular Destination Chips
+          const SizedBox(height: 10),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                if (_savedPlaces.isNotEmpty)
+                  for (final sp in _savedPlaces.take(4)) ...[
+                    _buildQuickDestinationChip(
+                      icon: sp.icon,
+                      label: sp.title,
+                      onTap: () => _computePlannedRoute(
+                        origin: _originLocation,
+                        originLabel: _originLabel,
+                        destination: sp.location,
+                        destinationLabel: sp.title,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ]
+                else
+                  for (final preset in CebuLandmarkService.landmarks.take(3)) ...[
+                    _buildQuickDestinationChip(
+                      icon: preset.icon,
+                      label: preset.name,
+                      onTap: () => _computePlannedRoute(
+                        origin: _originLocation,
+                        originLabel: _originLabel,
+                        destination: preset.location,
+                        destinationLabel: preset.name,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+              ],
+            ),
           ),
 
           const SizedBox(height: 14),
 
-          // Bottom Action Controls: Avoid Hazard toggle, Walking chip, Find Route button
+          // Bottom Action Controls: Avoid Hazard toggle, Mode chip, Find Route button
           SizedBox(
             width: double.infinity,
             child: Wrap(
@@ -315,77 +996,117 @@ class _RouteScreenState extends State<RouteScreen> {
                         ),
                       ],
                     ),
-                    const SizedBox(width: 4),
+                    const SizedBox(width: 5),
                     _buildCustomCompactSwitch(
                       value: _avoidHazard,
                       onChanged: (val) {
                         setState(() {
                           _avoidHazard = val;
                         });
+                        if (_destinationLocation != null &&
+                            _destinationLabel != null) {
+                          _computePlannedRoute(
+                            origin: _originLocation,
+                            originLabel: _originLabel,
+                            destination: _destinationLocation!,
+                            destinationLabel: _destinationLabel!,
+                            savedRouteId: _plannedRoute?.savedRouteId,
+                          );
+                        } else if (_plannedRoute != null) {
+                          _computePlannedRoute(
+                            origin: _plannedRoute!.origin,
+                            originLabel: _plannedRoute!.originLabel,
+                            destination: _plannedRoute!.destination,
+                            destinationLabel: _plannedRoute!.destinationLabel,
+                            savedRouteId: _plannedRoute!.savedRouteId,
+                            updateInputs: false,
+                          );
+                        }
                       },
                     ),
                   ],
                 ),
 
-                // b) Walking chip
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                  decoration: BoxDecoration(
-                    color: _lightBlue,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.directions_walk_rounded,
-                        size: 15,
-                        color: _accentBlue,
-                      ),
-                      SizedBox(width: 4),
-                      Text(
-                        'Walking',
-                        style: TextStyle(
-                          fontFamily: 'Poppins',
-                          fontSize: 11,
-                          fontWeight: FontWeight.w500,
+                // b) Interactive Travel Mode chip (Walking / Cycling / Driving)
+                InkWell(
+                  onTap: _cycleTravelMode,
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: _lightBlue,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _travelMode.icon,
+                          size: 15,
                           color: _accentBlue,
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 4),
+                        Text(
+                          _travelMode.label,
+                          style: const TextStyle(
+                            fontFamily: 'Poppins',
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                            color: _accentBlue,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
 
                 // c) Find Route button
                 ElevatedButton(
-                  onPressed: _navigateToMap,
+                  onPressed: _isFindingRoute ? null : _onFindRoutePressed,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: _primaryNavy,
                     foregroundColor: Colors.white,
                     elevation: 0,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(20),
                     ),
                   ),
-                  child: const Row(
+                  child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      if (_isFindingRoute) ...[
+                        const SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                      ],
                       Text(
-                        'Find Route',
-                        style: TextStyle(
+                        _isFindingRoute ? 'Finding...' : 'Find Route',
+                        style: const TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
                           color: Colors.white,
                         ),
                       ),
-                      SizedBox(width: 4),
-                      Icon(
-                        Icons.arrow_forward_rounded,
-                        size: 13,
-                        color: Colors.white,
-                      ),
+                      if (!_isFindingRoute) ...[
+                        const SizedBox(width: 4),
+                        const Icon(
+                          Icons.arrow_forward_rounded,
+                          size: 13,
+                          color: Colors.white,
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -397,78 +1118,120 @@ class _RouteScreenState extends State<RouteScreen> {
     );
   }
 
-  // Location input row (From / To)
+  Widget _buildQuickDestinationChip({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: _inputBg,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 13, color: _primaryNavy),
+              const SizedBox(width: 5),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 125),
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w500,
+                    color: _primaryNavy,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildLocationInputRow({
     required IconData icon,
     required Color iconColor,
     required Color iconBgColor,
     required String label,
     required String value,
+    required bool isPlaceholder,
+    required VoidCallback onTap,
+    Widget? trailingAction,
   }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 11.0),
-      decoration: BoxDecoration(
-        color: _inputBg,
+    return Material(
+      color: _inputBg,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
         borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          // Icon in circular container
-          Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(
-              color: iconBgColor,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              icon,
-              color: iconColor,
-              size: 16,
-            ),
-          ),
-          const SizedBox(width: 12),
-
-          // Label and placeholder value
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: const TextStyle(
-                    fontFamily: 'Poppins',
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: _primaryNavy,
-                  ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 11.0),
+          child: Row(
+            children: [
+              Container(
+                width: 30,
+                height: 30,
+                decoration: BoxDecoration(
+                  color: iconBgColor,
+                  shape: BoxShape.circle,
                 ),
-                const SizedBox(height: 1),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontFamily: 'Poppins',
-                    fontSize: 11,
-                    fontWeight: FontWeight.w400,
-                    color: _secondaryGrey,
-                  ),
+                child: Icon(icon, color: iconColor, size: 16),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: const TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: _primaryNavy,
+                      ),
+                    ),
+                    const SizedBox(height: 1),
+                    Text(
+                      value,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 11.5,
+                        fontWeight:
+                            isPlaceholder ? FontWeight.w400 : FontWeight.w600,
+                        color: isPlaceholder ? _secondaryGrey : _primaryNavy,
+                      ),
+                    ),
+                  ],
                 ),
+              ),
+              if (trailingAction != null) ...[
+                trailingAction,
+                const SizedBox(width: 6),
               ],
-            ),
+              const Icon(
+                Icons.arrow_forward_rounded,
+                color: _primaryNavy,
+                size: 16,
+              ),
+            ],
           ),
-
-          // Right arrow
-          const Icon(
-            Icons.arrow_forward_rounded,
-            color: _primaryNavy,
-            size: 16,
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  // Custom compact switch matching Figma navy pill toggle
   Widget _buildCustomCompactSwitch({
     required bool value,
     required ValueChanged<bool> onChanged,
@@ -501,27 +1264,67 @@ class _RouteScreenState extends State<RouteScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // 3. SUGGESTED ROUTE SECTION
+  // 3. SUGGESTED ROUTE SECTION (LIVE HAZARD-AWARE ROUTE + TURN-BY-TURN LAUNCH)
   // ---------------------------------------------------------------------------
   Widget _buildSuggestedRouteSection() {
+    final planned = _plannedRoute;
+    final primary = planned?.primaryRoute;
+    final onRouteCount = primary?.hazardsOnRoute.length ?? 0;
+    final avoidedCount = planned?.hazardsAvoided ?? 0;
+
+    String headline = 'Safer route found!';
+    String subline = 'Select a destination above to calculate safe roads';
+    String badgeLabel = 'Low risk area →';
+    Color badgeBg = _safeGreenBg;
+    Color badgeFg = _safeGreen;
+    IconData badgeIcon = Icons.eco_rounded;
+
+    if (planned != null && primary != null) {
+      subline =
+          '${primary.distanceAndTimeLabel} · ${planned.destinationLabel}';
+      if (onRouteCount == 0 && avoidedCount > 0) {
+        headline = 'Safer detour route found!';
+        badgeLabel = 'Avoided $avoidedCount hazard${avoidedCount == 1 ? '' : 's'}';
+      } else if (onRouteCount == 0) {
+        headline = 'Hazard-free route ready!';
+        badgeLabel = '0 hazards on road';
+      } else if (primary.riskLevel == RouteRiskLevel.high) {
+        headline = 'Caution along route';
+        badgeLabel = '$onRouteCount hazard${onRouteCount == 1 ? '' : 's'} nearby';
+        badgeBg = _dangerRedBg;
+        badgeFg = _dangerRed;
+        badgeIcon = Icons.warning_amber_rounded;
+      } else {
+        headline = 'Lowest-risk route selected';
+        badgeLabel = '$onRouteCount hazard${onRouteCount == 1 ? '' : 's'} nearby';
+        badgeBg = _warningAmberBg;
+        badgeFg = _warningAmber;
+        badgeIcon = Icons.info_outline_rounded;
+      }
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Section Header Row
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text(
-              'Suggested Route',
-              style: TextStyle(
-                fontFamily: 'Poppins',
-                fontSize: 17,
-                fontWeight: FontWeight.w600,
-                color: _primaryNavy,
+            const Expanded(
+              child: Text(
+                'Suggested Route',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: 'Poppins',
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                  color: _primaryNavy,
+                ),
               ),
             ),
+            const SizedBox(width: 8),
             GestureDetector(
-              onTap: _navigateToMap,
+              onTap: _navigateToPlainMap,
               child: const Text(
                 'View on map →',
                 style: TextStyle(
@@ -537,7 +1340,6 @@ class _RouteScreenState extends State<RouteScreen> {
 
         const SizedBox(height: 12),
 
-        // Suggested Route Card with Map Snippet
         Container(
           decoration: BoxDecoration(
             color: _cardBg,
@@ -551,97 +1353,273 @@ class _RouteScreenState extends State<RouteScreen> {
             ],
           ),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Top Half: Map Snippet Preview
+              // Top Half: Live Route Map Preview (falls back to vector snippet when no route yet)
               ClipRRect(
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-                child: SizedBox(
-                  height: 136,
-                  width: double.infinity,
-                  child: CustomPaint(
-                    painter: _SuggestedRouteMapSnippetPainter(),
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(16)),
+                child: GestureDetector(
+                  onTap: _navigateToPlainMap,
+                  child: SizedBox(
+                    height: 146,
+                    width: double.infinity,
+                    child: (planned != null &&
+                            primary != null &&
+                            primary.polyline.length >= 2 &&
+                            !_previewTileError)
+                        ? _buildLiveRouteMiniMap(planned, primary)
+                        : CustomPaint(
+                            painter: _SuggestedRouteMapSnippetPainter(),
+                          ),
                   ),
                 ),
               ),
 
-              // Bottom Half: Route Information & Safe Area Badge
               Padding(
                 padding: const EdgeInsets.all(14.0),
-                child: Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // Route Icon inside circular container
-                    Container(
-                      width: 36,
-                      height: 36,
-                      decoration: const BoxDecoration(
-                        color: _lightBlue,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Center(
-                        child: RouteNavIcon(
-                          color: _accentBlue,
-                          size: 18,
+                    Row(
+                      children: [
+                        Container(
+                          width: 36,
+                          height: 36,
+                          decoration: const BoxDecoration(
+                            color: _lightBlue,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Center(
+                            child: RouteNavIcon(
+                              color: _accentBlue,
+                              size: 18,
+                            ),
+                          ),
                         ),
-                      ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                headline,
+                                style: const TextStyle(
+                                  fontFamily: 'Poppins',
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: _primaryNavy,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                subline,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontFamily: 'Poppins',
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w400,
+                                  color: _secondaryGrey,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: badgeBg,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(badgeIcon, size: 13, color: badgeFg),
+                              const SizedBox(width: 4),
+                              Text(
+                                badgeLabel,
+                                style: TextStyle(
+                                  fontFamily: 'Poppins',
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  color: badgeFg,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 10),
 
-                    // Title & Distance / Time
-                    const Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                    // Turn-by-Turn Steps Preview & Action Buttons when route is ready
+                    if (planned != null && primary != null) ...[
+                      if (primary.steps.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: _inputBg,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      'TURN-BY-TURN PREVIEW (${primary.steps.length} STEPS)',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontFamily: 'Poppins',
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                        color: _secondaryGrey,
+                                        letterSpacing: 0.6,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  GestureDetector(
+                                    onTap: () => showRouteStepsBottomSheet(
+                                      context,
+                                      route: primary,
+                                      currentStepIndex: 0,
+                                    ),
+                                    child: const Text(
+                                      'All steps →',
+                                      style: TextStyle(
+                                        fontFamily: 'Poppins',
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: _accentBlue,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              for (final step in primary.steps.take(2))
+                                Padding(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 3),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        step.maneuverType.icon,
+                                        size: 15,
+                                        color: _primaryNavy,
+                                      ),
+                                      const SizedBox(width: 7),
+                                      Expanded(
+                                        child: Text(
+                                          step.instruction,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            fontFamily: 'Poppins',
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.w500,
+                                            color: _primaryNavy,
+                                          ),
+                                        ),
+                                      ),
+                                      if (step.distanceMeters > 0)
+                                        Text(
+                                          step.formattedDistance,
+                                          style: const TextStyle(
+                                            fontFamily: 'Poppins',
+                                            fontSize: 10.5,
+                                            color: _secondaryGrey,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      Row(
                         children: [
-                          Text(
-                            'Safer route found!',
-                            style: TextStyle(
-                              fontFamily: 'Poppins',
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: _primaryNavy,
+                          OutlinedButton.icon(
+                            onPressed: _saveCurrentPlannedRoute,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor:
+                                  _isSavedCurrentPlan ? _safeGreen : _primaryNavy,
+                              side: BorderSide(
+                                color: _isSavedCurrentPlan
+                                    ? _safeGreen
+                                    : const Color(0xFFE2E8F0),
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 10,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                            icon: Icon(
+                              _isSavedCurrentPlan
+                                  ? Icons.bookmark_added_rounded
+                                  : Icons.bookmark_add_outlined,
+                              size: 16,
+                            ),
+                            label: Text(
+                              _isSavedCurrentPlan ? 'Saved' : 'Save Route',
+                              style: const TextStyle(
+                                fontFamily: 'Poppins',
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
-                          SizedBox(height: 2),
-                          Text(
-                            '2.3 km · 12 min',
-                            style: TextStyle(
-                              fontFamily: 'Poppins',
-                              fontSize: 11,
-                              fontWeight: FontWeight.w400,
-                              color: _secondaryGrey,
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: () => _openRouteOnMap(
+                                planned,
+                                autoStartNavigation: true,
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF2563EB),
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 11,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                              ),
+                              icon: const Icon(
+                                Icons.navigation_rounded,
+                                size: 17,
+                              ),
+                              label: const Text(
+                                'Start Turn-by-Turn',
+                                style: TextStyle(
+                                  fontFamily: 'Poppins',
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
                             ),
                           ),
                         ],
                       ),
-                    ),
-
-                    // Low Risk Area Badge
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: _safeGreenBg,
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.eco_rounded,
-                            size: 13,
-                            color: _safeGreen,
-                          ),
-                          SizedBox(width: 4),
-                          Text(
-                            'Low risk area →',
-                            style: TextStyle(
-                              fontFamily: 'Poppins',
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                              color: _safeGreen,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -652,85 +1630,323 @@ class _RouteScreenState extends State<RouteScreen> {
     );
   }
 
+  Widget _buildLiveRouteMiniMap(
+    PlannedRouteResult planned,
+    RouteCandidate primary,
+  ) {
+    final poly = primary.polyline;
+    final midPt = poly[poly.length ~/ 2];
+
+    return IgnorePointer(
+      child: FlutterMap(
+        key: ValueKey<String>(
+          'mini_${planned.origin.latitude}_${planned.destination.latitude}_${primary.id}',
+        ),
+        options: MapOptions(
+          initialCenter: midPt,
+          initialZoom: 13.8,
+          interactionOptions: const InteractionOptions(
+            flags: InteractiveFlag.none,
+          ),
+        ),
+        children: [
+          TileLayer(
+            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            userAgentPackageName: 'com.dreamteam.sd3',
+            errorTileCallback: (_, __, ___) {
+              if (!_previewTileError && mounted) {
+                setState(() => _previewTileError = true);
+              }
+            },
+          ),
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: poly,
+                strokeWidth: 6.5,
+                color: Colors.white,
+              ),
+              Polyline(
+                points: poly,
+                strokeWidth: 4.0,
+                color: const Color(0xFF2563EB),
+              ),
+            ],
+          ),
+          MarkerLayer(
+            markers: [
+              Marker(
+                point: poly.first,
+                width: 18,
+                height: 18,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
+                ),
+              ),
+              Marker(
+                point: poly.last,
+                width: 22,
+                height: 22,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFDC2626),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
+                  child: const Icon(
+                    Icons.flag_rounded,
+                    size: 11,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   // ---------------------------------------------------------------------------
-  // 4. SAVED ROUTES SECTION
+  // 4. SAVED ROUTES SECTION (SUPABASE DB + LIVE HAZARD RE-EVALUATION)
   // ---------------------------------------------------------------------------
   Widget _buildSavedRoutesSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Section Header Row
-        const Row(
+        Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              'Saved Routes',
-              style: TextStyle(
-                fontFamily: 'Poppins',
-                fontSize: 17,
-                fontWeight: FontWeight.w600,
-                color: _primaryNavy,
+            const Expanded(
+              child: Text(
+                'Saved Routes',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: 'Poppins',
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                  color: _primaryNavy,
+                ),
               ),
             ),
-            Text(
-              'See all →',
-              style: TextStyle(
-                fontFamily: 'Poppins',
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-                color: _secondaryGrey,
+            if (_savedRoutes.length > 3) ...[
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: _showAllSavedRoutesSheet,
+                child: Text(
+                  'See all (${_savedRoutes.length}) →',
+                  style: const TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: _secondaryGrey,
+                  ),
+                ),
               ),
-            ),
+            ],
           ],
         ),
 
         const SizedBox(height: 12),
 
-        // Route Item 1: Home to School
-        _buildSavedRouteCard(
-          title: 'Home to School',
-          distanceAndTime: '2.8 km · 14 min',
-          statusText: 'Safe',
-          statusColor: _primaryNavy,
-          statusBgColor: _lightBlue,
-          onTap: _navigateToMap,
-        ),
-
-        const SizedBox(height: 10),
-
-        // Route Item 2: Home to Work
-        _buildSavedRouteCard(
-          title: 'Home to Work',
-          distanceAndTime: '5.4 km · 22 min',
-          statusText: 'Moderate risk',
-          statusColor: _warningAmber,
-          statusBgColor: _warningAmberBg,
-          onTap: _navigateToMap,
-        ),
-
-        const SizedBox(height: 10),
-
-        // Route Item 3: University Route
-        _buildSavedRouteCard(
-          title: 'University Route',
-          distanceAndTime: '3.1 km · 16 min',
-          statusText: 'Safe',
-          statusColor: _primaryNavy,
-          statusBgColor: _lightBlue,
-          onTap: _navigateToMap,
-        ),
+        if (_isLoadingSavedRoutes)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 20),
+            child: Center(
+              child: SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: _primaryNavy,
+                ),
+              ),
+            ),
+          )
+        else if (_savedRoutes.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: _cardBg,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.04),
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: const BoxDecoration(
+                    color: _lightBlue,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.bookmark_border_rounded,
+                    color: _accentBlue,
+                    size: 22,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'No saved routes yet',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                          color: _primaryNavy,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'Plan a trip above and tap "Save Route" to monitor daily commutes against live hazards.',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 11.5,
+                          color: _secondaryGrey,
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          for (int i = 0; i < _savedRoutes.take(4).length; i++) ...[
+            _buildSavedRouteCardFromRecord(_savedRoutes[i]),
+            if (i < _savedRoutes.take(4).length - 1) const SizedBox(height: 10),
+          ],
       ],
     );
   }
 
-  // Reusable Saved Route Card
+  void _showAllSavedRoutesSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: _bgWarm,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetCtx) {
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(sheetCtx).size.height * 0.78,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 10),
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFD1D5DB),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text(
+                    'All Saved Routes',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                      color: _primaryNavy,
+                    ),
+                  ),
+                ),
+                Flexible(
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                    itemCount: _savedRoutes.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (_, idx) {
+                      final rec = _savedRoutes[idx];
+                      return _buildSavedRouteCardFromRecord(
+                        rec,
+                        onCloseParentSheet: () => Navigator.pop(sheetCtx),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildSavedRouteCardFromRecord(
+    SavedRouteRecord record, {
+    VoidCallback? onCloseParentSheet,
+  }) {
+    Color statusColor = _primaryNavy;
+    Color statusBgColor = _lightBlue;
+    String statusText = 'Safe';
+
+    if (record.riskLevel == RouteRiskLevel.high) {
+      statusColor = _dangerRed;
+      statusBgColor = _dangerRedBg;
+      statusText = 'High risk (${record.hazardCount})';
+    } else if (record.riskLevel == RouteRiskLevel.moderate) {
+      statusColor = _warningAmber;
+      statusBgColor = _warningAmberBg;
+      statusText = 'Moderate risk';
+    } else if (record.riskLevel == RouteRiskLevel.low) {
+      statusColor = _safeGreen;
+      statusBgColor = _safeGreenBg;
+      statusText = 'Low risk';
+    }
+
+    return _buildSavedRouteCard(
+      title: record.title,
+      distanceAndTime:
+          '${record.distanceAndTimeLabel} · ${record.travelMode.label}',
+      statusText: statusText,
+      statusColor: statusColor,
+      statusBgColor: statusBgColor,
+      modeIcon: record.travelMode.icon,
+      onTap: () {
+        onCloseParentSheet?.call();
+        _launchSavedRoute(record, startNavigationImmediately: true);
+      },
+      onMoreTap: () {
+        onCloseParentSheet?.call();
+        _showSavedRouteMenu(record);
+      },
+    );
+  }
+
   Widget _buildSavedRouteCard({
     required String title,
     required String distanceAndTime,
     required String statusText,
     required Color statusColor,
     required Color statusBgColor,
+    IconData modeIcon = Icons.home_outlined,
     VoidCallback? onTap,
+    VoidCallback? onMoreTap,
   }) {
     return Container(
       decoration: BoxDecoration(
@@ -750,10 +1966,10 @@ class _RouteScreenState extends State<RouteScreen> {
           onTap: onTap,
           borderRadius: BorderRadius.circular(16),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 12.0),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14.0, vertical: 12.0),
             child: Row(
               children: [
-                // Home icon in soft blue circle
                 Container(
                   width: 44,
                   height: 44,
@@ -761,21 +1977,21 @@ class _RouteScreenState extends State<RouteScreen> {
                     color: _lightBlue,
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(
-                    Icons.home_outlined,
+                  child: Icon(
+                    modeIcon,
                     color: _primaryNavy,
                     size: 22,
                   ),
                 ),
                 const SizedBox(width: 14),
-
-                // Title, Distance/Time, and Status pill badge
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
                         title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 14,
@@ -794,10 +2010,11 @@ class _RouteScreenState extends State<RouteScreen> {
                         ),
                       ),
                       const SizedBox(height: 5),
-
-                      // Status pill badge
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
                         decoration: BoxDecoration(
                           color: statusBgColor,
                           borderRadius: BorderRadius.circular(10),
@@ -825,8 +2042,6 @@ class _RouteScreenState extends State<RouteScreen> {
                     ],
                   ),
                 ),
-
-                // Right side: vertical ellipsis top & right arrow bottom
                 Column(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   crossAxisAlignment: CrossAxisAlignment.end,
@@ -837,13 +2052,13 @@ class _RouteScreenState extends State<RouteScreen> {
                         color: _secondaryGrey,
                         size: 18,
                       ),
-                      onPressed: () {},
+                      onPressed: onMoreTap,
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints(),
                     ),
                     const SizedBox(height: 16),
                     const Icon(
-                      Icons.arrow_forward_rounded,
+                      Icons.navigation_rounded,
                       color: _primaryNavy,
                       size: 18,
                     ),
@@ -859,18 +2074,14 @@ class _RouteScreenState extends State<RouteScreen> {
 }
 
 // -----------------------------------------------------------------------------
-// SUGGESTED ROUTE MAP SNIPPET PAINTER
-// Draws a high-fidelity vector preview of the route map with sea coastline,
-// winding blue route line, start/end pins, and risk icons.
+// SUGGESTED ROUTE MAP SNIPPET PAINTER (Fallback Vector Preview)
 // -----------------------------------------------------------------------------
 class _SuggestedRouteMapSnippetPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    // 1. Base land background (#F3F5F7)
     final landPaint = Paint()..color = const Color(0xFFF3F5F7);
     canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), landPaint);
 
-    // 2. Subtle green park patches
     final parkPaint = Paint()..color = const Color(0xFFE5EFE3);
     canvas.drawRRect(
       RRect.fromRectAndRadius(
@@ -894,7 +2105,6 @@ class _SuggestedRouteMapSnippetPainter extends CustomPainter {
       parkPaint,
     );
 
-    // 3. Subtle road grid lines
     final roadPaint = Paint()
       ..color = Colors.white
       ..strokeWidth = 4.0
@@ -926,7 +2136,6 @@ class _SuggestedRouteMapSnippetPainter extends CustomPainter {
       canvas.drawPath(r, roadPaint);
     }
 
-    // 4. Blue Water / Coastline on the bottom-right
     final waterPaint = Paint()..color = const Color(0xFF98CBEE);
     final waterPath = Path()
       ..moveTo(size.width * 0.68, size.height)
@@ -952,7 +2161,6 @@ class _SuggestedRouteMapSnippetPainter extends CustomPainter {
 
     canvas.drawPath(waterPath, waterPaint);
 
-    // 5. The Active Blue Route Line
     final routePaint = Paint()
       ..color = const Color(0xFF2563EB)
       ..strokeWidth = 3.5
@@ -989,36 +2197,31 @@ class _SuggestedRouteMapSnippetPainter extends CustomPainter {
 
     canvas.drawPath(routePath, routePaint);
 
-    // 6. Start Point: Pulsing halo circle and blue dot
     final startOffset = Offset(size.width * 0.16, size.height * 0.72);
-    // Outer halo
     canvas.drawCircle(
       startOffset,
       13,
       Paint()..color = const Color(0xFF3B82F6).withValues(alpha: 0.25),
     );
-    // Inner white border & blue dot
     canvas.drawCircle(startOffset, 6, Paint()..color = Colors.white);
-    canvas.drawCircle(startOffset, 4, Paint()..color = const Color(0xFF2563EB));
+    canvas.drawCircle(
+      startOffset,
+      4,
+      Paint()..color = const Color(0xFF2563EB),
+    );
 
-    // 7. Danger Markers & Safe Shield along the route
-    // Marker A: Red hazard triangle at (0.38, 0.44)
     _drawHazardBadge(
       canvas,
       Offset(size.width * 0.38, size.height * 0.44),
       color: const Color(0xFFEF4444),
       bgColor: const Color(0xFFFEE2E2),
     );
-
-    // Marker B: Blue safety shield in the middle at (0.51, 0.56)
     _drawShieldBadge(
       canvas,
       Offset(size.width * 0.51, size.height * 0.56),
       color: const Color(0xFF2563EB),
       bgColor: const Color(0xFFDBEAFE),
     );
-
-    // Marker C: Yellow/Amber hazard triangle at (0.65, 0.46)
     _drawHazardBadge(
       canvas,
       Offset(size.width * 0.65, size.height * 0.46),
@@ -1026,19 +2229,22 @@ class _SuggestedRouteMapSnippetPainter extends CustomPainter {
       bgColor: const Color(0xFFFEF3C7),
     );
 
-    // 8. Destination Navy Pin Icon at (0.83, 0.36)
     final endOffset = Offset(size.width * 0.83, size.height * 0.36);
     _drawDestinationPin(canvas, endOffset);
   }
 
-  void _drawHazardBadge(Canvas canvas, Offset center, {required Color color, required Color bgColor}) {
+  void _drawHazardBadge(
+    Canvas canvas,
+    Offset center, {
+    required Color color,
+    required Color bgColor,
+  }) {
     final badgePaint = Paint()..color = bgColor;
     final strokePaint = Paint()
       ..color = color
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.2;
 
-    // Small rounded container
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromCenter(center: center, width: 18, height: 18),
@@ -1047,7 +2253,6 @@ class _SuggestedRouteMapSnippetPainter extends CustomPainter {
       badgePaint,
     );
 
-    // Mini triangle exclamation
     final tri = Path()
       ..moveTo(center.dx, center.dy - 5)
       ..lineTo(center.dx + 4.5, center.dy + 4)
@@ -1056,7 +2261,12 @@ class _SuggestedRouteMapSnippetPainter extends CustomPainter {
     canvas.drawPath(tri, strokePaint);
   }
 
-  void _drawShieldBadge(Canvas canvas, Offset center, {required Color color, required Color bgColor}) {
+  void _drawShieldBadge(
+    Canvas canvas,
+    Offset center, {
+    required Color color,
+    required Color bgColor,
+  }) {
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromCenter(center: center, width: 18, height: 18),
@@ -1069,8 +2279,22 @@ class _SuggestedRouteMapSnippetPainter extends CustomPainter {
       ..moveTo(center.dx, center.dy - 4.5)
       ..lineTo(center.dx + 4, center.dy - 2.5)
       ..lineTo(center.dx + 4, center.dy + 1)
-      ..cubicTo(center.dx + 3.5, center.dy + 4, center.dx, center.dy + 5, center.dx, center.dy + 5)
-      ..cubicTo(center.dx, center.dy + 5, center.dx - 3.5, center.dy + 4, center.dx - 4, center.dy + 1)
+      ..cubicTo(
+        center.dx + 3.5,
+        center.dy + 4,
+        center.dx,
+        center.dy + 5,
+        center.dx,
+        center.dy + 5,
+      )
+      ..cubicTo(
+        center.dx,
+        center.dy + 5,
+        center.dx - 3.5,
+        center.dy + 4,
+        center.dx - 4,
+        center.dy + 1,
+      )
       ..lineTo(center.dx - 4, center.dy - 2.5)
       ..close();
 
@@ -1084,7 +2308,6 @@ class _SuggestedRouteMapSnippetPainter extends CustomPainter {
   }
 
   void _drawDestinationPin(Canvas canvas, Offset center) {
-    // Pin head & pointer
     final pinPaint = Paint()..color = const Color(0xFF263354);
     final pinPath = Path()
       ..moveTo(center.dx, center.dy + 4)
@@ -1097,8 +2320,11 @@ class _SuggestedRouteMapSnippetPainter extends CustomPainter {
       ..close();
 
     canvas.drawPath(pinPath, pinPaint);
-    // Center white dot
-    canvas.drawCircle(Offset(center.dx, center.dy - 5), 2.2, Paint()..color = Colors.white);
+    canvas.drawCircle(
+      Offset(center.dx, center.dy - 5),
+      2.2,
+      Paint()..color = Colors.white,
+    );
   }
 
   @override
