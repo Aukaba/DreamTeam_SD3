@@ -553,6 +553,19 @@ void main() {
         initialHazards: <HazardReportData>[activeFloodOnDirectRoad],
       );
 
+      final transparentPng = base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+      );
+      final mockTileProvider = NetworkTileProvider(
+        httpClient: MockClient(
+          (_) async => http.Response.bytes(
+            transparentPng,
+            200,
+            headers: const <String, String>{'content-type': 'image/png'},
+          ),
+        ),
+      );
+
       await tester.pumpWidget(
         MaterialApp(
           home: RouteScreen(
@@ -562,6 +575,7 @@ void main() {
             initialLocation: origin,
             skipLocationLookup: true,
             skipAutoSuggestion: true,
+            tileProvider: mockTileProvider,
           ),
         ),
       );

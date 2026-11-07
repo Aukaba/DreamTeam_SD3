@@ -69,12 +69,19 @@ class AuthWrapper extends StatefulWidget {
 }
 
 class _AuthWrapperState extends State<AuthWrapper> {
+  String? _cachedRoleUserId;
+  Future<UserRoleResolution>? _cachedRoleFuture;
   bool _isPasswordRecovery = false;
+
+  bool get _usesInjectedAuth =>
+      widget.authStateStream != null || widget.roleResolver != null;
 
   @override
   void initState() {
     super.initState();
-    _initSessionAccess();
+    if (!_usesInjectedAuth) {
+      _initSessionAccess();
+    }
   }
 
   Future<void> _initSessionAccess() async {
@@ -88,6 +95,57 @@ class _AuthWrapperState extends State<AuthWrapper> {
     if (!rememberMe && !_isPasswordRecovery) {
       // Sign out on cold start if persistent sign-in is disabled
       await Supabase.instance.client.auth.signOut();
+    }
+  }
+
+  Future<UserRoleResolution> _resolveRoleForUser(String userId) {
+    if (_cachedRoleFuture == null || _cachedRoleUserId != userId) {
+      _cachedRoleUserId = userId;
+      _cachedRoleFuture = widget.roleResolver != null
+          ? _safeInvokeRoleResolver(userId)
+          : UserRoleService.resolveUserRole(
+              Supabase.instance.client,
+              expectedUserId: userId,
+            );
+    }
+    return _cachedRoleFuture!;
+  }
+
+  Future<UserRoleResolution> _safeInvokeRoleResolver(String userId) async {
+    try {
+      return await widget.roleResolver!(userId);
+    } catch (e) {
+      debugPrint('Error in roleResolver: $e');
+      return const UserRoleResolution(
+        status: UserRoleStatus.error,
+        message: 'Unable to verify your account permissions. Please try again.',
+      );
+    }
+  }
+
+  void _retryRoleLookup(String userId) {
+    setState(() {
+      _cachedRoleUserId = userId;
+      _cachedRoleFuture = widget.roleResolver != null
+          ? _safeInvokeRoleResolver(userId)
+          : UserRoleService.resolveUserRole(
+              Supabase.instance.client,
+              expectedUserId: userId,
+            );
+    });
+  }
+
+  Future<void> _handleSignOut() async {
+    if (widget.onSignOut != null) {
+      await widget.onSignOut!();
+    } else {
+      await Supabase.instance.client.auth.signOut();
+    }
+    if (mounted) {
+      setState(() {
+        _cachedRoleUserId = null;
+        _cachedRoleFuture = null;
+      });
     }
   }
 

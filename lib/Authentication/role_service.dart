@@ -45,12 +45,41 @@ class UserRoleService {
       if (currentUser == null || currentUser.id != expectedUserId) {
         return const UserRoleResolution(
           status: UserRoleStatus.error,
-          message: 'Your session changed while verifying permissions. Please try again.',
+          message:
+              'Your session changed while verifying permissions. Please try again.',
         );
       }
 
-      final dynamic rpcResponse = await supabase.rpc('get_my_role');
-      final String? role = rpcResponse is String ? rpcResponse.trim() : null;
+      dynamic rpcResponse = await supabase.rpc('get_my_role');
+      String? role = rpcResponse is String ? rpcResponse.trim() : null;
+
+      // If a legacy auth account has no profile row yet, insert a default 'user' row once
+      // and re-verify via the server RPC.
+      if (role == null) {
+        final existingProfile = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('id', currentUser.id)
+            .maybeSingle();
+
+        if (existingProfile == null) {
+          try {
+            final email = currentUser.email ?? '';
+            await supabase.from('profiles').insert({
+              'id': currentUser.id,
+              'email': email.isNotEmpty ? email : null,
+              'full_name':
+                  currentUser.userMetadata?['full_name']?.toString() ??
+                      (email.contains('@') ? email.split('@').first : 'User'),
+              'role': 'user',
+            });
+            rpcResponse = await supabase.rpc('get_my_role');
+            role = rpcResponse is String ? rpcResponse.trim() : null;
+          } catch (e) {
+            debugPrint('Legacy profile backfill skipped: $e');
+          }
+        }
+      }
 
       if (role == 'admin') {
         return const UserRoleResolution.admin();
@@ -62,15 +91,16 @@ class UserRoleService {
       return UserRoleResolution(
         status: UserRoleStatus.unauthorized,
         role: role,
-        message: 'Access denied. Your account does not have a valid role assigned.',
+        message:
+            'Access denied. Your account does not have a valid role assigned.',
       );
     } catch (e) {
       debugPrint('Error verifying user role via server RPC: $e');
       return const UserRoleResolution(
         status: UserRoleStatus.error,
-        message: 'Unable to verify your account permissions. Please check your connection and try again.',
+        message:
+            'Unable to verify your account permissions. Please check your connection and try again.',
       );
     }
   }
 }
-

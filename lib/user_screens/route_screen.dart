@@ -1693,9 +1693,13 @@ class _RouteScreenState extends State<RouteScreen> {
                   ),
             children: [
               TileLayer(
-                tileProvider: widget.tileProvider,
+                tileProvider: widget.tileProvider ??
+                    NetworkTileProvider(silenceExceptions: true),
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                fallbackUrl:
+                    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
                 userAgentPackageName: 'com.dreamteam.sd3',
+                evictErrorTileStrategy: EvictErrorTileStrategy.dispose,
                 tileBuilder: (context, tileWidget, tile) {
                   return ColorFiltered(
                     colorFilter: RouteScreen.naturalMapColorFilter,
