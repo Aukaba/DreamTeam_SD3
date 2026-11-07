@@ -6,9 +6,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'signup_page.dart';
 import 'reset_password_page.dart';
 import '../user_screens/user_home_screen.dart';
+import '../admin_screens/admin_dashboard_screen.dart';
 import '../services/security_service.dart';
 import 'auth_service.dart';
 import 'auth_error_handler.dart';
+import 'role_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -91,53 +93,49 @@ class _LoginPageState extends State<LoginPage> {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('rememberMe', _rememberMe);
 
-        // Fetch user's role from profiles table (gracefully backfill if missing)
-        final profileData = await _supabase
-            .from('profiles')
-            .select('role')
-            .eq('id', response.user!.id)
-            .maybeSingle();
+        // Verify user's role via trusted server-side check
+        final roleResolution = await UserRoleService.resolveUserRole(
+          _supabase,
+          expectedUserId: response.user!.id,
+        );
 
-        String role = 'user';
-        if (profileData != null) {
-          final rawRole = (profileData['role'] as String?)?.trim();
-          if (rawRole != null && rawRole.isNotEmpty) {
-            role = rawRole;
-          }
-        } else {
-          try {
-            await _supabase.from('profiles').upsert(
-              {
-                'id': response.user!.id,
-                'email': response.user!.email ?? email,
-                'full_name': response.user!.userMetadata?['full_name']
-                        ?.toString() ??
-                    email.split('@').first,
-                'role': 'user',
-              },
-              onConflict: 'id',
-            );
-          } catch (_) {}
-        }
+        if (!mounted) return;
 
-        // Navigate based on role
-        if (mounted) {
-          if (role == 'user') {
+        switch (roleResolution.status) {
+          case UserRoleStatus.user:
             await _securityService.recordLoginEvent(rememberMe: _rememberMe);
             if (!mounted) return;
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (context) => const UserHomeScreen()),
             );
-          } else {
+            break;
+          case UserRoleStatus.admin:
+            await _securityService.recordLoginEvent(rememberMe: _rememberMe);
+            if (!mounted) return;
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const AdminDashboardScreen(),
+              ),
+            );
+            break;
+          case UserRoleStatus.unauthorized:
             await _authService.signOut();
-            if (mounted) {
-              setState(() {
-                _errorMessage =
-                    'Access denied. Your account does not have permission to log in.';
-              });
-            }
-          }
+            if (!mounted) return;
+            setState(() {
+              _errorMessage =
+                  'Access denied. Your account does not have permission to log in.';
+            });
+            break;
+          case UserRoleStatus.error:
+            await _authService.signOut();
+            if (!mounted) return;
+            setState(() {
+              _errorMessage = roleResolution.message ??
+                  'Unable to verify your account permissions. Please try again.';
+            });
+            break;
         }
       } else {
         if (mounted) {
