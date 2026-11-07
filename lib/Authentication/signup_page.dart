@@ -23,7 +23,7 @@ class _SignupPageState extends State<SignupPage> {
   final FocusNode _passwordFocusNode = FocusNode();
   final FocusNode _confirmPasswordFocusNode = FocusNode();
   final AuthService _authService = AuthService();
-  final SupabaseClient _supabase = Supabase.instance.client;
+  SupabaseClient get _supabase => Supabase.instance.client;
   bool _agreeToTerms = false;
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
@@ -162,14 +162,18 @@ class _SignupPageState extends State<SignupPage> {
           );
         }
       } else {
-        setState(() {
-          _errorMessage = 'Unable to complete sign up. Please try again.';
-        });
+        if (mounted) {
+          setState(() {
+            _errorMessage = 'Unable to complete sign up. Please try again.';
+          });
+        }
       }
     } catch (e) {
-      setState(() {
-        _errorMessage = AuthErrorHandler.getErrorMessage(e);
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = AuthErrorHandler.getErrorMessage(e);
+        });
+      }
     } finally {
       if (mounted) {
         setState(() {

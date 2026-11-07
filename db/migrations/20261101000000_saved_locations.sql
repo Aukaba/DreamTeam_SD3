@@ -24,24 +24,28 @@ alter table public.saved_locations enable row level security;
 
 -- 4. RLS Policies
 -- Use (select auth.uid()) to evaluate once per query plan instead of once per row
+drop policy if exists "Users can view their own saved locations." on public.saved_locations;
 create policy "Users can view their own saved locations."
   on public.saved_locations
   for select
   to authenticated
   using ((select auth.uid()) = user_id);
 
+drop policy if exists "Users can insert their own saved locations." on public.saved_locations;
 create policy "Users can insert their own saved locations."
   on public.saved_locations
   for insert
   to authenticated
   with check ((select auth.uid()) = user_id);
 
+drop policy if exists "Users can update their own saved locations." on public.saved_locations;
 create policy "Users can update their own saved locations."
   on public.saved_locations
   for update
   to authenticated
   using ((select auth.uid()) = user_id);
 
+drop policy if exists "Users can delete their own saved locations." on public.saved_locations;
 create policy "Users can delete their own saved locations."
   on public.saved_locations
   for delete
@@ -55,16 +59,15 @@ begin
   new.updated_at = now();
   return new;
 end;
-$$ language plpgsql set search_path = '';
+$$ language plpgsql set search_path = public;
 
 drop trigger if exists on_saved_locations_updated on public.saved_locations;
 create trigger on_saved_locations_updated
   before update on public.saved_locations
   for each row
-  execute procedure public.set_updated_at();
+  execute function public.set_updated_at();
 
 -- migrate:down
 drop trigger if exists on_saved_locations_updated on public.saved_locations;
 drop function if exists public.set_updated_at();
 drop table if exists public.saved_locations;
-

@@ -69,95 +69,25 @@ class AuthWrapper extends StatefulWidget {
 }
 
 class _AuthWrapperState extends State<AuthWrapper> {
-  String? _cachedRoleUserId;
-  Future<UserRoleResolution>? _cachedRoleFuture;
-
-  bool get _usesInjectedAuth =>
-      widget.authStateStream != null || widget.roleResolver != null;
+  bool _isPasswordRecovery = false;
 
   @override
   void initState() {
     super.initState();
-    if (!_usesInjectedAuth) {
-      _checkRememberMe();
-      _checkDeepLink();
-    }
+    _initSessionAccess();
   }
 
-  Future<void> _checkRememberMe() async {
+  Future<void> _initSessionAccess() async {
+    // Allow deep-link auth events (such as passwordRecovery) to settle first
+    await Future.delayed(const Duration(milliseconds: 350));
+    if (!mounted || _isPasswordRecovery) return;
+
     final prefs = await SharedPreferences.getInstance();
     final rememberMe = prefs.getBool('rememberMe') ?? false;
 
-    if (!rememberMe) {
+    if (!rememberMe && !_isPasswordRecovery) {
+      // Sign out on cold start if persistent sign-in is disabled
       await Supabase.instance.client.auth.signOut();
-    }
-  }
-
-  Future<void> _checkDeepLink() async {
-    await Future.delayed(const Duration(milliseconds: 500));
-
-    final session = Supabase.instance.client.auth.currentSession;
-    if (session != null) {
-      final user = Supabase.instance.client.auth.currentUser;
-      if (user == null) {
-        if (mounted) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => const ResetPasswordPage()),
-          );
-        }
-      }
-    }
-  }
-
-  Future<UserRoleResolution> _resolveRoleForUser(String userId) {
-    if (_cachedRoleFuture == null || _cachedRoleUserId != userId) {
-      _cachedRoleUserId = userId;
-      _cachedRoleFuture = widget.roleResolver != null
-          ? _safeInvokeRoleResolver(userId)
-          : UserRoleService.resolveUserRole(
-              Supabase.instance.client,
-              expectedUserId: userId,
-            );
-    }
-    return _cachedRoleFuture!;
-  }
-
-  Future<UserRoleResolution> _safeInvokeRoleResolver(String userId) async {
-    try {
-      return await widget.roleResolver!(userId);
-    } catch (e) {
-      debugPrint('Error in roleResolver: $e');
-      return const UserRoleResolution(
-        status: UserRoleStatus.error,
-        message: 'Unable to verify your account permissions. Please try again.',
-      );
-    }
-  }
-
-  void _retryRoleLookup(String userId) {
-    setState(() {
-      _cachedRoleUserId = userId;
-      _cachedRoleFuture = widget.roleResolver != null
-          ? _safeInvokeRoleResolver(userId)
-          : UserRoleService.resolveUserRole(
-              Supabase.instance.client,
-              expectedUserId: userId,
-            );
-    });
-  }
-
-  Future<void> _handleSignOut() async {
-    if (widget.onSignOut != null) {
-      await widget.onSignOut!();
-    } else {
-      await Supabase.instance.client.auth.signOut();
-    }
-    if (mounted) {
-      setState(() {
-        _cachedRoleUserId = null;
-        _cachedRoleFuture = null;
-      });
     }
   }
 
@@ -175,7 +105,20 @@ class _AuthWrapperState extends State<AuthWrapper> {
           );
         }
 
+        final event = snapshot.data?.event;
+        if (event == AuthChangeEvent.passwordRecovery) {
+          _isPasswordRecovery = true;
+          return const ResetPasswordPage();
+        }
+        if (event == AuthChangeEvent.signedOut) {
+          _isPasswordRecovery = false;
+        }
+
         final session = snapshot.data?.session;
+
+        if (_isPasswordRecovery && session != null) {
+          return const ResetPasswordPage();
+        }
 
         if (session != null) {
           final userId = session.user.id;

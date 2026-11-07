@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../services/alert_service.dart';
 
 const Color _primaryNavy = Color(0xFF233253);
 const Color _secondaryGrey = Color(0xFF8A94A6);
@@ -30,56 +31,100 @@ class SafeRouteBottomNav extends StatelessWidget {
       ),
       child: SafeArea(
         top: false,
-        child: BottomNavigationBar(
-          currentIndex: currentIndex,
-          onTap: onTap,
-          type: BottomNavigationBarType.fixed,
-          backgroundColor: Colors.white,
-          elevation: 0,
-          selectedItemColor: _primaryNavy,
-          unselectedItemColor: _secondaryGrey,
-          selectedLabelStyle: const TextStyle(
-            fontFamily: 'Poppins',
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-          ),
-          unselectedLabelStyle: const TextStyle(
-            fontFamily: 'Poppins',
-            fontSize: 11,
-            fontWeight: FontWeight.w500,
-          ),
-          items: [
-            const BottomNavigationBarItem(
-              icon: Padding(
-                padding: EdgeInsets.only(bottom: 2.0),
-                child: Icon(Icons.home_rounded, size: 24),
+        child: ValueListenableBuilder<int>(
+          valueListenable: AlertService.unreadCountNotifier,
+          builder: (context, unreadCount, _) {
+            return BottomNavigationBar(
+              currentIndex: currentIndex,
+              onTap: onTap,
+              type: BottomNavigationBarType.fixed,
+              backgroundColor: Colors.white,
+              elevation: 0,
+              selectedItemColor: _primaryNavy,
+              unselectedItemColor: _secondaryGrey,
+              selectedLabelStyle: const TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
               ),
-              label: 'Home',
-            ),
-            BottomNavigationBarItem(
-              icon: Padding(
-                padding: const EdgeInsets.only(bottom: 2.0),
-                child: RouteNavIcon(
-                  color: currentIndex == 1 ? _primaryNavy : _secondaryGrey,
+              unselectedLabelStyle: const TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+              ),
+              items: [
+                const BottomNavigationBarItem(
+                  icon: Padding(
+                    padding: EdgeInsets.only(bottom: 2.0),
+                    child: Icon(Icons.home_rounded, size: 24),
+                  ),
+                  label: 'Home',
                 ),
-              ),
-              label: 'Route',
-            ),
-            const BottomNavigationBarItem(
-              icon: Padding(
-                padding: EdgeInsets.only(bottom: 2.0),
-                child: Icon(Icons.notifications_none_rounded, size: 24),
-              ),
-              label: 'Alerts',
-            ),
-            const BottomNavigationBarItem(
-              icon: Padding(
-                padding: EdgeInsets.only(bottom: 2.0),
-                child: Icon(Icons.person_outline_rounded, size: 24),
-              ),
-              label: 'Profile',
-            ),
-          ],
+                BottomNavigationBarItem(
+                  icon: Padding(
+                    padding: const EdgeInsets.only(bottom: 2.0),
+                    child: RouteNavIcon(
+                      color: currentIndex == 1 ? _primaryNavy : _secondaryGrey,
+                    ),
+                  ),
+                  label: 'Route',
+                ),
+                BottomNavigationBarItem(
+                  icon: Padding(
+                    padding: const EdgeInsets.only(bottom: 2.0),
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        const Icon(Icons.notifications_none_rounded, size: 24),
+                        if (unreadCount > 0)
+                          Positioned(
+                            right: -4,
+                            top: -2,
+                            child: Container(
+                              constraints: const BoxConstraints(
+                                minWidth: 15,
+                                minHeight: 15,
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 3.5,
+                                vertical: 1,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFE53935),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: Colors.white,
+                                  width: 1.5,
+                                ),
+                              ),
+                              child: Text(
+                                unreadCount > 9 ? '9+' : '$unreadCount',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontFamily: 'Poppins',
+                                  fontSize: 8.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white,
+                                  height: 1.1,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  label: 'Alerts',
+                ),
+                const BottomNavigationBarItem(
+                  icon: Padding(
+                    padding: EdgeInsets.only(bottom: 2.0),
+                    child: Icon(Icons.person_outline_rounded, size: 24),
+                  ),
+                  label: 'Profile',
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
@@ -163,4 +208,3 @@ class _RouteNavPainter extends CustomPainter {
   bool shouldRepaint(covariant _RouteNavPainter oldDelegate) =>
       oldDelegate.color != color;
 }
-

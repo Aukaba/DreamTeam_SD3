@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' hide Path;
 import '../map_screen.dart';
+import '../services/alert_service.dart';
+import '../services/hazard_report_service.dart';
 import '../services/location_service.dart';
 import '../widgets/report_hazard_modal.dart';
 import '../Authentication/auth_service.dart';
@@ -11,7 +14,18 @@ import '../widgets/safe_route_bottom_nav.dart';
 import '../navigation/app_navigation.dart';
 
 class UserHomeScreen extends StatefulWidget {
-  const UserHomeScreen({super.key});
+  final HazardReportService? hazardReportService;
+  final AlertService? alertService;
+  final LatLng? initialLocation;
+  final bool skipLocationLookup;
+
+  const UserHomeScreen({
+    super.key,
+    this.hazardReportService,
+    this.alertService,
+    this.initialLocation,
+    this.skipLocationLookup = false,
+  });
 
   @override
   State<UserHomeScreen> createState() => _UserHomeScreenState();
@@ -21,17 +35,32 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   DateTime? _lastBackPressedAt;
   final AuthService _authService = AuthService();
   final MapController _mapPreviewController = MapController();
-  LatLng _currentLocation = LocationService.defaultLocation;
+  late final HazardReportService _hazardReportService;
+  late final AlertService _alertService;
+  StreamSubscription<HazardReportData>? _reportSubscription;
+
+  late LatLng _currentLocation;
   bool _previewMapError = false;
+  bool _isLoadingHazards = true;
+  List<HazardReportData> _activeReports = <HazardReportData>[];
 
   @override
   void initState() {
     super.initState();
-    _initCurrentLocation();
+    _currentLocation = widget.initialLocation ?? LocationService.defaultLocation;
+    _hazardReportService = widget.hazardReportService ?? HazardReportService();
+    _alertService = widget.alertService ?? AlertService();
+    _reportSubscription =
+        HazardReportService.reportStream.listen(_onNewReportSubmitted);
+    _loadHomeData();
+    if (!widget.skipLocationLookup) {
+      _initCurrentLocation();
+    }
   }
 
   @override
   void dispose() {
+    _reportSubscription?.cancel();
     _mapPreviewController.dispose();
     super.dispose();
   }
@@ -40,13 +69,117 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     final lastKnown = await LocationService.getLastKnownLocation();
     if (lastKnown != null && mounted) {
       setState(() => _currentLocation = lastKnown);
-      _mapPreviewController.move(lastKnown, 15.0);
+      try {
+        _mapPreviewController.move(lastKnown, 15.0);
+      } catch (_) {}
     }
     final current = await LocationService.getCurrentLocation();
     if (mounted) {
       setState(() => _currentLocation = current);
-      _mapPreviewController.move(current, 15.0);
+      try {
+        _mapPreviewController.move(current, 15.0);
+      } catch (_) {}
     }
+  }
+
+  Future<void> _loadHomeData() async {
+    final reportsFuture =
+        _hazardReportService.fetchReports(limit: 100, activeOnly: true);
+    final alertsFuture = _alertService.fetchAlerts(limit: 50);
+
+    final reports = await reportsFuture;
+    await alertsFuture;
+
+    if (!mounted) return;
+    setState(() {
+      _activeReports = reports;
+      _isLoadingHazards = false;
+    });
+  }
+
+  void _onNewReportSubmitted(HazardReportData report) {
+    if (!mounted || report.location == null || report.status != 'active') {
+      return;
+    }
+    setState(() {
+      if (report.reportId != null && report.reportId!.isNotEmpty) {
+        _activeReports.removeWhere((r) => r.reportId == report.reportId);
+      } else {
+        _activeReports.removeWhere(
+          (r) => r.title == report.title && r.timestamp == report.timestamp,
+        );
+      }
+      _activeReports.insert(0, report);
+      _isLoadingHazards = false;
+    });
+    _alertService.fetchAlerts(limit: 50);
+  }
+
+  Future<void> _openMapScreen({
+    LatLng? focusHazardLocation,
+    String? focusedReportId,
+    int initialFilterIndex = 0,
+  }) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => MapScreen(
+          initialLocation: _currentLocation,
+          focusHazardLocation: focusHazardLocation,
+          focusedReportId: focusedReportId,
+          initialFilterIndex: initialFilterIndex,
+          hazardReportService: widget.hazardReportService,
+        ),
+      ),
+    );
+    if (mounted) {
+      _loadHomeData();
+    }
+  }
+
+  String _greetingText() {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'GOOD MORNING';
+    if (hour < 18) return 'GOOD AFTERNOON';
+    return 'GOOD EVENING';
+  }
+
+  List<HazardReportData> get _recentHazards {
+    if (_activeReports.isEmpty) return const <HazardReportData>[];
+    const distanceCalc = Distance();
+    final within25Km = _activeReports
+        .where((r) =>
+            r.location != null &&
+            distanceCalc.distance(_currentLocation, r.location!) <= 25000)
+        .toList();
+    final source = within25Km.isNotEmpty ? within25Km : _activeReports;
+    return source.take(4).toList();
+  }
+
+  ({Color iconColor, Color iconBgColor, IconData icon}) _visualsForReport(
+    HazardReportData report,
+  ) {
+    final classification = MapScreen.classifyHazardForMap(report.category);
+    final secLower = report.securityLevel.toLowerCase();
+    if (secLower.contains('high')) {
+      return (
+        iconColor: _accentRed,
+        iconBgColor: const Color(0xFFFDEEEC),
+        icon: classification.icon,
+      );
+    }
+    if (classification.filterCategoryIndex == 2) {
+      return (
+        iconColor: _accentBlue,
+        iconBgColor: const Color(0xFFEBF3FE),
+        icon: classification.icon,
+      );
+    }
+    return (
+      iconColor: _accentOrange,
+      iconBgColor: const Color(0xFFFFF2EB),
+      icon: classification.icon,
+    );
   }
 
   // Color Palette Constants
@@ -75,71 +208,77 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
       },
       child: Scaffold(
         backgroundColor: _bgWarm,
-        body: SingleChildScrollView(
-          physics: const BouncingScrollPhysics(),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // 1. Inline Scrollable Header
-              _buildScrollableHeader(),
+        body: RefreshIndicator(
+          color: _primaryNavy,
+          onRefresh: _loadHomeData,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(
+              parent: BouncingScrollPhysics(),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 1. Inline Scrollable Header
+                _buildScrollableHeader(),
 
-              // 2. Main Scrollable Content pulled up snugly against the wave
-              Transform.translate(
-                offset: const Offset(0, -36),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Greeting & Subtitle
-                      const Text(
-                        'GOOD MORNING',
-                        style: TextStyle(
-                          fontFamily: 'Poppins',
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: _secondaryGrey,
-                          letterSpacing: 1.4,
+                // 2. Main Scrollable Content pulled up snugly against the wave
+                Transform.translate(
+                  offset: const Offset(0, -36),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Greeting & Subtitle
+                        Text(
+                          _greetingText(),
+                          style: const TextStyle(
+                            fontFamily: 'Poppins',
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: _secondaryGrey,
+                            letterSpacing: 1.4,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 4),
-                      const Text(
-                        'Stay safe out there.',
-                        style: TextStyle(
-                          fontFamily: 'Poppins',
-                          fontSize: 24,
-                          fontWeight: FontWeight.w600,
-                          color: _primaryNavy,
-                          letterSpacing: -0.4,
+                        const SizedBox(height: 4),
+                        const Text(
+                          'Stay safe out there.',
+                          style: TextStyle(
+                            fontFamily: 'Poppins',
+                            fontSize: 24,
+                            fontWeight: FontWeight.w600,
+                            color: _primaryNavy,
+                            letterSpacing: -0.4,
+                          ),
                         ),
-                      ),
 
-                      const SizedBox(height: 16),
+                        const SizedBox(height: 16),
 
-                      // 3. Live Map Card
-                      _buildLiveMapCard(),
+                        // 3. Live Map Card
+                        _buildLiveMapCard(),
 
-                      const SizedBox(height: 16),
+                        const SizedBox(height: 16),
 
-                      // 4. Action Buttons
-                      _buildActionButtons(),
+                        // 4. Action Buttons
+                        _buildActionButtons(),
 
-                      const SizedBox(height: 24),
+                        const SizedBox(height: 24),
 
-                      // 5. Recent Hazards Section
-                      _buildRecentHazardsSection(),
+                        // 5. Recent Hazards Section
+                        _buildRecentHazardsSection(),
 
-                      const SizedBox(height: 24),
+                        const SizedBox(height: 24),
 
-                      // 6. Hazards by Type Section
-                      _buildHazardsByTypeSection(),
+                        // 6. Hazards by Type Section
+                        _buildHazardsByTypeSection(),
 
-                      const SizedBox(height: 40),
-                    ],
+                        const SizedBox(height: 40),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
         bottomNavigationBar: _buildBottomNavigationBar(),
@@ -189,9 +328,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
           ),
           TextButton(
             onPressed: () async {
-              // Dismiss dialog first
               Navigator.pop(context);
-              // Then sign out and navigate
               await _authService.signOut();
               if (mounted) {
                 nav.pushAndRemoveUntil(
@@ -227,6 +364,72 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   // LIVE MAP CARD
   // ---------------------------------------------------------------------------
   Widget _buildLiveMapCard() {
+    const distanceCalc = Distance();
+    final nearbyWithin500m = _activeReports
+        .where((r) =>
+            r.location != null &&
+            distanceCalc.distance(_currentLocation, r.location!) <= 500)
+        .toList();
+    final hasHighNearby = nearbyWithin500m
+        .any((r) => r.securityLevel.toLowerCase().contains('high'));
+
+    final Color areaDotColor = hasHighNearby
+        ? _accentRed
+        : (nearbyWithin500m.isNotEmpty ? _accentOrange : _accentGreen);
+    final String areaStatusText = hasHighNearby
+        ? 'Caution: High-risk hazard nearby'
+        : (nearbyWithin500m.isNotEmpty
+            ? '${nearbyWithin500m.length} hazard${nearbyWithin500m.length == 1 ? '' : 's'} reported nearby'
+            : 'You are in a safe area');
+
+    final previewMarkers = <Marker>[
+      Marker(
+        point: _currentLocation,
+        width: 22,
+        height: 22,
+        alignment: Alignment.center,
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFF2563EB),
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 2.5),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF2563EB).withValues(alpha: 0.4),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+        ),
+      ),
+      for (final report in _activeReports.take(12))
+        if (report.location != null)
+          Marker(
+            point: report.location!,
+            width: 22,
+            height: 22,
+            alignment: Alignment.center,
+            child: Builder(
+              builder: (context) {
+                final visuals = _visualsForReport(report);
+                return Container(
+                  decoration: BoxDecoration(
+                    color: visuals.iconColor,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
+                  child: Icon(
+                    visuals.icon,
+                    color: Colors.white,
+                    size: 11,
+                  ),
+                );
+              },
+            ),
+          ),
+    ];
+
     return Container(
       decoration: BoxDecoration(
         color: _cardBg,
@@ -241,27 +444,19 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
       ),
       child: Column(
         children: [
-          // Map Placeholder container
+          // Map Preview container
           Padding(
             padding: const EdgeInsets.fromLTRB(10, 10, 10, 0),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(16),
               child: GestureDetector(
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => const MapScreen(),
-                    ),
-                  );
-                },
+                onTap: () => _openMapScreen(),
                 child: Container(
                   height: 150,
                   width: double.infinity,
                   color: const Color(0xFFEDF2F7),
                   child: Stack(
                     children: [
-                      // FlutterMap live preview
                       Positioned.fill(
                         child: FlutterMap(
                           mapController: _mapPreviewController,
@@ -274,17 +469,21 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                           ),
                           children: [
                             TileLayer(
-                              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                              fallbackUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+                              urlTemplate:
+                                  'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                              fallbackUrl:
+                                  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
                               userAgentPackageName: 'com.dreamteam.sd3',
-                              evictErrorTileStrategy: EvictErrorTileStrategy.dispose,
+                              evictErrorTileStrategy:
+                                  EvictErrorTileStrategy.dispose,
                               tileBuilder: (context, tileWidget, tile) {
                                 return ColorFiltered(
-                                  colorFilter: const ColorFilter.matrix(<double>[
+                                  colorFilter:
+                                      const ColorFilter.matrix(<double>[
                                     0.75, 0.15, 0.10, 0.0, 15.0,
                                     0.05, 0.85, 0.10, 0.0, 15.0,
                                     0.40, 0.40, 0.20, 0.0, 15.0,
-                                    0.00, 0.00, 0.00, 1.0,  0.0,
+                                    0.00, 0.00, 0.00, 1.0, 0.0,
                                   ]),
                                   child: tileWidget,
                                 );
@@ -298,75 +497,42 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                             const SimpleAttributionWidget(
                               source: Text(
                                 '© OpenStreetMap contributors',
-                                style: TextStyle(fontSize: 8, color: Color(0xFF4B5563)),
+                                style: TextStyle(
+                                  fontSize: 8,
+                                  color: Color(0xFF4B5563),
+                                ),
                               ),
                               alignment: Alignment.bottomRight,
                             ),
-                            MarkerLayer(
-                              markers: [
-                                Marker(
-                                  point: _currentLocation,
-                                  width: 22,
-                                  height: 22,
-                                  alignment: Alignment.center,
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF2563EB),
-                                      shape: BoxShape.circle,
-                                      border: Border.all(color: Colors.white, width: 2.5),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: const Color(0xFF2563EB).withValues(alpha: 0.4),
-                                          blurRadius: 6,
-                                          offset: const Offset(0, 2),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                                Marker(
-                                  point: LatLng(
-                                    _currentLocation.latitude + 0.0025,
-                                    _currentLocation.longitude - 0.0025,
-                                  ),
-                                  width: 20,
-                                  height: 20,
-                                  alignment: Alignment.center,
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      color: _accentOrange,
-                                      shape: BoxShape.circle,
-                                      border: Border.all(color: Colors.white, width: 2),
-                                    ),
-                                    child: const Icon(
-                                      Icons.construction_rounded,
-                                      color: Colors.white,
-                                      size: 11,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
+                            MarkerLayer(markers: previewMarkers),
                           ],
                         ),
                       ),
 
-                      // Offline indicator if tile requests fail
                       if (_previewMapError)
                         Positioned(
                           bottom: 8,
                           left: 12,
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
                             decoration: BoxDecoration(
-                              color: const Color(0xFFFEF2F2).withValues(alpha: 0.95),
+                              color: const Color(0xFFFEF2F2)
+                                  .withValues(alpha: 0.95),
                               borderRadius: BorderRadius.circular(6),
-                              border: Border.all(color: const Color(0xFFFCA5A5)),
+                              border:
+                                  Border.all(color: const Color(0xFFFCA5A5)),
                             ),
                             child: const Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.wifi_off_rounded, size: 11, color: Color(0xFFDC2626)),
+                                Icon(
+                                  Icons.wifi_off_rounded,
+                                  size: 11,
+                                  color: Color(0xFFDC2626),
+                                ),
                                 SizedBox(width: 4),
                                 Text(
                                   'Offline map',
@@ -414,9 +580,11 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                                 ),
                               ),
                               const SizedBox(width: 6),
-                              const Text(
-                                'LIVE MAP',
-                                style: TextStyle(
+                              Text(
+                                _activeReports.isEmpty
+                                    ? 'LIVE MAP'
+                                    : 'LIVE MAP • ${_activeReports.length}',
+                                style: const TextStyle(
                                   fontFamily: 'Poppins',
                                   fontSize: 10,
                                   fontWeight: FontWeight.w600,
@@ -441,37 +609,33 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                 const EdgeInsets.symmetric(horizontal: 16.0, vertical: 14.0),
             child: Row(
               children: [
-                // Safe Area status indicator
                 Container(
                   width: 8,
                   height: 8,
-                  decoration: const BoxDecoration(
-                    color: _accentGreen,
+                  decoration: BoxDecoration(
+                    color: areaDotColor,
                     shape: BoxShape.circle,
                   ),
                 ),
                 const SizedBox(width: 8),
-                const Text(
-                  'You are in a safe area',
-                  style: TextStyle(
-                    fontFamily: 'Poppins',
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: _primaryNavy,
+                Expanded(
+                  child: Text(
+                    areaStatusText,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: _primaryNavy,
+                    ),
                   ),
                 ),
-                const Spacer(),
+                const SizedBox(width: 8),
 
                 // Open Map button
                 GestureDetector(
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const MapScreen(),
-                      ),
-                    );
-                  },
+                  onTap: () => _openMapScreen(),
                   child: const Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -517,7 +681,11 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
             color: Colors.transparent,
             child: InkWell(
               onTap: () {
-                showReportHazardModal(context);
+                showReportHazardModal(
+                  context,
+                  initialLocation: _currentLocation,
+                  onReportSubmitted: _onNewReportSubmitted,
+                );
               },
               borderRadius: BorderRadius.circular(26),
               child: Ink(
@@ -583,7 +751,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
             color: Colors.transparent,
             child: InkWell(
               onTap: () {
-                // Handle Find a route
+                AppNavigation.navigateTo(context, 1, currentIndex: 0);
               },
               borderRadius: BorderRadius.circular(26),
               child: Ink(
@@ -632,9 +800,11 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // RECENT HAZARDS LIST
+  // RECENT HAZARDS LIST (Connected to Supabase ReportTable)
   // ---------------------------------------------------------------------------
   Widget _buildRecentHazardsSection() {
+    final recent = _recentHazards;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -649,38 +819,142 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
           ),
         ),
         const SizedBox(height: 2),
-        const Text(
-          'Recent hazards',
-          style: TextStyle(
-            fontFamily: 'Poppins',
-            fontSize: 20,
-            fontWeight: FontWeight.w600,
-            color: _primaryNavy,
-          ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              'Recent hazards',
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                color: _primaryNavy,
+              ),
+            ),
+            if (_activeReports.isNotEmpty)
+              GestureDetector(
+                onTap: () => _openMapScreen(),
+                child: const Text(
+                  'See all',
+                  style: TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: _accentBlue,
+                  ),
+                ),
+              ),
+          ],
         ),
         const SizedBox(height: 12),
 
-        // Card 1: Roadwork
-        _buildHazardCard(
-          icon: Icons.warning_amber_rounded,
-          iconColor: _accentOrange,
-          iconBgColor: const Color(0xFFFFF2EB),
-          title: 'Roadwork on Escario St.',
-          subtitle: '200m away • 5 mins ago',
-          onTap: () {},
-        ),
-
-        const SizedBox(height: 10),
-
-        // Card 2: Minor flooding
-        _buildHazardCard(
-          icon: Icons.water_drop_outlined,
-          iconColor: _accentBlue,
-          iconBgColor: const Color(0xFFEBF3FE),
-          title: 'Minor flooding',
-          subtitle: '450m away • 12 mins ago',
-          onTap: () {},
-        ),
+        if (_isLoadingHazards && recent.isEmpty)
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            decoration: BoxDecoration(
+              color: _cardBg,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: const Center(
+              child: SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: _primaryNavy,
+                ),
+              ),
+            ),
+          )
+        else if (recent.isEmpty)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+            decoration: BoxDecoration(
+              color: _cardBg,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.04),
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8F5E9),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(
+                    Icons.shield_outlined,
+                    color: _accentGreen,
+                    size: 24,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'No active hazards reported nearby',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: _primaryNavy,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'Tap "Report hazard" above if you spot an issue.',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 12,
+                          fontWeight: FontWeight.w400,
+                          color: _secondaryGrey,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          for (int i = 0; i < recent.length; i++) ...[
+            Builder(
+              builder: (context) {
+                final item = recent[i];
+                final visuals = _visualsForReport(item);
+                final distText = item.location != null
+                    ? HazardReportService.formatDistanceBetween(
+                        _currentLocation,
+                        item.location!,
+                      )
+                    : item.address;
+                final timeText =
+                    HazardReportService.formatRelativeTime(item.timestamp);
+                return _buildHazardCard(
+                  icon: visuals.icon,
+                  iconColor: visuals.iconColor,
+                  iconBgColor: visuals.iconBgColor,
+                  title: item.title,
+                  subtitle: '$distText • $timeText',
+                  severity: item.securityLevel,
+                  onTap: () => _openMapScreen(
+                    focusHazardLocation: item.location,
+                    focusedReportId: item.reportId,
+                  ),
+                );
+              },
+            ),
+            if (i < recent.length - 1) const SizedBox(height: 10),
+          ],
       ],
     );
   }
@@ -692,6 +966,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     required Color iconBgColor,
     required String title,
     required String subtitle,
+    String? severity,
     VoidCallback? onTap,
   }) {
     return Container(
@@ -739,6 +1014,8 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                     children: [
                       Text(
                         title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 14,
@@ -749,6 +1026,8 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                       const SizedBox(height: 2),
                       Text(
                         subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 12,
@@ -759,6 +1038,34 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                     ],
                   ),
                 ),
+                if (severity != null && severity.trim().isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: iconBgColor,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      severity,
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w600,
+                        color: iconColor,
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(width: 4),
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  size: 20,
+                  color: _secondaryGrey,
+                ),
               ],
             ),
           ),
@@ -768,9 +1075,24 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // HAZARDS BY TYPE SECTION
+  // HAZARDS BY TYPE SECTION (Connected to Supabase ReportTable counts)
   // ---------------------------------------------------------------------------
   Widget _buildHazardsByTypeSection() {
+    int roadworkCount = 0;
+    int floodingCount = 0;
+    int safetyCount = 0;
+
+    for (final report in _activeReports) {
+      final cls = MapScreen.classifyHazardForMap(report.category);
+      if (cls.filterCategoryIndex == 1) {
+        roadworkCount++;
+      } else if (cls.filterCategoryIndex == 2) {
+        floodingCount++;
+      } else {
+        safetyCount++;
+      }
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -796,36 +1118,39 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
         ),
         const SizedBox(height: 12),
 
-        // Row of 3 square white cards
+        // Row of 3 category cards wired to MapScreen filters
         Row(
           children: [
             Expanded(
               child: _buildHazardTypeCard(
-                icon: Icons.traffic_rounded,
+                icon: Icons.construction_rounded,
                 iconColor: _accentOrange,
                 iconBgColor: const Color(0xFFFFF2EB),
-                label: 'Traffic',
-                onTap: () {},
+                label: 'Roadwork',
+                countLabel: '$roadworkCount active',
+                onTap: () => _openMapScreen(initialFilterIndex: 1),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: _buildHazardTypeCard(
-                icon: Icons.construction_rounded,
+                icon: Icons.water_drop_rounded,
                 iconColor: _accentBlue,
                 iconBgColor: const Color(0xFFEBF3FE),
-                label: 'Construction',
-                onTap: () {},
+                label: 'Flooding',
+                countLabel: '$floodingCount active',
+                onTap: () => _openMapScreen(initialFilterIndex: 2),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: _buildHazardTypeCard(
-                icon: Icons.local_fire_department_rounded,
+                icon: Icons.warning_amber_rounded,
                 iconColor: _accentRed,
                 iconBgColor: const Color(0xFFFDEEEC),
-                label: 'Weather',
-                onTap: () {},
+                label: 'Safety',
+                countLabel: '$safetyCount active',
+                onTap: () => _openMapScreen(initialFilterIndex: 3),
               ),
             ),
           ],
@@ -840,6 +1165,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     required Color iconColor,
     required Color iconBgColor,
     required String label,
+    required String countLabel,
     VoidCallback? onTap,
   }) {
     return Container(
@@ -861,7 +1187,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
           borderRadius: BorderRadius.circular(16),
           child: Padding(
             padding:
-                const EdgeInsets.symmetric(vertical: 18.0, horizontal: 8.0),
+                const EdgeInsets.symmetric(vertical: 16.0, horizontal: 8.0),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -891,6 +1217,19 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                     color: _primaryNavy,
                   ),
                 ),
+                const SizedBox(height: 2),
+                Text(
+                  countLabel,
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                    color: _secondaryGrey,
+                  ),
+                ),
               ],
             ),
           ),
@@ -905,7 +1244,8 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   Widget _buildBottomNavigationBar() {
     return SafeRouteBottomNav(
       currentIndex: 0,
-      onTap: (index) => AppNavigation.navigateTo(context, index, currentIndex: 0),
+      onTap: (index) =>
+          AppNavigation.navigateTo(context, index, currentIndex: 0),
     );
   }
 }

@@ -3,16 +3,76 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart' hide Path;
 import 'services/cebu_landmark_service.dart';
+import 'services/gemini_hazard_service.dart';
+import 'services/hazard_report_service.dart';
 import 'services/location_service.dart';
 import 'services/nominatim_rate_limiter.dart';
+import 'services/safe_route_service.dart';
+import 'services/saved_location_service.dart';
 import 'widgets/report_hazard_modal.dart';
+import 'widgets/route_place_picker_sheet.dart';
+import 'widgets/turn_by_turn_navigation_overlay.dart';
 
 class MapScreen extends StatefulWidget {
   final LatLng? initialLocation;
+  final LatLng? focusHazardLocation;
+  final String? focusedReportId;
+  final int initialFilterIndex;
+  final HazardReportService? hazardReportService;
+  final SafeRouteService? safeRouteService;
+  final PlannedRouteResult? initialRoute;
+  final bool autoStartNavigation;
+  final TileProvider? tileProvider;
 
-  const MapScreen({super.key, this.initialLocation});
+  const MapScreen({
+    super.key,
+    this.initialLocation,
+    this.focusHazardLocation,
+    this.focusedReportId,
+    this.initialFilterIndex = 0,
+    this.hazardReportService,
+    this.safeRouteService,
+    this.initialRoute,
+    this.autoStartNavigation = false,
+    this.tileProvider,
+  });
+
+  /// Maps any raw or emoji hazard category explicitly to a map filter index and icon.
+  /// Filter indices: 1 = Roadwork/Obstruction, 2 = Flooding, 3 = Safety, 4 = Crime.
+  static ({int filterCategoryIndex, IconData icon}) classifyHazardForMap(
+    String rawCategory,
+  ) {
+    switch (HazardCategories.normalize(rawCategory)) {
+      case HazardCategories.flood:
+        return (
+          filterCategoryIndex: 2,
+          icon: Icons.water_drop_rounded,
+        );
+      case HazardCategories.roadDamage:
+      case HazardCategories.blockedRoad:
+      case HazardCategories.fallenTree:
+        return (
+          filterCategoryIndex: 1,
+          icon: Icons.construction_rounded,
+        );
+      case HazardCategories.brokenStreetlight:
+        return (
+          filterCategoryIndex: 3,
+          icon: Icons.lightbulb_outline_rounded,
+        );
+      case HazardCategories.accident:
+      case HazardCategories.fire:
+      case HazardCategories.other:
+      default:
+        return (
+          filterCategoryIndex: 3,
+          icon: Icons.warning_amber_rounded,
+        );
+    }
+  }
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -23,9 +83,14 @@ typedef UserFullMapScreen = MapScreen;
 
 class _HazardItem {
   final String id;
+  final String? reportId;
   final String overline;
   final String title;
   final String subtitle;
+  final String description;
+  final String address;
+  final String? imageUrl;
+  final int confidence;
   final String distance;
   final String badgeText;
   final Color themeColor;
@@ -38,9 +103,14 @@ class _HazardItem {
 
   const _HazardItem({
     required this.id,
+    this.reportId,
     required this.overline,
     required this.title,
     required this.subtitle,
+    this.description = '',
+    this.address = '',
+    this.imageUrl,
+    this.confidence = 98,
     required this.distance,
     required this.badgeText,
     required this.themeColor,
@@ -79,12 +149,7 @@ class _MapScreenState extends State<MapScreen> {
 
   // Device location initialized dynamically
   late LatLng _currentLocation;
-
-  // Landmark hazard coordinates
-  static const LatLng _roadworkLocation = LatLng(10.3182, 123.8895);
-  static const LatLng _floodingLocation = LatLng(10.3135, 123.8880);
-  static const LatLng _lightingLocation = LatLng(10.3195, 123.8940);
-  static const LatLng _crimeLocation = LatLng(10.3115, 123.8945);
+  late LatLng _initialCameraCenter;
 
   static const List<double> _scaleDistances = [
     10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000
@@ -115,68 +180,36 @@ class _MapScreenState extends State<MapScreen> {
     null,
   ];
 
-  late final List<_HazardItem> _allHazards = [
-    const _HazardItem(
-      id: 'safety_1',
-      overline: 'SAFETY',
-      title: 'Poor lighting area',
-      subtitle: 'Near University Avenue (around 2:14 PM)',
-      distance: '0.3 km away',
-      badgeText: 'High',
-      themeColor: Color(0xFFEF4444),
-      bgColor: Color(0xFFFFF5F5),
-      iconBgColor: Color(0xFFFEE2E2),
-      badgeBgColor: Color(0xFFFEE2E2),
-      icon: Icons.lightbulb_outline_rounded,
-      location: _lightingLocation,
-      filterCategoryIndex: 3,
-    ),
-    const _HazardItem(
-      id: 'obstruction_1',
-      overline: 'OBSTRUCTION',
-      title: 'Blocked sidewalk',
-      subtitle: 'Near Capitol Site (around 1:32 PM)',
-      distance: '0.6 km away',
-      badgeText: 'Medium',
-      themeColor: Color(0xFFD97706),
-      bgColor: Color(0xFFFFFDF5),
-      iconBgColor: Color(0xFFFEF3C7),
-      badgeBgColor: Color(0xFFFEF3C7),
-      icon: Icons.construction_rounded,
-      location: _roadworkLocation,
-      filterCategoryIndex: 1,
-    ),
-    const _HazardItem(
-      id: 'crime_1',
-      overline: 'CRIME',
-      title: 'Suspicious activity',
-      subtitle: 'Near Mango Square (around 12:45 PM)',
-      distance: '1.2 km away',
-      badgeText: 'Low',
-      themeColor: Color(0xFF3B82F6),
-      bgColor: Color(0xFFF5F9FF),
-      iconBgColor: Color(0xFFDBEAFE),
-      badgeBgColor: Color(0xFFDBEAFE),
-      icon: Icons.error_outline_rounded,
-      location: _crimeLocation,
-      filterCategoryIndex: 4,
-    ),
-    const _HazardItem(
-      id: 'flooding_1',
-      overline: 'FLOODING',
-      title: 'Minor street flooding',
-      subtitle: 'Near Capitol Site (around 1:50 PM)',
-      distance: '0.4 km away',
-      badgeText: 'Low',
-      themeColor: Color(0xFF4A90E2),
-      bgColor: Color(0xFFF0F9FF),
-      iconBgColor: Color(0xFFE0F2FE),
-      badgeBgColor: Color(0xFFE0F2FE),
-      icon: Icons.water_drop_rounded,
-      location: _floodingLocation,
-      filterCategoryIndex: 2,
-    ),
-  ];
+  late final HazardReportService _hazardReportService;
+  late final SafeRouteService _safeRouteService;
+  StreamSubscription<HazardReportData>? _reportSubscription;
+  final List<_HazardItem> _reportedHazards = <_HazardItem>[];
+  bool _isLoadingReports = true;
+  bool _hasHandledInitialFocus = false;
+
+  // Route preview & Turn-by-Turn Navigation state
+  PlannedRouteResult? _activeRoute;
+  bool _isNavigating = false;
+  bool _isRecalculatingRoute = false;
+  bool _isRouteSaved = false;
+  bool _isFollowingUser = true;
+  bool _isSimulating = false;
+  bool _hasArrived = false;
+  int _currentStepIndex = 0;
+  int _activePolySegmentIndex = 0;
+  double _distanceToNextTurnMeters = 0.0;
+  double _remainingDistanceMeters = 0.0;
+  int _remainingDurationSeconds = 0;
+  int _rerouteCount = 0;
+  String? _navigationSessionId;
+  String? _hazardWarningBanner;
+  DateTime? _lastAutoRerouteAt;
+  StreamSubscription<Position>? _gpsPositionSub;
+  Timer? _simulationTimer;
+  double _simulationProgressMeters = 0.0;
+
+  List<_HazardItem> get _allHazards =>
+      List<_HazardItem>.unmodifiable(_reportedHazards);
 
   List<_HazardItem> get _filteredHazards {
     if (_selectedFilterIndex == 0) {
@@ -190,10 +223,166 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
-    _currentLocation = widget.initialLocation ?? LocationService.defaultLocation;
-    _currentLatitude = _currentLocation.latitude;
+    _selectedFilterIndex = widget.initialFilterIndex.clamp(0, 4);
+    _currentLocation =
+        widget.initialLocation ??
+        widget.initialRoute?.origin ??
+        LocationService.defaultLocation;
+    _initialCameraCenter =
+        widget.focusHazardLocation ??
+        widget.initialRoute?.origin ??
+        _currentLocation;
+    if (widget.focusHazardLocation != null) {
+      _currentZoom = 17.0;
+    }
+    _currentLatitude = _initialCameraCenter.latitude;
+    _hazardReportService = widget.hazardReportService ?? HazardReportService();
+    _safeRouteService =
+        widget.safeRouteService ??
+        SafeRouteService(hazardReportService: _hazardReportService);
+
+    if (widget.initialRoute != null) {
+      _activeRoute = widget.initialRoute;
+      _isRouteSaved = widget.initialRoute!.savedRouteId != null;
+      _syncNavigationMetricsFromRoute(widget.initialRoute!.primaryRoute);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _activeRoute == null) return;
+        if (widget.autoStartNavigation) {
+          _startTurnByTurnNavigation();
+        } else {
+          _fitCameraToRoute(_activeRoute!.primaryRoute.polyline);
+        }
+      });
+    }
+
+    for (final sessionReport in HazardReportService.sessionReports) {
+      if (sessionReport.location != null && sessionReport.status == 'active') {
+        _upsertReportedHazardItem(_buildHazardItemFromReport(sessionReport));
+      }
+    }
+    _reportSubscription =
+        HazardReportService.reportStream.listen(_onExternalReportSubmitted);
     _searchController.addListener(_onSearchChanged);
+    _loadSavedReports();
     _initDeviceLocation();
+  }
+
+  Future<void> _loadSavedReports() async {
+    final savedReports = await _hazardReportService.fetchReports();
+    if (!mounted) return;
+    _HazardItem? focusedItem;
+    setState(() {
+      _isLoadingReports = false;
+      final mergedById = <String, _HazardItem>{};
+      for (final report in savedReports) {
+        if (report.location == null) continue;
+        final item = _buildHazardItemFromReport(report);
+        mergedById.putIfAbsent(item.id, () => item);
+      }
+      for (final existing in _reportedHazards) {
+        mergedById.putIfAbsent(existing.id, () => existing);
+      }
+      _reportedHazards
+        ..clear()
+        ..addAll(mergedById.values);
+
+      if (!_hasHandledInitialFocus &&
+          widget.focusedReportId != null &&
+          widget.focusedReportId!.trim().isNotEmpty) {
+        final targetId = widget.focusedReportId!.trim();
+        for (final item in _reportedHazards) {
+          if (item.reportId == targetId || item.id == 'report_$targetId') {
+            focusedItem = item;
+            break;
+          }
+        }
+      }
+    });
+
+    if (focusedItem != null && !_hasHandledInitialFocus) {
+      _hasHandledInitialFocus = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _mapController.move(focusedItem!.location, 17.0);
+        _showHazardDetailSheet(focusedItem!);
+      });
+    }
+  }
+
+  void _onExternalReportSubmitted(HazardReportData report) {
+    if (!mounted) return;
+    setState(() {
+      _upsertReportedHazardItem(
+        _buildHazardItemFromReport(report),
+        insertAtFront: true,
+      );
+    });
+
+    // Live mid-trip hazard check: if a new hazard was reported on/near our active route
+    if (_activeRoute != null &&
+        report.location != null &&
+        report.status == 'active') {
+      final dist = SafeRouteService.pointToPolylineDistanceMeters(
+        report.location!,
+        _activeRoute!.primaryRoute.polyline,
+      );
+      if (dist <= 95.0) {
+        if (_activeRoute!.avoidHazards) {
+          _recalculateActiveRoute(
+            originOverride: _isNavigating ? _currentLocation : null,
+            originLabelOverride:
+                _isNavigating ? 'Current GPS Position' : null,
+            isHazardReroute: true,
+          );
+        } else {
+          setState(() {
+            _hazardWarningBanner =
+                'New ${report.title.toLowerCase()} reported ${dist.round()} m from route';
+          });
+        }
+      }
+    }
+  }
+
+  void _upsertReportedHazardItem(
+    _HazardItem hazard, {
+    bool insertAtFront = false,
+  }) {
+    final existingIdx = _reportedHazards.indexWhere((h) => h.id == hazard.id);
+    if (existingIdx != -1) {
+      _reportedHazards.removeAt(existingIdx);
+      _reportedHazards.insert(insertAtFront ? 0 : existingIdx, hazard);
+    } else if (insertAtFront) {
+      _reportedHazards.insert(0, hazard);
+    } else {
+      _reportedHazards.add(hazard);
+    }
+  }
+
+  void _refreshReportedHazardDistances() {
+    for (int i = 0; i < _reportedHazards.length; i++) {
+      final item = _reportedHazards[i];
+      _reportedHazards[i] = _HazardItem(
+        id: item.id,
+        reportId: item.reportId,
+        overline: item.overline,
+        title: item.title,
+        subtitle: item.subtitle,
+        description: item.description,
+        address: item.address,
+        imageUrl: item.imageUrl,
+        confidence: item.confidence,
+        distance: _formatDistanceTo(item.location),
+        badgeText: item.badgeText,
+        themeColor: item.themeColor,
+        bgColor: item.bgColor,
+        iconBgColor: item.iconBgColor,
+        badgeBgColor: item.badgeBgColor,
+        icon: item.icon,
+        location: item.location,
+        filterCategoryIndex: item.filterCategoryIndex,
+      );
+    }
   }
 
   void _onSearchChanged() {
@@ -308,7 +497,7 @@ class _MapScreenState extends State<MapScreen> {
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                'Found ${landmark.name} (${landmark.categoryLabel})',
+                'Found ${landmark.name}',
                 style: const TextStyle(
                   fontFamily: 'Poppins',
                   fontWeight: FontWeight.w500,
@@ -317,10 +506,83 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ],
         ),
-        duration: const Duration(seconds: 2),
+        action: SnackBarAction(
+          label: 'Directions',
+          textColor: const Color(0xFF6EE7B7),
+          onPressed: () => _routeToLandmark(landmark),
+        ),
+        duration: const Duration(seconds: 4),
         behavior: SnackBarBehavior.floating,
       ),
     );
+  }
+
+  Future<void> _routeToLandmark(CebuLandmark landmark) async {
+    setState(() {
+      _isRecalculatingRoute = true;
+      _selectedLandmark = null;
+    });
+    final planned = await _safeRouteService.findSafeRoute(
+      origin: _currentLocation,
+      originLabel: 'Your current location',
+      destination: landmark.location,
+      destinationLabel: landmark.name,
+      travelMode: RouteTravelMode.walking,
+      avoidHazards: true,
+    );
+    if (!mounted) return;
+    setState(() {
+      _activeRoute = planned;
+      _isRecalculatingRoute = false;
+      _isRouteSaved = false;
+      _isNavigating = false;
+      _hasArrived = false;
+      _syncNavigationMetricsFromRoute(planned.primaryRoute);
+    });
+    _fitCameraToRoute(planned.primaryRoute.polyline);
+  }
+
+  Future<void> _saveLandmarkDirectly(CebuLandmark landmark) async {
+    try {
+      final savedService = SavedLocationService();
+      if (savedService.currentUser == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Please log in to save locations.'),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        return;
+      }
+
+      await savedService.saveLocation(
+        title: landmark.name,
+        address: landmark.address,
+        location: landmark.location,
+        category: landmark.category.name,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Saved "${landmark.name}" to your locations!'),
+            backgroundColor: const Color(0xFF10B981),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not save location: $e'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
   }
 
   String _formatDistanceTo(LatLng target) {
@@ -332,24 +594,53 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _initDeviceLocation() async {
+    final hasExplicitHazardFocus = widget.focusHazardLocation != null ||
+        widget.initialRoute != null ||
+        (widget.focusedReportId != null &&
+            widget.focusedReportId!.trim().isNotEmpty);
+
     final lastKnown = await LocationService.getLastKnownLocation();
-    if (_hasUserInteracted || _selectedLandmark != null) return;
     if (lastKnown != null && mounted) {
       setState(() {
-        _currentLocation = lastKnown;
-        _currentLatitude = lastKnown.latitude;
+        if (!_isSimulating) {
+          _currentLocation = lastKnown;
+        }
+        if (!hasExplicitHazardFocus &&
+            _activeRoute == null &&
+            !_hasUserInteracted &&
+            _selectedLandmark == null) {
+          _currentLatitude = lastKnown.latitude;
+        }
+        _refreshReportedHazardDistances();
       });
-      _mapController.move(_currentLocation, _currentZoom);
+      if (!hasExplicitHazardFocus &&
+          _activeRoute == null &&
+          !_hasUserInteracted &&
+          _selectedLandmark == null) {
+        _mapController.move(_currentLocation, _currentZoom);
+      }
     }
 
     final current = await LocationService.getCurrentLocation();
-    if (_hasUserInteracted || _selectedLandmark != null) return;
     if (mounted) {
       setState(() {
-        _currentLocation = current;
-        _currentLatitude = current.latitude;
+        if (!_isSimulating) {
+          _currentLocation = current;
+        }
+        if (!hasExplicitHazardFocus &&
+            _activeRoute == null &&
+            !_hasUserInteracted &&
+            _selectedLandmark == null) {
+          _currentLatitude = current.latitude;
+        }
+        _refreshReportedHazardDistances();
       });
-      _mapController.move(_currentLocation, _currentZoom);
+      if (!hasExplicitHazardFocus &&
+          _activeRoute == null &&
+          !_hasUserInteracted &&
+          _selectedLandmark == null) {
+        _mapController.move(_currentLocation, _currentZoom);
+      }
     }
   }
 
@@ -384,8 +675,566 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // SAFE ROUTE PREVIEW & TURN-BY-TURN NAVIGATION CONTROLLERS
+  // ---------------------------------------------------------------------------
+
+  void _syncNavigationMetricsFromRoute(RouteCandidate route) {
+    _currentStepIndex = 0;
+    _activePolySegmentIndex = 0;
+    _remainingDistanceMeters = route.distanceMeters;
+    _remainingDurationSeconds = route.durationSeconds;
+    _distanceToNextTurnMeters = route.steps.isNotEmpty
+        ? route.steps.first.distanceMeters
+        : route.distanceMeters;
+    _hazardWarningBanner = route.hazardsOnRoute.isNotEmpty
+        ? '${route.hazardsOnRoute.first.hazard.title} within ${route.hazardsOnRoute.first.distanceFromRouteMeters.round()} m of road'
+        : null;
+  }
+
+  void _fitCameraToRoute(List<LatLng> poly) {
+    if (poly.length < 2) return;
+    double minLat = poly.first.latitude;
+    double maxLat = poly.first.latitude;
+    double minLng = poly.first.longitude;
+    double maxLng = poly.first.longitude;
+
+    for (final pt in poly) {
+      if (pt.latitude < minLat) minLat = pt.latitude;
+      if (pt.latitude > maxLat) maxLat = pt.latitude;
+      if (pt.longitude < minLng) minLng = pt.longitude;
+      if (pt.longitude > maxLng) maxLng = pt.longitude;
+    }
+
+    if ((maxLat - minLat).abs() < 0.0004 && (maxLng - minLng).abs() < 0.0004) {
+      _mapController.move(poly.first, 16.5);
+      return;
+    }
+
+    try {
+      _mapController.fitCamera(
+        CameraFit.bounds(
+          bounds: LatLngBounds(
+            LatLng(minLat, minLng),
+            LatLng(maxLat, maxLng),
+          ),
+          padding: const EdgeInsets.fromLTRB(48, 170, 48, 250),
+          maxZoom: 17.5,
+        ),
+      );
+    } catch (_) {
+      _mapController.move(poly[poly.length ~/ 2], 14.5);
+    }
+  }
+
+  Future<void> _recalculateActiveRoute({
+    LatLng? originOverride,
+    String? originLabelOverride,
+    LatLng? destinationOverride,
+    String? destinationLabelOverride,
+    RouteTravelMode? modeOverride,
+    bool? avoidHazardsOverride,
+    bool isHazardReroute = false,
+  }) async {
+    final current = _activeRoute;
+    if (current == null) return;
+
+    setState(() {
+      _isRecalculatingRoute = true;
+    });
+
+    final nextOrigin = originOverride ?? current.origin;
+    final nextOriginLabel = originLabelOverride ?? current.originLabel;
+    final nextDest = destinationOverride ?? current.destination;
+    final nextDestLabel = destinationLabelOverride ?? current.destinationLabel;
+    final nextMode = modeOverride ?? current.travelMode;
+    final nextAvoid = avoidHazardsOverride ?? current.avoidHazards;
+
+    final updated = await _safeRouteService.findSafeRoute(
+      origin: nextOrigin,
+      originLabel: nextOriginLabel,
+      destination: nextDest,
+      destinationLabel: nextDestLabel,
+      travelMode: nextMode,
+      avoidHazards: nextAvoid,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _activeRoute = updated.copyWith(savedRouteId: current.savedRouteId);
+      _isRecalculatingRoute = false;
+      _syncNavigationMetricsFromRoute(updated.primaryRoute);
+      if (isHazardReroute) {
+        _rerouteCount++;
+      }
+    });
+
+    if (isHazardReroute && _navigationSessionId != null) {
+      unawaited(
+        _safeRouteService.recordNavigationReroute(
+          _navigationSessionId,
+          rerouteCount: _rerouteCount,
+          hazardsAvoided: updated.hazardsAvoided,
+          hazardsOnRoute: updated.primaryRoute.hazardsOnRoute.length,
+        ),
+      );
+    }
+
+    if (!_isNavigating) {
+      _fitCameraToRoute(updated.primaryRoute.polyline);
+    }
+  }
+
+  Future<void> _pickRouteEndpoint({required bool isOrigin}) async {
+    final current = _activeRoute;
+    if (current == null) return;
+    final picked = await showRoutePlacePickerSheet(
+      context,
+      title: isOrigin ? 'Choose Starting Point' : 'Choose Destination',
+      currentLocation: _currentLocation,
+      allowCurrentLocationOption: isOrigin,
+    );
+    if (picked == null || !mounted) return;
+
+    await _recalculateActiveRoute(
+      originOverride: isOrigin ? picked.location : null,
+      originLabelOverride: isOrigin ? picked.label : null,
+      destinationOverride: isOrigin ? null : picked.location,
+      destinationLabelOverride: isOrigin ? null : picked.label,
+    );
+  }
+
+  Future<void> _swapRouteEndpoints() async {
+    final current = _activeRoute;
+    if (current == null) return;
+    await _recalculateActiveRoute(
+      originOverride: current.destination,
+      originLabelOverride: current.destinationLabel,
+      destinationOverride: current.origin,
+      destinationLabelOverride: current.originLabel,
+    );
+  }
+
+  Future<void> _saveActiveRoute() async {
+    final current = _activeRoute;
+    if (current == null) return;
+    final saved = await _safeRouteService.savePlannedRoute(planned: current);
+    if (!mounted) return;
+    setState(() {
+      _activeRoute = current.copyWith(savedRouteId: saved.id);
+      _isRouteSaved = true;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Saved route "${saved.title}"'),
+        backgroundColor: const Color(0xFF10B981),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _startTurnByTurnNavigation() {
+    final current = _activeRoute;
+    if (current == null) return;
+
+    setState(() {
+      _isNavigating = true;
+      _hasArrived = false;
+      _isFollowingUser = true;
+      _rerouteCount = 0;
+      _simulationProgressMeters = 0.0;
+      _syncNavigationMetricsFromRoute(current.primaryRoute);
+    });
+
+    final startPt = current.primaryRoute.polyline.isNotEmpty
+        ? current.primaryRoute.polyline.first
+        : current.origin;
+    _mapController.move(startPt, 17.5);
+
+    unawaited(
+      _safeRouteService.startNavigationSession(current).then((sessionId) {
+        if (mounted) {
+          _navigationSessionId = sessionId;
+        }
+      }),
+    );
+
+    _startLiveGpsNavigationStream();
+  }
+
+  void _startLiveGpsNavigationStream() {
+    _gpsPositionSub?.cancel();
+    try {
+      final stream = Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.bestForNavigation,
+          distanceFilter: 4,
+        ),
+      );
+      _gpsPositionSub = stream.listen(
+        (pos) {
+          if (!mounted || !_isNavigating || _isSimulating) return;
+          _updateNavigationProgress(LatLng(pos.latitude, pos.longitude));
+        },
+        onError: (Object err) {
+          debugPrint('Navigation GPS stream note: $err');
+        },
+      );
+    } catch (e) {
+      debugPrint('Geolocator position stream unavailable: $e');
+    }
+  }
+
+  void _updateNavigationProgress(
+    LatLng userPos, {
+    bool fromSimulation = false,
+  }) {
+    final active = _activeRoute;
+    if (active == null) return;
+    final route = active.primaryRoute;
+    final poly = route.polyline;
+    if (poly.isEmpty) return;
+
+    final snap = SafeRouteService.locateAlongPolyline(userPos, poly);
+
+    // Off-route detection for real GPS (> 70m away from road, 15s cooldown)
+    if (!fromSimulation &&
+        snap.distanceFromRouteMeters > 70.0 &&
+        !_isRecalculatingRoute) {
+      final now = DateTime.now();
+      if (_lastAutoRerouteAt == null ||
+          now.difference(_lastAutoRerouteAt!) > const Duration(seconds: 15)) {
+        _lastAutoRerouteAt = now;
+        _recalculateActiveRoute(
+          originOverride: userPos,
+          originLabelOverride: 'Current GPS Position',
+          isHazardReroute: true,
+        );
+        return;
+      }
+    }
+
+    // Advance step index based on snapped polyline segment
+    final steps = route.steps;
+    int nextStepIdx = _currentStepIndex;
+    const distCalc = Distance();
+
+    if (steps.isNotEmpty) {
+      while (nextStepIdx < steps.length - 1) {
+        final step = steps[nextStepIdx];
+        final turnPoint =
+            poly[step.endPolylineIndex.clamp(0, poly.length - 1)];
+        final distToTurn = distCalc.distance(snap.snappedPoint, turnPoint);
+        if (snap.segmentIndex > step.endPolylineIndex ||
+            (snap.segmentIndex >= step.endPolylineIndex - 1 &&
+                distToTurn <= 18.0)) {
+          nextStepIdx++;
+        } else {
+          break;
+        }
+      }
+    }
+
+    double distToNextTurn = snap.remainingDistanceMeters;
+    if (steps.isNotEmpty) {
+      final currentStep = steps[nextStepIdx.clamp(0, steps.length - 1)];
+      final targetIdx = currentStep.endPolylineIndex.clamp(0, poly.length - 1);
+      if (targetIdx <= snap.segmentIndex) {
+        distToNextTurn = distCalc.distance(snap.snappedPoint, poly[targetIdx]);
+      } else {
+        distToNextTurn =
+            distCalc.distance(snap.snappedPoint, poly[snap.segmentIndex + 1]);
+        for (int i = snap.segmentIndex + 1; i < targetIdx; i++) {
+          distToNextTurn += distCalc.distance(poly[i], poly[i + 1]);
+        }
+      }
+    }
+
+    // Check upcoming hazards within 160m of user's current road position
+    String? liveHazardAlert;
+    for (final exp in route.hazardsNearCorridor) {
+      final hLoc = exp.hazard.location;
+      if (hLoc == null) continue;
+      final dUser = distCalc.distance(snap.snappedPoint, hLoc);
+      if (dUser <= 160.0) {
+        liveHazardAlert =
+            'Caution: ${exp.hazard.title} ${dUser.round()} m ahead';
+        break;
+      }
+    }
+
+    final remMeters = snap.remainingDistanceMeters;
+    final remSeconds =
+        (remMeters / active.travelMode.averageSpeedMps).round().clamp(0, 999999);
+    final arrived = remMeters <= 22.0;
+
+    setState(() {
+      _currentLocation = fromSimulation ? snap.snappedPoint : userPos;
+      _activePolySegmentIndex = snap.segmentIndex;
+      _currentStepIndex = nextStepIdx;
+      _distanceToNextTurnMeters = arrived ? 0.0 : distToNextTurn;
+      _remainingDistanceMeters = arrived ? 0.0 : remMeters;
+      _remainingDurationSeconds = arrived ? 0 : remSeconds;
+      _hazardWarningBanner = liveHazardAlert;
+      if (arrived && !_hasArrived) {
+        _hasArrived = true;
+        _isSimulating = false;
+      }
+    });
+
+    if (_isFollowingUser) {
+      _mapController.move(snap.snappedPoint, math.max(_currentZoom, 17.2));
+    }
+
+    if (arrived) {
+      _simulationTimer?.cancel();
+      unawaited(
+        _safeRouteService.finishNavigationSession(
+          _navigationSessionId,
+          completed: true,
+        ),
+      );
+    }
+  }
+
+  void _toggleSimulation() {
+    if (_activeRoute == null) return;
+    if (_isSimulating) {
+      _simulationTimer?.cancel();
+      setState(() => _isSimulating = false);
+      return;
+    }
+
+    final poly = _activeRoute!.primaryRoute.polyline;
+    if (poly.length < 2) return;
+
+    if (_hasArrived) {
+      _simulationProgressMeters = 0.0;
+      setState(() {
+        _hasArrived = false;
+        _currentStepIndex = 0;
+        _activePolySegmentIndex = 0;
+      });
+    }
+
+    setState(() {
+      _isSimulating = true;
+      _isFollowingUser = true;
+    });
+
+    const distCalc = Distance();
+    // Advance smoothly along the road polyline every 400ms
+    final stepAdvanceMeters =
+        _activeRoute!.travelMode == RouteTravelMode.driving ? 32.0 : 18.0;
+
+    _simulationTimer?.cancel();
+    _simulationTimer = Timer.periodic(const Duration(milliseconds: 400), (timer) {
+      if (!mounted || !_isNavigating || !_isSimulating || _activeRoute == null) {
+        timer.cancel();
+        return;
+      }
+      final routePoly = _activeRoute!.primaryRoute.polyline;
+      _simulationProgressMeters += stepAdvanceMeters;
+      final pt = _interpolateAlongPolyline(
+        routePoly,
+        _simulationProgressMeters,
+        distCalc,
+      );
+      _updateNavigationProgress(pt, fromSimulation: true);
+    });
+  }
+
+  LatLng _interpolateAlongPolyline(
+    List<LatLng> poly,
+    double targetMeters,
+    Distance distCalc,
+  ) {
+    if (poly.isEmpty) return _currentLocation;
+    if (targetMeters <= 0) return poly.first;
+
+    double traversed = 0.0;
+    for (int i = 0; i < poly.length - 1; i++) {
+      final segLen = distCalc.distance(poly[i], poly[i + 1]);
+      if (traversed + segLen >= targetMeters && segLen > 0.01) {
+        final t = ((targetMeters - traversed) / segLen).clamp(0.0, 1.0);
+        return LatLng(
+          poly[i].latitude + (poly[i + 1].latitude - poly[i].latitude) * t,
+          poly[i].longitude + (poly[i + 1].longitude - poly[i].longitude) * t,
+        );
+      }
+      traversed += segLen;
+    }
+    return poly.last;
+  }
+
+  void _jumpToStep(int stepIndex) {
+    final active = _activeRoute;
+    if (active == null) return;
+    final steps = active.primaryRoute.steps;
+    if (steps.isEmpty) return;
+    final clamped = stepIndex.clamp(0, steps.length - 1);
+    final step = steps[clamped];
+
+    setState(() {
+      _currentStepIndex = clamped;
+      _activePolySegmentIndex = step.startPolylineIndex;
+      _distanceToNextTurnMeters = step.distanceMeters;
+      _isFollowingUser = false;
+    });
+    _mapController.move(step.location, 17.5);
+  }
+
+  void _stopTurnByTurnNavigation() {
+    _simulationTimer?.cancel();
+    _gpsPositionSub?.cancel();
+    final sessionId = _navigationSessionId;
+    final wasArrived = _hasArrived;
+    _navigationSessionId = null;
+
+    if (!wasArrived && sessionId != null) {
+      unawaited(
+        _safeRouteService.finishNavigationSession(sessionId, completed: false),
+      );
+    }
+
+    if (widget.initialRoute != null && widget.autoStartNavigation) {
+      Navigator.pop(context);
+      return;
+    }
+
+    setState(() {
+      _isNavigating = false;
+      _isSimulating = false;
+      _hasArrived = false;
+    });
+    if (_activeRoute != null) {
+      _fitCameraToRoute(_activeRoute!.primaryRoute.polyline);
+    }
+  }
+
+  void _exitRouteMode() {
+    _simulationTimer?.cancel();
+    _gpsPositionSub?.cancel();
+    if (widget.initialRoute != null) {
+      Navigator.pop(context);
+      return;
+    }
+    setState(() {
+      _activeRoute = null;
+      _isNavigating = false;
+      _isSimulating = false;
+      _hasArrived = false;
+    });
+  }
+
+  List<Polyline> _buildRoutePolylines() {
+    final active = _activeRoute;
+    if (active == null) return const <Polyline>[];
+
+    final polylines = <Polyline>[];
+
+    // 1. Alternative candidate routes (only in preview mode so turn-by-turn stays uncluttered)
+    if (!_isNavigating && active.alternatives.length > 1) {
+      for (final alt in active.alternatives) {
+        if (alt.id == active.primaryRoute.id || alt.polyline.length < 2) {
+          continue;
+        }
+        final hasHazard = alt.hazardsOnRoute.isNotEmpty;
+        polylines.add(
+          Polyline(
+            points: alt.polyline,
+            strokeWidth: 5.0,
+            color: hasHazard
+                ? const Color(0xFFF59E0B).withValues(alpha: 0.65)
+                : const Color(0xFF64748B).withValues(alpha: 0.55),
+          ),
+        );
+      }
+    }
+
+    // 2. Primary SafeRoute polyline (with outer white casing + bright inner path)
+    final primaryPoly = active.primaryRoute.polyline;
+    if (primaryPoly.length >= 2) {
+      if (_isNavigating &&
+          _activePolySegmentIndex > 0 &&
+          _activePolySegmentIndex < primaryPoly.length - 1) {
+        final passed = primaryPoly.sublist(0, _activePolySegmentIndex + 1);
+        final remaining = primaryPoly.sublist(_activePolySegmentIndex);
+        polylines.add(
+          Polyline(
+            points: passed,
+            strokeWidth: 5.5,
+            color: const Color(0xFF94A3B8).withValues(alpha: 0.65),
+          ),
+        );
+        polylines.add(
+          Polyline(
+            points: remaining,
+            strokeWidth: 9.0,
+            color: Colors.white,
+          ),
+        );
+        polylines.add(
+          Polyline(
+            points: remaining,
+            strokeWidth: 5.5,
+            color: const Color(0xFF2563EB),
+          ),
+        );
+      } else {
+        final primaryColor = active.primaryRoute.hazardsOnRoute.isEmpty
+            ? const Color(0xFF2563EB)
+            : const Color(0xFFD97706);
+        polylines.add(
+          Polyline(
+            points: primaryPoly,
+            strokeWidth: 9.0,
+            color: Colors.white,
+          ),
+        );
+        polylines.add(
+          Polyline(
+            points: primaryPoly,
+            strokeWidth: 5.5,
+            color: primaryColor,
+          ),
+        );
+      }
+    }
+
+    return polylines;
+  }
+
+  List<CircleMarker> _buildHazardAvoidanceCircles() {
+    final active = _activeRoute;
+    if (active == null) return const <CircleMarker>[];
+
+    final circles = <CircleMarker>[];
+    for (final h in active.corridorHazards) {
+      if (h.location == null || h.status != 'active') continue;
+      final metrics = SafeRouteService.hazardMetricsForReport(h);
+      final isHigh = metrics.severityWeight >= 110.0;
+      final baseColor =
+          isHigh ? const Color(0xFFEF4444) : const Color(0xFFF59E0B);
+      circles.add(
+        CircleMarker(
+          point: h.location!,
+          radius: metrics.avoidanceRadiusMeters,
+          useRadiusInMeter: true,
+          color: baseColor.withValues(alpha: 0.14),
+          borderColor: baseColor.withValues(alpha: 0.55),
+          borderStrokeWidth: 1.5,
+        ),
+      );
+    }
+    return circles;
+  }
+
   @override
   void dispose() {
+    _simulationTimer?.cancel();
+    _gpsPositionSub?.cancel();
+    _reportSubscription?.cancel();
     _searchDebounceTimer?.cancel();
     _reverseGeocodeDebounceTimer?.cancel();
     _searchController.removeListener(_onSearchChanged);
@@ -445,7 +1294,7 @@ class _MapScreenState extends State<MapScreen> {
             child: FlutterMap(
               mapController: _mapController,
               options: MapOptions(
-                initialCenter: _currentLocation,
+                initialCenter: _initialCameraCenter,
                 initialZoom: _currentZoom,
                 minZoom: 3.0,
                 maxZoom: 19.0,
@@ -473,16 +1322,22 @@ class _MapScreenState extends State<MapScreen> {
                   // debounce reverse geocoding by 800ms to update search text
                   if (hasGesture) {
                     _hasUserInteracted = true;
-                    _reverseGeocodeDebounceTimer?.cancel();
-                    _reverseGeocodeDebounceTimer =
-                        Timer(const Duration(milliseconds: 800), () {
-                      _reverseGeocode(camera.center);
-                    });
+                    if (_isNavigating && _isFollowingUser) {
+                      setState(() => _isFollowingUser = false);
+                    }
+                    if (_activeRoute == null) {
+                      _reverseGeocodeDebounceTimer?.cancel();
+                      _reverseGeocodeDebounceTimer =
+                          Timer(const Duration(milliseconds: 800), () {
+                        _reverseGeocode(camera.center);
+                      });
+                    }
                   }
                 },
               ),
               children: [
                 TileLayer(
+                  tileProvider: widget.tileProvider,
                   urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                   fallbackUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
                   userAgentPackageName: 'com.dreamteam.sd3',
@@ -505,6 +1360,14 @@ class _MapScreenState extends State<MapScreen> {
                     }
                   },
                 ),
+                if (_activeRoute != null)
+                  CircleLayer(
+                    circles: _buildHazardAvoidanceCircles(),
+                  ),
+                if (_activeRoute != null)
+                  PolylineLayer(
+                    polylines: _buildRoutePolylines(),
+                  ),
                 const SimpleAttributionWidget(
                   alignment: Alignment.bottomRight,
                   source: Text(
@@ -520,69 +1383,124 @@ class _MapScreenState extends State<MapScreen> {
           ),
 
           // -------------------------------------------------------------------
-          // LAYER 2: FLOATING TOP ELEMENTS (Search Bar, Filters, Live Map Badge)
+          // LAYER 2-4: ROUTE PREVIEW / TURN-BY-TURN HUD OR STANDARD MAP UI
           // -------------------------------------------------------------------
-          _buildTopControls(),
-
-          // Tile Error Banner (if basemap fails to load)
-          if (_hasTileError)
-            Positioned(
-              top: MediaQuery.of(context).padding.top + 130,
-              left: 20,
-              right: 20,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFEF2F2),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: const Color(0xFFFCA5A5)),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.06),
-                      blurRadius: 8,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
+          if (_activeRoute != null && _isNavigating)
+            Positioned.fill(
+              child: TurnByTurnNavigationHud(
+                routeResult: _activeRoute!,
+                currentStepIndex: _currentStepIndex,
+                distanceToNextTurnMeters: _distanceToNextTurnMeters,
+                remainingDistanceMeters: _remainingDistanceMeters,
+                remainingDurationSeconds: _remainingDurationSeconds,
+                isFollowingUser: _isFollowingUser,
+                isSimulating: _isSimulating,
+                hasArrived: _hasArrived,
+                isRerouting: _isRecalculatingRoute,
+                hazardWarningBanner: _hazardWarningBanner,
+                onRecenter: () {
+                  setState(() => _isFollowingUser = true);
+                  _mapController.move(_currentLocation, 17.5);
+                },
+                onToggleSimulation: _toggleSimulation,
+                onPrevStep: () => _jumpToStep(_currentStepIndex - 1),
+                onNextStep: () => _jumpToStep(_currentStepIndex + 1),
+                onRequestSafeReroute: () => _recalculateActiveRoute(
+                  originOverride: _currentLocation,
+                  originLabelOverride: 'Current GPS Position',
+                  avoidHazardsOverride: true,
+                  isHazardReroute: true,
                 ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.cloud_off_rounded, color: Color(0xFFDC2626), size: 18),
-                    const SizedBox(width: 8),
-                    const Expanded(
-                      child: Text(
-                        'Map tiles unavailable. Check internet connection.',
-                        style: TextStyle(
-                          fontFamily: 'Poppins',
-                          fontSize: 11,
-                          color: Color(0xFF991B1B),
-                          fontWeight: FontWeight.w500,
+                onStopNavigation: _stopTurnByTurnNavigation,
+                onReportHazard: () {
+                  showReportHazardDialog(
+                    context,
+                    initialLocation: _currentLocation,
+                    onReportSubmitted: _addReportedHazard,
+                  );
+                },
+                onFocusStep: (step) => _jumpToStep(step.index),
+              ),
+            )
+          else if (_activeRoute != null)
+            Positioned.fill(
+              child: RoutePreviewOverlay(
+                routeResult: _activeRoute!,
+                isRecalculating: _isRecalculatingRoute,
+                isRouteSaved: _isRouteSaved,
+                onExitRoute: _exitRouteMode,
+                onTapOrigin: () => _pickRouteEndpoint(isOrigin: true),
+                onTapDestination: () => _pickRouteEndpoint(isOrigin: false),
+                onSwapEndpoints: _swapRouteEndpoints,
+                onTravelModeChanged: (mode) =>
+                    _recalculateActiveRoute(modeOverride: mode),
+                onAvoidHazardsChanged: (avoid) =>
+                    _recalculateActiveRoute(avoidHazardsOverride: avoid),
+                onCandidateSelected: (cand) {
+                  setState(() {
+                    _activeRoute = _activeRoute!.withSelectedCandidate(cand);
+                    _syncNavigationMetricsFromRoute(cand);
+                  });
+                  _fitCameraToRoute(cand.polyline);
+                },
+                onSaveRoute: _saveActiveRoute,
+                onStartTurnByTurn: _startTurnByTurnNavigation,
+                onFocusStep: (step) => _mapController.move(step.location, 17.2),
+              ),
+            )
+          else ...[
+            _buildTopControls(),
+            if (_hasTileError)
+              Positioned(
+                top: MediaQuery.of(context).padding.top + 130,
+                left: 20,
+                right: 20,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF2F2),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFFCA5A5)),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.06),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.cloud_off_rounded, color: Color(0xFFDC2626), size: 18),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          'Map tiles unavailable. Check internet connection.',
+                          style: TextStyle(
+                            fontFamily: 'Poppins',
+                            fontSize: 11,
+                            color: Color(0xFF991B1B),
+                            fontWeight: FontWeight.w500,
+                          ),
                         ),
                       ),
-                    ),
-                    GestureDetector(
-                      onTap: () {
-                        setState(() {
-                          _hasTileError = false;
-                        });
-                      },
-                      child: const Icon(Icons.refresh_rounded, color: Color(0xFFDC2626), size: 18),
-                    ),
-                  ],
+                      GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _hasTileError = false;
+                          });
+                        },
+                        child: const Icon(Icons.refresh_rounded, color: Color(0xFFDC2626), size: 18),
+                      ),
+                    ],
+                  ),
                 ),
               ),
+            _buildFloatingActionButtons(screenSize),
+            Positioned.fill(
+              child: _buildDraggableScrollableSheet(),
             ),
-
-          // -------------------------------------------------------------------
-          // LAYER 3: FLOATING ACTION BUTTONS (Report hazard, Crosshair, Layers, Scale)
-          // -------------------------------------------------------------------
-          _buildFloatingActionButtons(screenSize),
-
-          // -------------------------------------------------------------------
-          // LAYER 4 (ABSOLUTE TOP): DRAGGABLE SCROLLABLE SHEET
-          // -------------------------------------------------------------------
-          Positioned.fill(
-            child: _buildDraggableScrollableSheet(),
-          ),
+          ],
         ],
       ),
     );
@@ -868,6 +1786,19 @@ class _MapScreenState extends State<MapScreen> {
                                         ),
                                       ),
                                     ),
+                                    const SizedBox(width: 4),
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.bookmark_add_outlined,
+                                        size: 18,
+                                        color: _secondaryGrey,
+                                      ),
+                                      tooltip: 'Save Place',
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(),
+                                      onPressed: () =>
+                                          _saveLandmarkDirectly(landmark),
+                                    ),
                                   ],
                                 ),
                               ),
@@ -1126,18 +2057,145 @@ class _MapScreenState extends State<MapScreen> {
       Marker(
         point: _currentLocation,
         width: 100,
-        height: 115,
+        height: 124,
         alignment: Alignment.center,
         child: _buildCurrentLocationMarker(),
       ),
     ];
 
-    // 2. Selected Landmark Search Marker
+    // 2. Route Origin, Active Turn, and Destination Pins when a route is active
+    if (_activeRoute != null) {
+      final poly = _activeRoute!.primaryRoute.polyline;
+      final originPt = poly.isNotEmpty ? poly.first : _activeRoute!.origin;
+      final destPt = poly.isNotEmpty ? poly.last : _activeRoute!.destination;
+
+      if (!_isNavigating) {
+        markers.add(
+          Marker(
+            point: originPt,
+            width: 34,
+            height: 34,
+            alignment: Alignment.center,
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF10B981),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 3),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.2),
+                    blurRadius: 6,
+                  ),
+                ],
+              ),
+              child: const Icon(
+                Icons.trip_origin_rounded,
+                size: 14,
+                color: Colors.white,
+              ),
+            ),
+          ),
+        );
+      } else if (_activeRoute!.primaryRoute.steps.isNotEmpty) {
+        final safeIdx = _currentStepIndex.clamp(
+          0,
+          _activeRoute!.primaryRoute.steps.length - 1,
+        );
+        final step = _activeRoute!.primaryRoute.steps[safeIdx];
+        markers.add(
+          Marker(
+            point: step.location,
+            width: 34,
+            height: 34,
+            alignment: Alignment.center,
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                shape: BoxShape.circle,
+                border: Border.all(color: const Color(0xFF2563EB), width: 2.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.16),
+                    blurRadius: 6,
+                  ),
+                ],
+              ),
+              child: Icon(
+                step.maneuverType.icon,
+                size: 17,
+                color: const Color(0xFF2563EB),
+              ),
+            ),
+          ),
+        );
+      }
+
+      markers.add(
+        Marker(
+          point: destPt,
+          width: 140,
+          height: 72,
+          alignment: Alignment.center,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: _primaryNavy,
+                  borderRadius: BorderRadius.circular(10),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.16),
+                      blurRadius: 6,
+                    ),
+                  ],
+                ),
+                child: Text(
+                  _activeRoute!.destinationLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 3),
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFDC2626),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 2.5),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.22),
+                      blurRadius: 8,
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.flag_rounded,
+                  size: 17,
+                  color: Colors.white,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // 3. Selected Landmark Search Marker
     if (_selectedLandmark != null) {
       markers.add(_buildSelectedLandmarkMarker(_selectedLandmark!));
     }
 
-    // 3. Filtered hazard markers
+    // 4. Filtered hazard markers
     for (final hazard in _filteredHazards) {
       markers.add(_buildHazardMarker(hazard));
     }
@@ -1145,11 +2203,11 @@ class _MapScreenState extends State<MapScreen> {
     return markers;
   }
 
-  // Selected Landmark Marker with Info Callout & Dismiss
+  // Selected Landmark Marker with Info Callout, Directions, Save, & Dismiss
   Marker _buildSelectedLandmarkMarker(CebuLandmark landmark) {
     return Marker(
       point: landmark.location,
-      width: 180,
+      width: 205,
       height: 96,
       alignment: Alignment.center,
       child: GestureDetector(
@@ -1190,6 +2248,24 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   ),
                   const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: () => _routeToLandmark(landmark),
+                    child: const Icon(
+                      Icons.directions_rounded,
+                      size: 16,
+                      color: Color(0xFF2563EB),
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                  GestureDetector(
+                    onTap: () => _saveLandmarkDirectly(landmark),
+                    child: const Icon(
+                      Icons.bookmark_add_outlined,
+                      size: 15,
+                      color: Color(0xFF10B981),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
                   GestureDetector(
                     onTap: () {
                       setState(() {
@@ -1353,13 +2429,7 @@ class _MapScreenState extends State<MapScreen> {
       child: GestureDetector(
         onTap: () {
           _mapController.move(hazard.location, 17.0);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('${hazard.title}: ${hazard.subtitle}'),
-              duration: const Duration(seconds: 2),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+          _showHazardDetailSheet(hazard);
         },
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1441,6 +2511,7 @@ class _MapScreenState extends State<MapScreen> {
       setState(() {
         _currentLocation = current;
         _currentLatitude = current.latitude;
+        _refreshReportedHazardDistances();
       });
       _mapController.move(current, 16.0);
       _reverseGeocode(current);
@@ -1468,6 +2539,81 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  String _formatRelativeTime(DateTime timestamp) {
+    final diff = DateTime.now().difference(timestamp);
+    if (diff.isNegative || diff.inMinutes < 2) {
+      return 'Just now';
+    }
+    if (diff.inMinutes < 60) {
+      return '${diff.inMinutes}m ago';
+    }
+    if (diff.inHours < 24) {
+      return '${diff.inHours}h ago';
+    }
+    return '${diff.inDays}d ago';
+  }
+
+  _HazardItem _buildHazardItemFromReport(HazardReportData report) {
+    final classification = MapScreen.classifyHazardForMap(report.category);
+    Color themeColor = const Color(0xFFD97706);
+    Color bgColor = const Color(0xFFFFFDF5);
+    Color iconBgColor = const Color(0xFFFEF3C7);
+    Color badgeBgColor = const Color(0xFFFEF3C7);
+
+    final secLower = report.securityLevel.toLowerCase();
+    if (secLower.contains('high') || secLower.contains('critical')) {
+      themeColor = const Color(0xFFEF4444);
+      bgColor = const Color(0xFFFFF5F5);
+      iconBgColor = const Color(0xFFFEE2E2);
+      badgeBgColor = const Color(0xFFFEE2E2);
+    } else if (secLower.contains('low')) {
+      themeColor = const Color(0xFF3B82F6);
+      bgColor = const Color(0xFFF5F9FF);
+      iconBgColor = const Color(0xFFDBEAFE);
+      badgeBgColor = const Color(0xFFDBEAFE);
+    }
+
+    final resolvedLocation = report.location ?? _currentLocation;
+    final normalizedCategory = HazardCategories.normalize(report.category);
+    final overline =
+        HazardReportService.cleanCategory(normalizedCategory).toUpperCase();
+    final stableId =
+        (report.reportId != null && report.reportId!.trim().isNotEmpty)
+            ? 'report_${report.reportId!.trim()}'
+            : 'report_${report.timestamp.microsecondsSinceEpoch}_${report.title.hashCode}';
+
+    return _HazardItem(
+      id: stableId,
+      reportId: report.reportId,
+      overline: overline,
+      title: report.title,
+      subtitle: '${report.address} (${_formatRelativeTime(report.timestamp)})',
+      description: report.description,
+      address: report.address,
+      imageUrl: report.imageUrl,
+      confidence: report.confidence,
+      distance: _formatDistanceTo(resolvedLocation),
+      badgeText: report.securityLevel,
+      themeColor: themeColor,
+      bgColor: bgColor,
+      iconBgColor: iconBgColor,
+      badgeBgColor: badgeBgColor,
+      icon: classification.icon,
+      location: resolvedLocation,
+      filterCategoryIndex: classification.filterCategoryIndex,
+    );
+  }
+
+  void _addReportedHazard(HazardReportData report) {
+    final newHazard = _buildHazardItemFromReport(report);
+
+    setState(() {
+      _upsertReportedHazardItem(newHazard, insertAtFront: true);
+    });
+
+    _mapController.move(newHazard.location, 17.0);
+  }
+
   void _onHazardCardTap(_HazardItem hazard) {
     // Ensure the marker is visible under the active filter
     if (_selectedFilterIndex != 0 &&
@@ -1486,6 +2632,176 @@ class _MapScreenState extends State<MapScreen> {
         curve: Curves.easeInOut,
       );
     }
+
+    _showHazardDetailSheet(hazard);
+  }
+
+  void _showHazardDetailSheet(_HazardItem hazard) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.white,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetCtx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD1D5DB),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (hazard.imageUrl != null &&
+                    hazard.imageUrl!.trim().isNotEmpty) ...[
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: SizedBox(
+                      height: 180,
+                      width: double.infinity,
+                      child: Image.network(
+                        hazard.imageUrl!,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          color: hazard.bgColor,
+                          alignment: Alignment.center,
+                          child: Icon(
+                            hazard.icon,
+                            size: 42,
+                            color: hazard.themeColor,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ],
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: hazard.badgeBgColor,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '${hazard.overline} • ${hazard.badgeText.toUpperCase()}',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          color: hazard.themeColor,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEEF2FF),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '✨ AI ${hazard.confidence}%',
+                        style: const TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF4338CA),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  hazard.title,
+                  style: const TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: _primaryNavy,
+                  ),
+                ),
+                if (hazard.description.trim().isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    hazard.description.trim(),
+                    style: const TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 13,
+                      fontWeight: FontWeight.w400,
+                      color: Color(0xFF4B5563),
+                      height: 1.4,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.location_on_outlined,
+                      size: 16,
+                      color: _secondaryGrey,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        hazard.subtitle,
+                        style: const TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          color: _secondaryGrey,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.near_me_outlined,
+                      size: 15,
+                      color: _secondaryGrey,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      hazard.distance,
+                      style: const TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: _primaryNavy,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1530,7 +2846,11 @@ class _MapScreenState extends State<MapScreen> {
             color: Colors.transparent,
             child: InkWell(
               onTap: () {
-                showReportHazardDialog(context);
+                showReportHazardDialog(
+                  context,
+                  initialLocation: _currentLocation,
+                  onReportSubmitted: _addReportedHazard,
+                );
               },
               borderRadius: BorderRadius.circular(24),
               child: Container(
@@ -1694,6 +3014,34 @@ class _MapScreenState extends State<MapScreen> {
   // ---------------------------------------------------------------------------
   Widget _buildDraggableScrollableSheet() {
     final filtered = _filteredHazards;
+    const distanceCalc = Distance();
+    final nearbyWithin500m = _allHazards
+        .where((h) => distanceCalc.distance(_currentLocation, h.location) <= 500)
+        .toList();
+    final hasHighNearby = nearbyWithin500m
+        .any((h) => h.badgeText.toLowerCase().contains('high'));
+
+    final Color statusBgColor = hasHighNearby
+        ? const Color(0xFFFEE2E2)
+        : (nearbyWithin500m.isNotEmpty
+            ? const Color(0xFFFEF3C7)
+            : _safeGreenBg);
+    final Color statusIconColor = hasHighNearby
+        ? const Color(0xFFEF4444)
+        : (nearbyWithin500m.isNotEmpty
+            ? const Color(0xFFD97706)
+            : _safeGreen);
+    final IconData statusIcon = nearbyWithin500m.isNotEmpty
+        ? Icons.warning_amber_rounded
+        : Icons.shield_outlined;
+    final String statusTitle = hasHighNearby
+        ? 'Caution: High-risk hazard nearby'
+        : (nearbyWithin500m.isNotEmpty
+            ? '${nearbyWithin500m.length} hazard${nearbyWithin500m.length == 1 ? '' : 's'} within 500m'
+            : 'You are in a safe area');
+    final String statusSubtitle = nearbyWithin500m.isNotEmpty
+        ? 'Stay alert along nearby streets'
+        : 'Safe route monitored in real time';
 
     return DraggableScrollableSheet(
       controller: _sheetController,
@@ -1733,40 +3081,40 @@ class _MapScreenState extends State<MapScreen> {
 
               const SizedBox(height: 14),
 
-              // 2. Status Row: Green safe area
+              // 2. Status Row: Dynamic area safety status based on nearby DB hazards
               Row(
                 children: [
                   Container(
                     width: 44,
                     height: 44,
                     decoration: BoxDecoration(
-                      color: _safeGreenBg,
+                      color: statusBgColor,
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Icon(
-                      Icons.shield_outlined,
-                      color: _safeGreen,
+                    child: Icon(
+                      statusIcon,
+                      color: statusIconColor,
                       size: 24,
                     ),
                   ),
                   const SizedBox(width: 14),
-                  const Expanded(
+                  Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'You are in a safe area',
-                          style: TextStyle(
+                          statusTitle,
+                          style: const TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: 16,
                             fontWeight: FontWeight.w600,
                             color: _primaryNavy,
                           ),
                         ),
-                        SizedBox(height: 2),
+                        const SizedBox(height: 2),
                         Text(
-                          'Safe route monitored in real time',
-                          style: TextStyle(
+                          statusSubtitle,
+                          style: const TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: 13,
                             fontWeight: FontWeight.w400,
@@ -1814,7 +3162,7 @@ class _MapScreenState extends State<MapScreen> {
                         ),
                       )
                     else
-                      for (final hazard in filtered) ...[
+                      for (final hazard in filtered.take(6)) ...[
                         Container(
                           width: 7,
                           height: 7,
@@ -1828,7 +3176,9 @@ class _MapScreenState extends State<MapScreen> {
                     const SizedBox(width: 3),
                     Flexible(
                       child: Text(
-                        '${filtered.length} nearby hazard${filtered.length == 1 ? '' : 's'}',
+                        _isLoadingReports && filtered.isEmpty
+                            ? 'Loading hazards...'
+                            : '${filtered.length} nearby hazard${filtered.length == 1 ? '' : 's'}',
                         style: const TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 13,
@@ -1880,7 +3230,21 @@ class _MapScreenState extends State<MapScreen> {
               const SizedBox(height: 14),
 
               // 6. Filtered Hazard Cards
-              if (filtered.isEmpty)
+              if (_isLoadingReports && filtered.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24.0),
+                  child: Center(
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
+                        color: _primaryNavy,
+                      ),
+                    ),
+                  ),
+                )
+              else if (filtered.isEmpty)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 24.0),
                   child: Center(

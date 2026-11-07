@@ -6,7 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'signup_page.dart';
 import 'reset_password_page.dart';
 import '../user_screens/user_home_screen.dart';
-import '../admin_screens/admin_dashboard_screen.dart';
+import '../services/security_service.dart';
 import 'auth_service.dart';
 import 'auth_error_handler.dart';
 import 'role_service.dart';
@@ -24,7 +24,8 @@ class _LoginPageState extends State<LoginPage> {
   final FocusNode _emailFocusNode = FocusNode();
   final FocusNode _passwordFocusNode = FocusNode();
   final AuthService _authService = AuthService();
-  final SupabaseClient _supabase = Supabase.instance.client;
+  final SecurityService _securityService = SecurityService();
+  SupabaseClient get _supabase => Supabase.instance.client;
   bool _rememberMe = false;
   bool _obscurePassword = true;
   bool _isLoading = false;
@@ -91,57 +92,68 @@ class _LoginPageState extends State<LoginPage> {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('rememberMe', _rememberMe);
 
-        // Verify user's role via trusted server-side check
-        final roleResolution = await UserRoleService.resolveUserRole(
-          _supabase,
-          expectedUserId: response.user!.id,
-        );
+        // Fetch user's role from profiles table (gracefully backfill if missing)
+        final profileData = await _supabase
+            .from('profiles')
+            .select('role')
+            .eq('id', response.user!.id)
+            .maybeSingle();
 
-        if (!mounted) return;
+        String role = 'user';
+        if (profileData != null) {
+          final rawRole = (profileData['role'] as String?)?.trim();
+          if (rawRole != null && rawRole.isNotEmpty) {
+            role = rawRole;
+          }
+        } else {
+          try {
+            await _supabase.from('profiles').upsert(
+              {
+                'id': response.user!.id,
+                'email': response.user!.email ?? email,
+                'full_name': response.user!.userMetadata?['full_name']
+                        ?.toString() ??
+                    email.split('@').first,
+                'role': 'user',
+              },
+              onConflict: 'id',
+            );
+          } catch (_) {}
+        }
 
-        switch (roleResolution.status) {
-          case UserRoleStatus.user:
+        // Navigate based on role
+        if (mounted) {
+          if (role == 'user') {
+            await _securityService.recordLoginEvent(rememberMe: _rememberMe);
+            if (!mounted) return;
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (context) => const UserHomeScreen()),
             );
-            break;
-          case UserRoleStatus.admin:
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => const AdminDashboardScreen(),
-              ),
-            );
-            break;
-          case UserRoleStatus.unauthorized:
+          } else {
             await _authService.signOut();
-            if (!mounted) return;
-            setState(() {
-              _errorMessage =
-                  'Access denied. Your account does not have permission to log in.';
-            });
-            break;
-          case UserRoleStatus.error:
-            await _authService.signOut();
-            if (!mounted) return;
-            setState(() {
-              _errorMessage = roleResolution.message ??
-                  'Unable to verify your account permissions. Please try again.';
-            });
-            break;
+            if (mounted) {
+              setState(() {
+                _errorMessage =
+                    'Access denied. Your account does not have permission to log in.';
+              });
+            }
+          }
         }
       } else {
-        if (!mounted) return;
-        setState(() {
-          _errorMessage = 'Sign in failed. Please check your credentials and try again.';
-        });
+        if (mounted) {
+          setState(() {
+            _errorMessage =
+                'Sign in failed. Please check your credentials and try again.';
+          });
+        }
       }
     } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _errorMessage = AuthErrorHandler.getErrorMessage(e);
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = AuthErrorHandler.getErrorMessage(e);
+        });
+      }
     } finally {
       if (mounted) {
         setState(() {
