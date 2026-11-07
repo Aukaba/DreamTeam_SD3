@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'admin_reports_screen.dart';
 import 'admin_profile_screen.dart';
+import 'admin_settings_screens.dart';
 
 class AdminDashboardScreen extends StatelessWidget {
   const AdminDashboardScreen({super.key});
@@ -18,62 +19,79 @@ class AdminDashboardScreen extends StatelessWidget {
             fit: BoxFit.cover,
           ),
         ),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final screenWidth = constraints.maxWidth;
-            final isSmallScreen = screenWidth < 360;
-            final isMediumScreen = screenWidth >= 360 && screenWidth < 600;
-            final isTablet = screenWidth >= 600;
-            final isDesktop = screenWidth >= 1200;
+        child: SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final screenWidth = constraints.maxWidth;
+              final isSmallScreen = screenWidth < 360;
+              final isMediumScreen = screenWidth >= 360 && screenWidth < 600;
+              final isTablet = screenWidth >= 600;
+              final isDesktop = screenWidth >= 1200;
 
-            final padding = isDesktop ? 48.0 : (isTablet ? 32.0 : (isSmallScreen ? 12.0 : 20.0));
-            final verticalSpacing = isDesktop ? 32.0 : (isTablet ? 24.0 : 16.0);
+              final padding = isDesktop
+                  ? 48.0
+                  : (isTablet ? 32.0 : (isSmallScreen ? 12.0 : 20.0));
+              final verticalSpacing =
+                  isDesktop ? 32.0 : (isTablet ? 24.0 : 16.0);
 
-            return SingleChildScrollView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              child: Padding(
-                padding: EdgeInsets.all(padding),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        _buildSafeRouteLogo(isDesktop: isDesktop),
-                        _buildHeaderIcons(isTablet: isTablet, context: context),
-                      ],
-                    ),
-                    SizedBox(height: verticalSpacing),
-                    _buildGreeting(isSmallScreen: isSmallScreen, isTablet: isTablet, isDesktop: isDesktop),
-                    SizedBox(height: verticalSpacing),
-                    _buildReviewReportsButton(isSmallScreen: isSmallScreen, context: context),
-                    SizedBox(height: verticalSpacing),
-                    _buildStatsCards(
-                      isSmallScreen: isSmallScreen,
-                      isMediumScreen: isMediumScreen,
-                      isTablet: isTablet,
-                      isDesktop: isDesktop,
-                    ),
-                    SizedBox(height: verticalSpacing),
-                    _buildLatestReportsSection(
-                      isSmallScreen: isSmallScreen,
-                      isMediumScreen: isMediumScreen,
-                      isTablet: isTablet,
-                      isDesktop: isDesktop,
-                    ),
-                    SizedBox(height: verticalSpacing),
-                    _buildAreasCoveredSection(
-                      isSmallScreen: isSmallScreen,
-                      isMediumScreen: isMediumScreen,
-                      isTablet: isTablet,
-                      isDesktop: isDesktop,
-                    ),
-                    SizedBox(height: verticalSpacing * 4),
-                  ],
+              return SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                child: Padding(
+                  padding: EdgeInsets.all(padding),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          _buildSafeRouteLogo(isDesktop: isDesktop),
+                          _buildHeaderIcons(
+                            isTablet: isTablet,
+                            context: context,
+                          ),
+                        ],
+                      ),
+                      SizedBox(height: verticalSpacing),
+                      _buildGreeting(
+                        isSmallScreen: isSmallScreen,
+                        isTablet: isTablet,
+                        isDesktop: isDesktop,
+                      ),
+                      SizedBox(height: verticalSpacing),
+                      _buildReviewReportsButton(
+                        isSmallScreen: isSmallScreen,
+                        context: context,
+                      ),
+                      SizedBox(height: verticalSpacing),
+                      _buildStatsCards(
+                        isSmallScreen: isSmallScreen,
+                        isMediumScreen: isMediumScreen,
+                        isTablet: isTablet,
+                        isDesktop: isDesktop,
+                      ),
+                      SizedBox(height: verticalSpacing),
+                      _buildLatestReportsSection(
+                        context: context,
+                        isSmallScreen: isSmallScreen,
+                        isMediumScreen: isMediumScreen,
+                        isTablet: isTablet,
+                        isDesktop: isDesktop,
+                      ),
+                      SizedBox(height: verticalSpacing),
+                      _buildAreasCoveredSection(
+                        context: context,
+                        isSmallScreen: isSmallScreen,
+                        isMediumScreen: isMediumScreen,
+                        isTablet: isTablet,
+                        isDesktop: isDesktop,
+                      ),
+                      SizedBox(height: verticalSpacing * 4),
+                    ],
+                  ),
                 ),
-              ),
-            );
-          },
+              );
+            },
+          ),
         ),
       ),
     );
@@ -130,7 +148,18 @@ class AdminDashboardScreen extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
-          const _BellIcon(),
+          InkWell(
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AdminReportsScreen(),
+                ),
+              );
+            },
+            borderRadius: BorderRadius.circular(20),
+            child: const _BellIcon(),
+          ),
           SizedBox(width: isTablet ? 12 : 10),
           InkWell(
             onTap: () {
@@ -241,8 +270,8 @@ class AdminDashboardScreen extends StatelessWidget {
       // Single column layout for very small screens
       return Column(
         children: [
-          _StatCard(
-            iconColor: const Color(0xFFE8F7F0),
+          const _StatCard(
+            iconColor: Color(0xFFE8F7F0),
             label: 'Overall Reports',
             value: '28',
             change: '+12%',
@@ -254,8 +283,8 @@ class AdminDashboardScreen extends StatelessWidget {
             secondaryIcon: Icons.arrow_upward,
           ),
           SizedBox(height: spacing),
-          _StatCard(
-            iconColor: const Color(0xFFFFF1E6),
+          const _StatCard(
+            iconColor: Color(0xFFFFF1E6),
             label: 'Report today',
             value: '3',
             change: 'Needs Attention',
@@ -266,8 +295,8 @@ class AdminDashboardScreen extends StatelessWidget {
             hasSecondaryIcon: true,
           ),
           SizedBox(height: spacing),
-          _StatCard(
-            iconColor: const Color(0xFFE8F7F0),
+          const _StatCard(
+            iconColor: Color(0xFFE8F7F0),
             label: 'Verified this week',
             value: '142',
             change: '+18%',
@@ -279,8 +308,8 @@ class AdminDashboardScreen extends StatelessWidget {
             secondaryIcon: Icons.arrow_upward,
           ),
           SizedBox(height: spacing),
-          _StatCard(
-            iconColor: const Color(0xFFFCE8F3),
+          const _StatCard(
+            iconColor: Color(0xFFFCE8F3),
             label: 'Active users',
             value: '2,481',
             change: '+9%',
@@ -402,6 +431,7 @@ class AdminDashboardScreen extends StatelessWidget {
   }
 
   Widget _buildLatestReportsSection({
+    required BuildContext context,
     required bool isSmallScreen,
     required bool isMediumScreen,
     required bool isTablet,
@@ -409,6 +439,13 @@ class AdminDashboardScreen extends StatelessWidget {
   }) {
     final padding = isDesktop ? 32.0 : (isTablet ? 24.0 : (isSmallScreen ? 12.0 : 16.0));
     final spacing = isDesktop ? 24.0 : (isTablet ? 20.0 : 16.0);
+
+    void openReports() {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (context) => const AdminReportsScreen()),
+      );
+    }
 
     return Container(
       width: double.infinity,
@@ -438,6 +475,7 @@ class AdminDashboardScreen extends StatelessWidget {
             iconColor: const Color(0xFFFFF4CC),
             label: 'REQUIRES ACTION',
             showViewAll: true,
+            onViewAll: openReports,
             isSmallScreen: isSmallScreen,
             isTablet: isTablet,
             isDesktop: isDesktop,
@@ -463,6 +501,7 @@ class AdminDashboardScreen extends StatelessWidget {
             isSmallScreen: isSmallScreen,
             isTablet: isTablet,
             isDesktop: isDesktop,
+            onTap: openReports,
           ),
           SizedBox(height: spacing),
           _ReportItem(
@@ -474,6 +513,7 @@ class AdminDashboardScreen extends StatelessWidget {
             isSmallScreen: isSmallScreen,
             isTablet: isTablet,
             isDesktop: isDesktop,
+            onTap: openReports,
           ),
           SizedBox(height: spacing),
           _ReportItem(
@@ -485,6 +525,7 @@ class AdminDashboardScreen extends StatelessWidget {
             isSmallScreen: isSmallScreen,
             isTablet: isTablet,
             isDesktop: isDesktop,
+            onTap: openReports,
           ),
         ],
       ),
@@ -492,6 +533,7 @@ class AdminDashboardScreen extends StatelessWidget {
   }
 
   Widget _buildAreasCoveredSection({
+    required BuildContext context,
     required bool isSmallScreen,
     required bool isMediumScreen,
     required bool isTablet,
@@ -533,6 +575,14 @@ class AdminDashboardScreen extends StatelessWidget {
             iconColor: const Color(0xFFEEF4F8),
             label: 'ANALYTICS',
             showViewAll: true,
+            onViewAll: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AdminAnalyticsScreen(),
+                ),
+              );
+            },
             isSmallScreen: isSmallScreen,
             isTablet: isTablet,
             isDesktop: isDesktop,
@@ -552,7 +602,7 @@ class AdminDashboardScreen extends StatelessWidget {
           if (isSmallScreen)
             Column(
               children: [
-                _CircularProgress(
+                const _CircularProgress(
                   percentage: '92%',
                   progress: 0.92,
                   isSmallScreen: true,
@@ -572,7 +622,7 @@ class AdminDashboardScreen extends StatelessWidget {
                       ),
                     ),
                     SizedBox(height: innerSpacing),
-                    _LegendItem(
+                    const _LegendItem(
                       color: navy,
                       label: 'Reports verified',
                       value: '84%',
@@ -581,7 +631,7 @@ class AdminDashboardScreen extends StatelessWidget {
                       isDesktop: false,
                     ),
                     SizedBox(height: innerSpacing),
-                    _LegendItem(
+                    const _LegendItem(
                       color: teal,
                       label: 'Reports within 1hr',
                       value: '36%',
@@ -649,41 +699,6 @@ class AdminDashboardScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildFooter() {
-    return Column(
-      children: [
-        Image.asset(
-          'assets/image/LogoSR.png',
-          width: 43,
-          height: 47,
-        ),
-        const SizedBox(height: 8),
-        Text.rich(
-          TextSpan(
-            children: [
-              TextSpan(
-                text: 'Safe',
-                style: GoogleFonts.poppins(
-                  color: const Color(0xFF45596E),
-                  fontSize: 22,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              TextSpan(
-                text: 'Route',
-                style: GoogleFonts.poppins(
-                  color: const Color(0xFF8AABCE),
-                  fontSize: 22,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildSectionHeader({
     required Color iconColor,
     required String label,
@@ -691,6 +706,7 @@ class AdminDashboardScreen extends StatelessWidget {
     required bool isSmallScreen,
     required bool isTablet,
     required bool isDesktop,
+    VoidCallback? onViewAll,
     IconData? icon,
     double iconSizeMultiplier = 1.0,
   }) {
@@ -735,24 +751,31 @@ class AdminDashboardScreen extends StatelessWidget {
           ],
         ),
         if (showViewAll)
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'View all',
-                style: GoogleFonts.inter(
-                  color: const Color(0xFF1F3A5F),
-                  fontSize: isDesktop ? 18 : (isTablet ? 16 : (isSmallScreen ? 12 : 14)),
-                  fontWeight: FontWeight.w700,
-                ),
+          InkWell(
+            onTap: onViewAll,
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'View all',
+                    style: GoogleFonts.inter(
+                      color: const Color(0xFF1F3A5F),
+                      fontSize: isDesktop ? 18 : (isTablet ? 16 : (isSmallScreen ? 12 : 14)),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  SizedBox(width: isDesktop ? 8 : (isTablet ? 6 : (isSmallScreen ? 4 : 5))),
+                  Icon(
+                    Icons.arrow_forward_ios,
+                    size: isDesktop ? 16 : (isTablet ? 14 : (isSmallScreen ? 10 : 12)),
+                    color: const Color(0xFF1F3A5F),
+                  ),
+                ],
               ),
-              SizedBox(width: isDesktop ? 8 : (isTablet ? 6 : (isSmallScreen ? 4 : 5))),
-              Icon(
-                Icons.arrow_forward_ios,
-                size: isDesktop ? 16 : (isTablet ? 14 : (isSmallScreen ? 10 : 12)),
-                color: const Color(0xFF1F3A5F),
-              ),
-            ],
+            ),
           ),
       ],
     );
@@ -962,6 +985,7 @@ class _ReportItem extends StatelessWidget {
   final bool isSmallScreen;
   final bool isTablet;
   final bool isDesktop;
+  final VoidCallback? onTap;
 
   const _ReportItem({
     required this.title,
@@ -972,6 +996,7 @@ class _ReportItem extends StatelessWidget {
     required this.isSmallScreen,
     required this.isTablet,
     required this.isDesktop,
+    this.onTap,
   });
 
   @override
@@ -980,18 +1005,21 @@ class _ReportItem extends StatelessWidget {
     final spacing = isDesktop ? 24.0 : (isTablet ? 20.0 : (isSmallScreen ? 12.0 : 16.0));
     final padding = isDesktop ? 20.0 : (isTablet ? 16.0 : (isSmallScreen ? 10.0 : 12.0));
 
-    return Container(
-      width: double.infinity,
-      padding: EdgeInsets.all(padding),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(
-          width: 1,
-          color: const Color(0xFFE6EDF5),
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        width: double.infinity,
+        padding: EdgeInsets.all(padding),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(
+            width: 1,
+            color: const Color(0xFFE6EDF5),
+          ),
+          borderRadius: BorderRadius.circular(14),
         ),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Row(
+        child: Row(
         mainAxisSize: MainAxisSize.min,
         mainAxisAlignment: MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.center,
@@ -1097,6 +1125,7 @@ class _ReportItem extends StatelessWidget {
           const _SmallIcon(),
         ],
       ),
+      ),
     );
   }
 }
@@ -1188,10 +1217,12 @@ class _RingPainter extends CustomPainter {
     canvas.drawCircle(center, radius, trackPaint);
 
     // Progress arc: starts at 12 o'clock and sweeps clockwise
+    final double sweepAngle =
+        (2 * math.pi * progress.clamp(0.0, 1.0)).toDouble();
     canvas.drawArc(
       rect,
       -math.pi / 2,
-      2 * math.pi * progress.clamp(0.0, 1.0),
+      sweepAngle,
       false,
       progressPaint,
     );

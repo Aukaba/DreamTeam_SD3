@@ -1,9 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../main.dart';
+import 'admin_reports_screen.dart';
+import 'admin_settings_screens.dart';
 
 class AdminProfileScreen extends StatefulWidget {
-  const AdminProfileScreen({super.key});
+  final Future<Map<String, dynamic>> Function()? profileLoader;
+  final Future<void> Function(String fullName)? onSaveFullName;
+  final Future<void> Function()? onSignOut;
+
+  const AdminProfileScreen({
+    super.key,
+    this.profileLoader,
+    this.onSaveFullName,
+    this.onSignOut,
+  });
 
   @override
   State<AdminProfileScreen> createState() => _AdminProfileScreenState();
@@ -21,33 +33,82 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
   }
 
   Future<void> _fetchProfile() async {
+    if (mounted && (!_isLoading || _error != null)) {
+      setState(() {
+        _isLoading = true;
+        _error = null;
+      });
+    }
+
     try {
-      final user = Supabase.instance.client.auth.currentUser;
-      if (user == null) {
-        setState(() {
-          _error = 'User not authenticated';
-          _isLoading = false;
-        });
-        return;
+      Map<String, dynamic> response;
+
+      if (widget.profileLoader != null) {
+        response = await widget.profileLoader!();
+      } else {
+        final supabase = Supabase.instance.client;
+        final user = supabase.auth.currentUser;
+        if (user == null) {
+          if (!mounted) return;
+          setState(() {
+            _error = 'User not authenticated';
+            _isLoading = false;
+          });
+          return;
+        }
+
+        final isAdmin =
+            await supabase.rpc('verify_admin_access') as bool? ?? false;
+        if (!isAdmin) {
+          if (!mounted) return;
+          setState(() {
+            _error = 'Administrator access required';
+            _isLoading = false;
+          });
+          return;
+        }
+
+        response = await supabase
+            .from('profiles')
+            .select('id, email, full_name, avatar_url, role, created_at')
+            .eq('id', user.id)
+            .eq('role', 'admin')
+            .single();
       }
 
-      final response = await Supabase.instance.client
-          .from('profiles')
-          .select()
-          .eq('id', user.id)
-          .eq('role', 'admin')
-          .single();
-
+      if (!mounted) return;
       setState(() {
         _profile = response;
+        _error = null;
         _isLoading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _isLoading = false;
       });
     }
+  }
+
+  Future<void> _openAccountInfo() async {
+    final updatedName = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AdminAccountInfoScreen(
+          initialProfile: _profile,
+          onSaveFullName: widget.onSaveFullName,
+        ),
+      ),
+    );
+
+    if (!mounted || updatedName == null) return;
+    setState(() {
+      _profile = {
+        ...?_profile,
+        'full_name': updatedName,
+      };
+    });
   }
 
   @override
@@ -68,8 +129,9 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
               final isTablet = screenWidth >= 600;
               final isDesktop = screenWidth >= 1200;
 
-              final horizontalPadding =
-                  isDesktop ? 48.0 : (isTablet ? 32.0 : (isSmallScreen ? 12.0 : 16.0));
+              final horizontalPadding = isDesktop
+                  ? 48.0
+                  : (isTablet ? 32.0 : (isSmallScreen ? 12.0 : 16.0));
 
               return SingleChildScrollView(
                 child: Center(
@@ -84,17 +146,40 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _buildHeader(context, isSmallScreen, isTablet, isDesktop),
+                          _buildHeader(
+                            context,
+                            isSmallScreen,
+                            isTablet,
+                            isDesktop,
+                          ),
                           SizedBox(height: isDesktop ? 40 : 24),
                           _buildGreeting(isSmallScreen, isTablet, isDesktop),
                           SizedBox(height: isDesktop ? 40 : 24),
-                          _buildProfileCard(isSmallScreen, isTablet, isDesktop),
+                          _buildProfileCard(
+                            isSmallScreen,
+                            isTablet,
+                            isDesktop,
+                          ),
                           SizedBox(height: isDesktop ? 32 : 24),
-                          _buildOverviewSection(isSmallScreen, isTablet, isDesktop),
+                          _buildOverviewSection(
+                            isSmallScreen,
+                            isTablet,
+                            isDesktop,
+                          ),
                           SizedBox(height: isDesktop ? 32 : 24),
-                          _buildSettingsMenu(isSmallScreen, isTablet, isDesktop, context),
+                          _buildSettingsMenu(
+                            isSmallScreen,
+                            isTablet,
+                            isDesktop,
+                            context,
+                          ),
                           SizedBox(height: isDesktop ? 32 : 24),
-                          _buildLogoutButton(isSmallScreen, isTablet, isDesktop, context),
+                          _buildLogoutButton(
+                            isSmallScreen,
+                            isTablet,
+                            isDesktop,
+                            context,
+                          ),
                         ],
                       ),
                     ),
@@ -109,7 +194,11 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
   }
 
   Widget _buildHeader(
-      BuildContext context, bool isSmallScreen, bool isTablet, bool isDesktop) {
+    BuildContext context,
+    bool isSmallScreen,
+    bool isTablet,
+    bool isDesktop,
+  ) {
     final gap = isDesktop ? 20.0 : (isSmallScreen ? 8.0 : 14.0);
 
     return Row(
@@ -180,17 +269,28 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
           ),
         ),
         SizedBox(width: gap),
-        Container(
-          width: 40,
-          height: 40,
-          decoration: const BoxDecoration(
-            color: Color(0xFFEEF4F8),
-            shape: BoxShape.circle,
-          ),
-          child: const Icon(
-            Icons.notifications_outlined,
-            size: 24,
-            color: Color(0xFF5B6B7A),
+        InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const AdminReportsScreen(),
+              ),
+            );
+          },
+          child: Container(
+            width: 40,
+            height: 40,
+            decoration: const BoxDecoration(
+              color: Color(0xFFEEF4F8),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.notifications_outlined,
+              size: 24,
+              color: Color(0xFF5B6B7A),
+            ),
           ),
         ),
       ],
@@ -258,14 +358,24 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
         width: double.infinity,
         padding: EdgeInsets.all(isDesktop ? 24 : (isSmallScreen ? 14 : 18)),
         decoration: _cardDecoration(),
-        child: Center(
-          child: Text(
-            'Error loading profile',
-            style: GoogleFonts.inter(
-              color: const Color(0xFFD95379),
-              fontSize: 14,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Error loading profile',
+              style: GoogleFonts.inter(
+                color: const Color(0xFFD95379),
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
             ),
-          ),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: _fetchProfile,
+              icon: const Icon(Icons.refresh, size: 16),
+              label: const Text('Retry'),
+            ),
+          ],
         ),
       );
     }
@@ -346,7 +456,8 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
                 ),
                 SizedBox(height: isDesktop ? 8 : 4),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
                   decoration: BoxDecoration(
                     color: const Color(0xFFEBF3FA),
                     borderRadius: BorderRadius.circular(11),
@@ -392,7 +503,11 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
     );
   }
 
-  Widget _buildOverviewSection(bool isSmallScreen, bool isTablet, bool isDesktop) {
+  Widget _buildOverviewSection(
+    bool isSmallScreen,
+    bool isTablet,
+    bool isDesktop,
+  ) {
     final gap = isDesktop ? 16.0 : (isSmallScreen ? 6.0 : 10.0);
 
     return Container(
@@ -533,7 +648,11 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
   }
 
   Widget _buildSettingsMenu(
-      bool isSmallScreen, bool isTablet, bool isDesktop, BuildContext context) {
+    bool isSmallScreen,
+    bool isTablet,
+    bool isDesktop,
+    BuildContext context,
+  ) {
     return Container(
       width: double.infinity,
       decoration: _cardDecoration(),
@@ -548,6 +667,7 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
             isTablet: isTablet,
             isDesktop: isDesktop,
             showDivider: true,
+            onTap: _openAccountInfo,
           ),
           _buildMenuItem(
             icon: Icons.security,
@@ -558,6 +678,14 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
             isTablet: isTablet,
             isDesktop: isDesktop,
             showDivider: true,
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AdminSafetySettingsScreen(),
+                ),
+              );
+            },
           ),
           _buildMenuItem(
             icon: Icons.report,
@@ -568,6 +696,14 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
             isTablet: isTablet,
             isDesktop: isDesktop,
             showDivider: true,
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AdminReportsScreen(),
+                ),
+              );
+            },
           ),
           _buildMenuItem(
             icon: Icons.info,
@@ -578,6 +714,14 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
             isTablet: isTablet,
             isDesktop: isDesktop,
             showDivider: true,
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AdminAboutSafeRouteScreen(),
+                ),
+              );
+            },
           ),
           _buildMenuItem(
             icon: Icons.help,
@@ -588,6 +732,14 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
             isTablet: isTablet,
             isDesktop: isDesktop,
             showDivider: false,
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AdminHelpSupportScreen(),
+                ),
+              );
+            },
           ),
         ],
       ),
@@ -603,6 +755,7 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
     required bool isTablet,
     required bool isDesktop,
     required bool showDivider,
+    required VoidCallback onTap,
   }) {
     final iconBox = isSmallScreen ? 36.0 : 40.0;
     final gap = isDesktop ? 20.0 : (isSmallScreen ? 10.0 : 14.0);
@@ -611,9 +764,7 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
     return Column(
       children: [
         InkWell(
-          onTap: () {
-            // TODO: Implement navigation
-          },
+          onTap: onTap,
           child: Padding(
             padding: EdgeInsets.all(pad),
             child: Row(
@@ -678,13 +829,23 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
   }
 
   Widget _buildLogoutButton(
-      bool isSmallScreen, bool isTablet, bool isDesktop, BuildContext context) {
+    bool isSmallScreen,
+    bool isTablet,
+    bool isDesktop,
+    BuildContext context,
+  ) {
     return InkWell(
       onTap: () async {
-        await Supabase.instance.client.auth.signOut();
-        if (context.mounted) {
-          Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+        if (widget.onSignOut != null) {
+          await widget.onSignOut!();
+        } else {
+          await Supabase.instance.client.auth.signOut();
         }
+        if (!context.mounted) return;
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (context) => const AuthWrapper()),
+          (route) => false,
+        );
       },
       borderRadius: BorderRadius.circular(24),
       child: Container(

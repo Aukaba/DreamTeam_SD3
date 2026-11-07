@@ -9,6 +9,7 @@ import '../user_screens/user_home_screen.dart';
 import '../admin_screens/admin_dashboard_screen.dart';
 import 'auth_service.dart';
 import 'auth_error_handler.dart';
+import 'role_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -90,40 +91,54 @@ class _LoginPageState extends State<LoginPage> {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('rememberMe', _rememberMe);
 
-        // Fetch user's role from profiles table
-        final profileData = await _supabase
-            .from('profiles')
-            .select('role')
-            .eq('id', response.user!.id)
-            .single();
+        // Verify user's role via trusted server-side check
+        final roleResolution = await UserRoleService.resolveUserRole(
+          _supabase,
+          expectedUserId: response.user!.id,
+        );
 
-        final role = profileData['role'] as String?;
+        if (!mounted) return;
 
-        // Navigate based on role
-        if (mounted) {
-          if (role == 'user') {
+        switch (roleResolution.status) {
+          case UserRoleStatus.user:
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (context) => const UserHomeScreen()),
             );
-          } else if (role == 'admin') {
+            break;
+          case UserRoleStatus.admin:
             Navigator.pushReplacement(
               context,
-              MaterialPageRoute(builder: (context) => const AdminDashboardScreen()),
+              MaterialPageRoute(
+                builder: (context) => const AdminDashboardScreen(),
+              ),
             );
-          } else {
-            // Handle other roles if needed
+            break;
+          case UserRoleStatus.unauthorized:
+            await _authService.signOut();
+            if (!mounted) return;
             setState(() {
-              _errorMessage = 'Access denied. Your account does not have permission to log in.';
+              _errorMessage =
+                  'Access denied. Your account does not have permission to log in.';
             });
-          }
+            break;
+          case UserRoleStatus.error:
+            await _authService.signOut();
+            if (!mounted) return;
+            setState(() {
+              _errorMessage = roleResolution.message ??
+                  'Unable to verify your account permissions. Please try again.';
+            });
+            break;
         }
       } else {
+        if (!mounted) return;
         setState(() {
           _errorMessage = 'Sign in failed. Please check your credentials and try again.';
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = AuthErrorHandler.getErrorMessage(e);
       });

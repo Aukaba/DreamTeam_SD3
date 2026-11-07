@@ -302,11 +302,11 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
           width: 1,
           color: const Color(0xFFE8EDF2),
         ),
-        boxShadow: [
+        boxShadow: const [
           BoxShadow(
-            color: const Color(0x0F000000),
+            color: Color(0x0F000000),
             blurRadius: 16,
-            offset: const Offset(0, 4),
+            offset: Offset(0, 4),
             spreadRadius: 0,
           ),
         ],
