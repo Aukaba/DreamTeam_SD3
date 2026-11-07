@@ -8,6 +8,7 @@ import '../Authentication/login_page.dart';
 import '../navigation/app_navigation.dart';
 import '../services/profile_service.dart';
 import '../services/security_service.dart';
+import '../widgets/camera_capture_screen.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
 import 'personal_information_screen.dart';
@@ -275,12 +276,33 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   Future<void> _pickAndUploadAvatar(ImageSource source) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final picked = await _picker.pickImage(
-        source: source,
-        maxWidth: 1024,
-        maxHeight: 1024,
-        imageQuality: 85,
-      );
+      XFile? picked;
+      if (source == ImageSource.camera) {
+        final result = await Navigator.of(context).push<CameraCaptureResult>(
+          MaterialPageRoute(
+            builder: (ctx) => const CameraCaptureScreen(),
+            fullscreenDialog: true,
+          ),
+        );
+        if (!mounted || result == null) return;
+        if (result.openGallery) {
+          picked = await _picker.pickImage(
+            source: ImageSource.gallery,
+            maxWidth: 1024,
+            maxHeight: 1024,
+            imageQuality: 85,
+          );
+        } else {
+          picked = result.file;
+        }
+      } else {
+        picked = await _picker.pickImage(
+          source: source,
+          maxWidth: 1024,
+          maxHeight: 1024,
+          imageQuality: 85,
+        );
+      }
       if (picked == null || !mounted) return;
 
       final bytes = await picked.readAsBytes();

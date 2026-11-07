@@ -24,6 +24,12 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>This app requires camera access to take hazard photos.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>This app requires access to your photo library to select hazard photos.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>This app requires access to your microphone when recording video.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
