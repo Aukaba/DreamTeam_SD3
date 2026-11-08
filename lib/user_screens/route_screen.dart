@@ -779,6 +779,7 @@ class _RouteScreenState extends State<RouteScreen> {
             // 1. Bottom layer: Scrollable content with RefreshIndicator
             RefreshIndicator(
               color: _primaryNavy,
+              displacement: CustomWavyHeader.height(context) + 16.0,
               edgeOffset: CustomWavyHeader.height(context) - 16.0,
               onRefresh: _refreshDataAndReevaluate,
               child: SingleChildScrollView(
@@ -864,7 +865,7 @@ class _RouteScreenState extends State<RouteScreen> {
             fontSize: 12,
             fontWeight: FontWeight.w400,
             color: _secondaryGrey,
-            height: 1.4,
+            height: 1.35,
           ),
         ),
       ],

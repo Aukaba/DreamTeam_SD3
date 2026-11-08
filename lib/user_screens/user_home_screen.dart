@@ -213,6 +213,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
             // 1. Bottom layer: Scrollable content with RefreshIndicator
             RefreshIndicator(
               color: _primaryNavy,
+              displacement: CustomWavyHeader.height(context) + 16.0,
               edgeOffset: CustomWavyHeader.height(context) - 16.0,
               onRefresh: _loadHomeData,
               child: SingleChildScrollView(
@@ -236,7 +237,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
                         color: _secondaryGrey,
-                        letterSpacing: 1.4,
+                        letterSpacing: 1.5,
                       ),
                     ),
                     const SizedBox(height: 4),
@@ -245,9 +246,10 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                       style: TextStyle(
                         fontFamily: 'Poppins',
                         fontSize: 24,
-                        fontWeight: FontWeight.w600,
+                        fontWeight: FontWeight.w700,
                         color: _primaryNavy,
                         letterSpacing: -0.4,
+                        height: 1.2,
                       ),
                     ),
 

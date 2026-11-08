@@ -432,6 +432,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
             // 1. Bottom layer: Scrollable content with RefreshIndicator
             RefreshIndicator(
               color: _primaryNavy,
+              displacement: CustomWavyHeader.height(context) + 16.0,
               edgeOffset: CustomWavyHeader.height(context) - 16.0,
               onRefresh: _loadAlerts,
               child: SingleChildScrollView(
@@ -486,6 +487,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
                               fontSize: 24,
                               fontWeight: FontWeight.w700,
                               color: _primaryNavy,
+                              letterSpacing: -0.4,
                               height: 1.2,
                             ),
                           ),

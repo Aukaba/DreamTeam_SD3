@@ -499,6 +499,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
             // 1. Bottom layer: Scrollable content with RefreshIndicator
             RefreshIndicator(
               color: _primaryNavy,
+              displacement: CustomWavyHeader.height(context) + 16.0,
               edgeOffset: CustomWavyHeader.height(context) - 16.0,
               onRefresh: () => _loadProfile(silent: true),
               child: SingleChildScrollView(
@@ -749,7 +750,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     fontFamily: 'Poppins',
-                    fontSize: 17,
+                    fontSize: 18,
                     fontWeight: FontWeight.w700,
                     color: _primaryNavy,
                   ),
@@ -762,9 +763,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontFamily: 'Poppins',
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w600,
-                      color: _accentBlue,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: _secondaryGrey,
                     ),
                   ),
                 ],
