@@ -469,6 +469,9 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                           ),
                           children: [
                             TileLayer(
+                              tileProvider: NetworkTileProvider(
+                                silenceExceptions: true,
+                              ),
                               urlTemplate:
                                   'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                               fallbackUrl:
