@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import '../widgets/safe_route_bottom_nav.dart';
 import '../navigation/app_navigation.dart';
+import '../services/hazard_report_service.dart';
+import '../services/leaderboard_service.dart';
+import '../widgets/safe_route_bottom_nav.dart';
 
 const Color _primaryNavy = Color(0xFF233253);
 const Color _navyHeader = Color(0xFF1C3A70);
@@ -11,23 +14,14 @@ const Color _goldBorder = Color(0xFFFFC107);
 const Color _silverBorder = Color(0xFFCBD5E1);
 const Color _bronzeBorder = Color(0xFFCD7F32);
 
-// Constant Avatar URLs
-const String _userAvatar = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150';
-const String _juanAvatar = 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150';
-const String _mariaAvatar = 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150';
-const String _carloAvatar = 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150';
-const String _anaAvatar = 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150';
-const String _bongAvatar = 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=150';
-const String _roseAvatar = 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150';
-const String _davidAvatar = 'https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?w=150';
-
 /// Data models for category-driven leaderboard rendering
 class LeaderboardUserData {
   final int rank;
   final String name;
+  final String initials;
   final String? subtitle;
   final String score;
-  final String avatarUrl;
+  final String? avatarUrl;
   final String badgeText;
   final IconData badgeIcon;
   final Color badgeBgColor;
@@ -37,9 +31,10 @@ class LeaderboardUserData {
   const LeaderboardUserData({
     required this.rank,
     required this.name,
+    required this.initials,
     this.subtitle,
     required this.score,
-    required this.avatarUrl,
+    this.avatarUrl,
     required this.badgeText,
     required this.badgeIcon,
     required this.badgeBgColor,
@@ -50,13 +45,15 @@ class LeaderboardUserData {
 
 class PodiumUserData {
   final String name;
+  final String initials;
   final String score;
-  final String avatarUrl;
+  final String? avatarUrl;
 
   const PodiumUserData({
     required this.name,
+    required this.initials,
     required this.score,
-    required this.avatarUrl,
+    this.avatarUrl,
   });
 }
 
@@ -75,16 +72,18 @@ class PodiumData {
 class CurrentUserRankData {
   final String rank;
   final String name;
+  final String initials;
   final String stat;
   final String badgePill;
-  final String avatarUrl;
+  final String? avatarUrl;
 
   const CurrentUserRankData({
     required this.rank,
     required this.name,
+    required this.initials,
     required this.stat,
     required this.badgePill,
-    required this.avatarUrl,
+    this.avatarUrl,
   });
 }
 
@@ -103,400 +102,325 @@ class TabLeaderboardData {
 }
 
 class UserLeaderboardScreen extends StatefulWidget {
-  const UserLeaderboardScreen({super.key});
+  final LeaderboardService? leaderboardService;
+
+  const UserLeaderboardScreen({
+    super.key,
+    this.leaderboardService,
+  });
 
   @override
   State<UserLeaderboardScreen> createState() => _UserLeaderboardScreenState();
 }
 
 class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
+  late final LeaderboardService _leaderboardService;
+  StreamSubscription<HazardReportData>? _reportSubscription;
+
   int _selectedTabIndex = 0; // 0: Safety Points, 1: Reports, 2: Routes
+  bool _isWeekly = false;
+  bool _isLoading = true;
+  List<LeaderboardUserEntry> _entries = const <LeaderboardUserEntry>[];
 
-  // Category rankings data (Points, Reports, Routes)
-  static const Map<int, TabLeaderboardData> _categoriesData = {
-    // 0: Safety Points
-    0: TabLeaderboardData(
-      scoreColumnHeader: 'POINTS',
-      podium: PodiumData(
-        first: PodiumUserData(
-          name: 'Juan D.',
-          score: '220 pts',
-          avatarUrl: _juanAvatar,
-        ),
-        second: PodiumUserData(
-          name: 'Maria S.',
-          score: '185 pts',
-          avatarUrl: _mariaAvatar,
-        ),
-        third: PodiumUserData(
-          name: 'Carlo R.',
-          score: '162 pts',
-          avatarUrl: _carloAvatar,
-        ),
-      ),
-      currentUser: CurrentUserRankData(
-        rank: '#8',
-        name: 'You · Ma. Angelica May',
-        stat: '120 pts · Level 2',
-        badgePill: 'TOP 10',
-        avatarUrl: _userAvatar,
-      ),
-      list: [
-        LeaderboardUserData(
-          rank: 1,
-          name: 'Juan D.',
-          score: '220',
-          avatarUrl: _juanAvatar,
-          badgeText: 'Hero',
-          badgeIcon: Icons.shield_rounded,
-          badgeBgColor: Color(0xFFEBF3FC),
-          badgeTextColor: Color(0xFF2B548F),
-        ),
-        LeaderboardUserData(
-          rank: 2,
-          name: 'Maria S.',
-          score: '185',
-          avatarUrl: _mariaAvatar,
-          badgeText: 'Guard',
-          badgeIcon: Icons.star_rounded,
-          badgeBgColor: Color(0xFFEBF3FC),
-          badgeTextColor: Color(0xFF2B548F),
-        ),
-        LeaderboardUserData(
-          rank: 3,
-          name: 'Carlo R.',
-          score: '162',
-          avatarUrl: _carloAvatar,
-          badgeText: 'Scout',
-          badgeIcon: Icons.local_fire_department_rounded,
-          badgeBgColor: Color(0xFFFFF7EB),
-          badgeTextColor: Color(0xFFC27803),
-        ),
-        LeaderboardUserData(
-          rank: 4,
-          name: 'Ana P.',
-          score: '148',
-          avatarUrl: _anaAvatar,
-          badgeText: 'Watcher',
-          badgeIcon: Icons.remove_red_eye_rounded,
-          badgeBgColor: Color(0xFFE8F5E9),
-          badgeTextColor: Color(0xFF2E7D32),
-        ),
-        LeaderboardUserData(
-          rank: 5,
-          name: 'Bong L.',
-          score: '130',
-          avatarUrl: _bongAvatar,
-          badgeText: 'Guard',
-          badgeIcon: Icons.shield_outlined,
-          badgeBgColor: Color(0xFFEBF3FC),
-          badgeTextColor: Color(0xFF2B548F),
-        ),
-        LeaderboardUserData(
-          rank: 6,
-          name: 'Rose M.',
-          score: '118',
-          avatarUrl: _roseAvatar,
-          badgeText: 'Rookie',
-          badgeIcon: Icons.lightbulb_outline_rounded,
-          badgeBgColor: Color(0xFFFFF9E6),
-          badgeTextColor: Color(0xFFB78103),
-        ),
-        LeaderboardUserData(
-          rank: 7,
-          name: 'David K.',
-          score: '124',
-          avatarUrl: _davidAvatar,
-          badgeText: 'Scout',
-          badgeIcon: Icons.local_fire_department_rounded,
-          badgeBgColor: Color(0xFFFFF7EB),
-          badgeTextColor: Color(0xFFC27803),
-        ),
-        LeaderboardUserData(
-          rank: 8,
-          name: 'Ma. Angelica May',
-          subtitle: 'You',
-          score: '120',
-          avatarUrl: _userAvatar,
-          badgeText: 'Guard',
-          badgeIcon: Icons.star_rounded,
-          badgeBgColor: Color(0xFFEBF3FC),
-          badgeTextColor: Color(0xFF2B548F),
-          isCurrentUser: true,
-        ),
-      ],
-    ),
+  @override
+  void initState() {
+    super.initState();
+    _leaderboardService = widget.leaderboardService ?? LeaderboardService();
+    _loadLeaderboard();
+    _reportSubscription = HazardReportService.reportStream.listen((_) {
+      _loadLeaderboard();
+    });
+  }
 
-    // 1: Reports (Consistent with 12 Reports on Profile)
-    1: TabLeaderboardData(
-      scoreColumnHeader: 'REPORTS',
-      podium: PodiumData(
-        first: PodiumUserData(
-          name: 'Juan D.',
-          score: '38 reports',
-          avatarUrl: _juanAvatar,
-        ),
-        second: PodiumUserData(
-          name: 'Maria S.',
-          score: '32 reports',
-          avatarUrl: _mariaAvatar,
-        ),
-        third: PodiumUserData(
-          name: 'Carlo R.',
-          score: '27 reports',
-          avatarUrl: _carloAvatar,
-        ),
-      ),
-      currentUser: CurrentUserRankData(
-        rank: '#6',
-        name: 'You · Ma. Angelica May',
-        stat: '12 reports · Active Reporter',
-        badgePill: 'TOP 10',
-        avatarUrl: _userAvatar,
-      ),
-      list: [
-        LeaderboardUserData(
-          rank: 1,
-          name: 'Juan D.',
-          score: '38',
-          avatarUrl: _juanAvatar,
-          badgeText: 'Hero',
-          badgeIcon: Icons.shield_rounded,
-          badgeBgColor: Color(0xFFEBF3FC),
-          badgeTextColor: Color(0xFF2B548F),
-        ),
-        LeaderboardUserData(
-          rank: 2,
-          name: 'Maria S.',
-          score: '32',
-          avatarUrl: _mariaAvatar,
-          badgeText: 'Guard',
-          badgeIcon: Icons.star_rounded,
-          badgeBgColor: Color(0xFFEBF3FC),
-          badgeTextColor: Color(0xFF2B548F),
-        ),
-        LeaderboardUserData(
-          rank: 3,
-          name: 'Carlo R.',
-          score: '27',
-          avatarUrl: _carloAvatar,
-          badgeText: 'Scout',
-          badgeIcon: Icons.local_fire_department_rounded,
-          badgeBgColor: Color(0xFFFFF7EB),
-          badgeTextColor: Color(0xFFC27803),
-        ),
-        LeaderboardUserData(
-          rank: 4,
-          name: 'Ana P.',
-          score: '21',
-          avatarUrl: _anaAvatar,
-          badgeText: 'Watcher',
-          badgeIcon: Icons.remove_red_eye_rounded,
-          badgeBgColor: Color(0xFFE8F5E9),
-          badgeTextColor: Color(0xFF2E7D32),
-        ),
-        LeaderboardUserData(
-          rank: 5,
-          name: 'Bong L.',
-          score: '16',
-          avatarUrl: _bongAvatar,
-          badgeText: 'Guard',
-          badgeIcon: Icons.shield_outlined,
-          badgeBgColor: Color(0xFFEBF3FC),
-          badgeTextColor: Color(0xFF2B548F),
-        ),
-        LeaderboardUserData(
-          rank: 6,
-          name: 'Ma. Angelica May',
-          subtitle: 'You',
-          score: '12',
-          avatarUrl: _userAvatar,
-          badgeText: 'Scout',
-          badgeIcon: Icons.local_fire_department_rounded,
-          badgeBgColor: Color(0xFFFFF7EB),
-          badgeTextColor: Color(0xFFC27803),
-          isCurrentUser: true,
-        ),
-        LeaderboardUserData(
-          rank: 7,
-          name: 'Rose M.',
-          score: '11',
-          avatarUrl: _roseAvatar,
-          badgeText: 'Rookie',
-          badgeIcon: Icons.lightbulb_outline_rounded,
-          badgeBgColor: Color(0xFFFFF9E6),
-          badgeTextColor: Color(0xFFB78103),
-        ),
-        LeaderboardUserData(
-          rank: 8,
-          name: 'David K.',
-          score: '9',
-          avatarUrl: _davidAvatar,
-          badgeText: 'Rookie',
-          badgeIcon: Icons.lightbulb_outline_rounded,
-          badgeBgColor: Color(0xFFFFF9E6),
-          badgeTextColor: Color(0xFFB78103),
-        ),
-      ],
-    ),
+  @override
+  void dispose() {
+    _reportSubscription?.cancel();
+    super.dispose();
+  }
 
-    // 2: Routes (Consistent with 5 Safe Routes on Profile)
-    2: TabLeaderboardData(
-      scoreColumnHeader: 'ROUTES',
-      podium: PodiumData(
-        first: PodiumUserData(
-          name: 'Juan D.',
-          score: '25 routes',
-          avatarUrl: _juanAvatar,
-        ),
-        second: PodiumUserData(
-          name: 'Maria S.',
-          score: '21 routes',
-          avatarUrl: _mariaAvatar,
-        ),
-        third: PodiumUserData(
-          name: 'Carlo R.',
-          score: '18 routes',
-          avatarUrl: _carloAvatar,
-        ),
-      ),
-      currentUser: CurrentUserRankData(
-        rank: '#7',
-        name: 'You · Ma. Angelica May',
-        stat: '5 routes · Safe Navigator',
-        badgePill: 'TOP 10',
-        avatarUrl: _userAvatar,
-      ),
-      list: [
+  Future<void> _loadLeaderboard() async {
+    if (mounted && _entries.isEmpty) {
+      setState(() => _isLoading = true);
+    }
+    try {
+      final fetched = await _leaderboardService.fetchLeaderboard(
+        isWeekly: _isWeekly,
+      );
+      if (!mounted) return;
+      setState(() {
+        _entries = fetched;
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+    }
+  }
+
+  void _toggleTimeframe() {
+    setState(() {
+      _isWeekly = !_isWeekly;
+      _isLoading = true;
+    });
+    _loadLeaderboard();
+  }
+
+  ({
+    String text,
+    IconData icon,
+    Color bgColor,
+    Color textColor,
+  }) _badgeStyleForLevel(LevelProgressData levelProgress) {
+    final label = levelProgress.badgeLabel;
+    switch (label) {
+      case 'Hero':
+        return (
+          text: 'Hero',
+          icon: Icons.shield_rounded,
+          bgColor: const Color(0xFFEBF3FC),
+          textColor: const Color(0xFF2B548F),
+        );
+      case 'Guard':
+        return (
+          text: 'Guard',
+          icon: Icons.star_rounded,
+          bgColor: const Color(0xFFEBF3FC),
+          textColor: const Color(0xFF2B548F),
+        );
+      case 'Scout':
+        return (
+          text: 'Scout',
+          icon: Icons.local_fire_department_rounded,
+          bgColor: const Color(0xFFFFF7EB),
+          textColor: const Color(0xFFC27803),
+        );
+      case 'Watcher':
+        return (
+          text: 'Watcher',
+          icon: Icons.remove_red_eye_rounded,
+          bgColor: const Color(0xFFE8F5E9),
+          textColor: const Color(0xFF2E7D32),
+        );
+      case 'Rookie':
+      default:
+        return (
+          text: 'Rookie',
+          icon: Icons.lightbulb_outline_rounded,
+          bgColor: const Color(0xFFFFF9E6),
+          textColor: const Color(0xFFB78103),
+        );
+    }
+  }
+
+  String _podiumScoreLabel(LeaderboardUserEntry entry, int tabIndex) {
+    switch (tabIndex) {
+      case 1:
+        return '${entry.reportCount} ${entry.reportCount == 1 ? 'report' : 'reports'}';
+      case 2:
+        return '${entry.savedRoutesCount} ${entry.savedRoutesCount == 1 ? 'route' : 'routes'}';
+      case 0:
+      default:
+        return '${entry.safetyPoints} pts';
+    }
+  }
+
+  String _rowScoreLabel(LeaderboardUserEntry entry, int tabIndex) {
+    switch (tabIndex) {
+      case 1:
+        return '${entry.reportCount}';
+      case 2:
+        return '${entry.savedRoutesCount}';
+      case 0:
+      default:
+        return '${entry.safetyPoints}';
+    }
+  }
+
+  String _rowSubtitle(LeaderboardUserEntry entry, int tabIndex) {
+    final prefix = entry.isCurrentUser ? 'You · ' : '';
+    final levelText = 'Lv ${entry.levelProgress.level}';
+    switch (tabIndex) {
+      case 1:
+        return '$prefix${entry.safetyPoints} pts · $levelText';
+      case 2:
+        return '$prefix${entry.reportCount} ${entry.reportCount == 1 ? 'report' : 'reports'} · ${entry.safetyPoints} pts';
+      case 0:
+      default:
+        return '$prefix${entry.reportCount} ${entry.reportCount == 1 ? 'report' : 'reports'} · $levelText';
+    }
+  }
+
+  TabLeaderboardData _buildTabLeaderboardData(int tabIndex) {
+    final sorted = LeaderboardService.sortEntriesForCategory(
+      _entries,
+      tabIndex,
+    );
+
+    final String scoreHeader = tabIndex == 1
+        ? 'REPORTS'
+        : (tabIndex == 2 ? 'ROUTES' : 'POINTS');
+
+    PodiumUserData toPodiumSpot(int idx) {
+      if (idx < sorted.length) {
+        final e = sorted[idx];
+        return PodiumUserData(
+          name: e.displayName,
+          initials: e.initials,
+          score: _podiumScoreLabel(e, tabIndex),
+          avatarUrl: e.avatarUrl,
+        );
+      }
+      return PodiumUserData(
+        name: '—',
+        initials: '—',
+        score: tabIndex == 1
+            ? '0 reports'
+            : (tabIndex == 2 ? '0 routes' : '0 pts'),
+      );
+    }
+
+    final podium = PodiumData(
+      first: toPodiumSpot(0),
+      second: toPodiumSpot(1),
+      third: toPodiumSpot(2),
+    );
+
+    int myIndex = sorted.indexWhere((e) => e.isCurrentUser);
+    LeaderboardUserEntry? myEntry = myIndex >= 0 ? sorted[myIndex] : null;
+    if (myEntry == null && sorted.isNotEmpty) {
+      myIndex = 0;
+      myEntry = sorted.first;
+    }
+
+    final int myRankNumber = myIndex >= 0 ? myIndex + 1 : 1;
+    final CurrentUserRankData currentUserRank;
+    if (myEntry != null) {
+      final String statText;
+      if (tabIndex == 1) {
+        statText =
+            '${myEntry.reportCount} ${myEntry.reportCount == 1 ? 'report' : 'reports'} · ${myEntry.safetyPoints} pts · Level ${myEntry.levelProgress.level}';
+      } else if (tabIndex == 2) {
+        statText =
+            '${myEntry.savedRoutesCount} ${myEntry.savedRoutesCount == 1 ? 'route' : 'routes'} · Level ${myEntry.levelProgress.level}';
+      } else {
+        statText =
+            '${myEntry.safetyPoints} pts · ${myEntry.reportCount} ${myEntry.reportCount == 1 ? 'report' : 'reports'} · Level ${myEntry.levelProgress.level}';
+      }
+
+      currentUserRank = CurrentUserRankData(
+        rank: '#$myRankNumber',
+        name: myEntry.isCurrentUser
+            ? 'You · ${myEntry.displayName}'
+            : myEntry.displayName,
+        initials: myEntry.initials,
+        stat: statText,
+        badgePill: myRankNumber <= 3
+            ? 'TOP 3'
+            : (myRankNumber <= 10
+                ? 'TOP 10'
+                : 'LVL ${myEntry.levelProgress.level}'),
+        avatarUrl: myEntry.avatarUrl,
+      );
+    } else {
+      currentUserRank = const CurrentUserRankData(
+        rank: '#1',
+        name: 'You',
+        initials: 'YO',
+        stat: '0 pts · 0 reports · Level 1',
+        badgePill: 'LVL 1',
+      );
+    }
+
+    final list = <LeaderboardUserData>[];
+    for (int i = 0; i < sorted.length; i++) {
+      final entry = sorted[i];
+      final badge = _badgeStyleForLevel(entry.levelProgress);
+      list.add(
         LeaderboardUserData(
-          rank: 1,
-          name: 'Juan D.',
-          score: '25',
-          avatarUrl: _juanAvatar,
-          badgeText: 'Hero',
-          badgeIcon: Icons.shield_rounded,
-          badgeBgColor: Color(0xFFEBF3FC),
-          badgeTextColor: Color(0xFF2B548F),
+          rank: i + 1,
+          name: entry.displayName,
+          initials: entry.initials,
+          subtitle: _rowSubtitle(entry, tabIndex),
+          score: _rowScoreLabel(entry, tabIndex),
+          avatarUrl: entry.avatarUrl,
+          badgeText: badge.text,
+          badgeIcon: badge.icon,
+          badgeBgColor: badge.bgColor,
+          badgeTextColor: badge.textColor,
+          isCurrentUser: entry.isCurrentUser,
         ),
-        LeaderboardUserData(
-          rank: 2,
-          name: 'Maria S.',
-          score: '21',
-          avatarUrl: _mariaAvatar,
-          badgeText: 'Guard',
-          badgeIcon: Icons.star_rounded,
-          badgeBgColor: Color(0xFFEBF3FC),
-          badgeTextColor: Color(0xFF2B548F),
-        ),
-        LeaderboardUserData(
-          rank: 3,
-          name: 'Carlo R.',
-          score: '18',
-          avatarUrl: _carloAvatar,
-          badgeText: 'Scout',
-          badgeIcon: Icons.local_fire_department_rounded,
-          badgeBgColor: Color(0xFFFFF7EB),
-          badgeTextColor: Color(0xFFC27803),
-        ),
-        LeaderboardUserData(
-          rank: 4,
-          name: 'Ana P.',
-          score: '14',
-          avatarUrl: _anaAvatar,
-          badgeText: 'Watcher',
-          badgeIcon: Icons.remove_red_eye_rounded,
-          badgeBgColor: Color(0xFFE8F5E9),
-          badgeTextColor: Color(0xFF2E7D32),
-        ),
-        LeaderboardUserData(
-          rank: 5,
-          name: 'Bong L.',
-          score: '10',
-          avatarUrl: _bongAvatar,
-          badgeText: 'Guard',
-          badgeIcon: Icons.shield_outlined,
-          badgeBgColor: Color(0xFFEBF3FC),
-          badgeTextColor: Color(0xFF2B548F),
-        ),
-        LeaderboardUserData(
-          rank: 6,
-          name: 'David K.',
-          score: '8',
-          avatarUrl: _davidAvatar,
-          badgeText: 'Scout',
-          badgeIcon: Icons.local_fire_department_rounded,
-          badgeBgColor: Color(0xFFFFF7EB),
-          badgeTextColor: Color(0xFFC27803),
-        ),
-        LeaderboardUserData(
-          rank: 7,
-          name: 'Ma. Angelica May',
-          subtitle: 'You',
-          score: '5',
-          avatarUrl: _userAvatar,
-          badgeText: 'Rookie',
-          badgeIcon: Icons.lightbulb_outline_rounded,
-          badgeBgColor: Color(0xFFFFF9E6),
-          badgeTextColor: Color(0xFFB78103),
-          isCurrentUser: true,
-        ),
-        LeaderboardUserData(
-          rank: 8,
-          name: 'Rose M.',
-          score: '4',
-          avatarUrl: _roseAvatar,
-          badgeText: 'Rookie',
-          badgeIcon: Icons.lightbulb_outline_rounded,
-          badgeBgColor: Color(0xFFFFF9E6),
-          badgeTextColor: Color(0xFFB78103),
-        ),
-      ],
-    ),
-  };
+      );
+    }
+
+    return TabLeaderboardData(
+      scoreColumnHeader: scoreHeader,
+      podium: podium,
+      currentUser: currentUserRank,
+      list: list,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final currentData = _categoriesData[_selectedTabIndex] ?? _categoriesData[0]!;
+    final currentData = _buildTabLeaderboardData(_selectedTabIndex);
 
     return Scaffold(
       backgroundColor: _bgBeige,
-      body: SingleChildScrollView(
-        physics: const BouncingScrollPhysics(),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // 1. Top Navy Header Section with Podium
-            _buildNavyHeader(currentData.podium),
+      body: RefreshIndicator(
+        color: _navyHeader,
+        onRefresh: _loadLeaderboard,
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(
+            parent: BouncingScrollPhysics(),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // 1. Top Navy Header Section with Podium
+              _buildNavyHeader(currentData.podium),
 
-            // 2. Main Body Content (Rank Card, List, Points Guide)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const SizedBox(height: 16),
+              // 2. Main Body Content (Rank Card, List, Points Guide)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const SizedBox(height: 16),
 
-                  // Current User Rank Card (dynamically reflects selected tab)
-                  _buildCurrentUserRankCard(currentData.currentUser),
+                    // Current User Rank Card (dynamically reflects selected tab)
+                    _buildCurrentUserRankCard(currentData.currentUser),
 
-                  const SizedBox(height: 20),
+                    const SizedBox(height: 20),
 
-                  // Leaderboard List Table Card (dynamically reflects selected tab)
-                  _buildLeaderboardListCard(
-                    scoreHeader: currentData.scoreColumnHeader,
-                    users: currentData.list,
-                  ),
+                    if (_isLoading && _entries.isEmpty)
+                      Container(
+                        padding: const EdgeInsets.symmetric(vertical: 36),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: const Center(
+                          child: CircularProgressIndicator(color: _navyHeader),
+                        ),
+                      )
+                    else
+                      // Leaderboard List Table Card (dynamically reflects selected tab)
+                      _buildLeaderboardListCard(
+                        scoreHeader: currentData.scoreColumnHeader,
+                        users: currentData.list,
+                      ),
 
-                  const SizedBox(height: 20),
+                    const SizedBox(height: 20),
 
-                  // "How to Earn Points" Card
-                  _buildHowToEarnPointsCard(),
+                    // "How to Earn Points" Card
+                    _buildHowToEarnPointsCard(),
 
-                  const SizedBox(height: 36),
-                ],
+                    const SizedBox(height: 36),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
       bottomNavigationBar: SafeRouteBottomNav(
@@ -509,7 +433,6 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
               AppNavigation.navigateTo(context, 3, clearStack: true);
             }
           } else {
-            // Remove leaderboard and profile routes when navigating to another top-level destination
             AppNavigation.navigateTo(context, index, clearStack: true);
           }
         },
@@ -529,7 +452,7 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
           children: [
             const SizedBox(height: 8),
 
-            // App Bar Area (Back arrow, Leaderboard title, "This Week" pill)
+            // App Bar Area (Back arrow, Leaderboard title, Timeframe pill)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12.0),
               child: Row(
@@ -553,32 +476,39 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
                     ),
                   ),
                   const Spacer(),
-                  // "This Week" Pill Button
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF26498A),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          'This Week',
-                          style: TextStyle(
-                            fontFamily: 'Poppins',
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white,
+                  // Timeframe Pill Button ("All Time" / "This Week")
+                  InkWell(
+                    onTap: _toggleTimeframe,
+                    borderRadius: BorderRadius.circular(16),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF26498A),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _isWeekly ? 'This Week' : 'All Time',
+                            style: const TextStyle(
+                              fontFamily: 'Poppins',
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                            ),
                           ),
-                        ),
-                        SizedBox(width: 4),
-                        Icon(
-                          Icons.keyboard_arrow_down_rounded,
-                          color: Colors.white,
-                          size: 16,
-                        ),
-                      ],
+                          const SizedBox(width: 4),
+                          const Icon(
+                            Icons.swap_horiz_rounded,
+                            color: Colors.white,
+                            size: 15,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ],
@@ -648,6 +578,45 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
     );
   }
 
+  Widget _buildAvatarWidget({
+    required String? avatarUrl,
+    required String initials,
+    required double radius,
+  }) {
+    final hasUrl = avatarUrl != null && avatarUrl.trim().isNotEmpty;
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: const Color(0xFFEFF5FB),
+      child: hasUrl
+          ? ClipOval(
+              child: Image.network(
+                avatarUrl,
+                width: radius * 2,
+                height: radius * 2,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) => Text(
+                  initials,
+                  style: TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: radius * 0.75,
+                    fontWeight: FontWeight.w700,
+                    color: _primaryNavy,
+                  ),
+                ),
+              ),
+            )
+          : Text(
+              initials,
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: radius * 0.75,
+                fontWeight: FontWeight.w700,
+                color: _primaryNavy,
+              ),
+            ),
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // PODIUM SECTION (Ranks 2, 1, 3) - Responsive for Narrow Displays (e.g. 320px)
   // ---------------------------------------------------------------------------
@@ -657,7 +626,6 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final totalWidth = constraints.maxWidth;
-          // Responsive gap and proportional widths that guarantee 0 overflow
           final gap = totalWidth < 300 ? 6.0 : 10.0;
           final availableWidth = totalWidth - (gap * 2);
           final sideWidth = (availableWidth * 0.31).clamp(55.0, 96.0);
@@ -676,6 +644,7 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
                 child: _buildPodiumSpot(
                   rank: 2,
                   name: data.second.name,
+                  initials: data.second.initials,
                   score: data.second.score,
                   avatarUrl: data.second.avatarUrl,
                   avatarRadius: sideAvatarRadius,
@@ -695,6 +664,7 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
                 child: _buildPodiumSpot(
                   rank: 1,
                   name: data.first.name,
+                  initials: data.first.initials,
                   score: data.first.score,
                   avatarUrl: data.first.avatarUrl,
                   avatarRadius: centerAvatarRadius,
@@ -715,6 +685,7 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
                 child: _buildPodiumSpot(
                   rank: 3,
                   name: data.third.name,
+                  initials: data.third.initials,
                   score: data.third.score,
                   avatarUrl: data.third.avatarUrl,
                   avatarRadius: sideAvatarRadius,
@@ -735,8 +706,9 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
   Widget _buildPodiumSpot({
     required int rank,
     required String name,
+    required String initials,
     required String score,
-    required String avatarUrl,
+    required String? avatarUrl,
     required double avatarRadius,
     required Color borderColor,
     required double borderWidth,
@@ -748,7 +720,6 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // Crown for Rank 1
         if (hasCrown)
           const Padding(
             padding: EdgeInsets.only(bottom: 2.0),
@@ -761,7 +732,6 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
         else
           const SizedBox(height: 22),
 
-        // Avatar with Border and Rank Badge
         Stack(
           alignment: Alignment.bottomCenter,
           clipBehavior: Clip.none,
@@ -771,26 +741,12 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
                 shape: BoxShape.circle,
                 border: Border.all(color: borderColor, width: borderWidth),
               ),
-              child: CircleAvatar(
+              child: _buildAvatarWidget(
+                avatarUrl: avatarUrl,
+                initials: initials,
                 radius: avatarRadius,
-                backgroundColor: const Color(0xFFEFF5FB),
-                child: ClipOval(
-                  child: Image.network(
-                    avatarUrl,
-                    width: avatarRadius * 2,
-                    height: avatarRadius * 2,
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) => Icon(
-                      Icons.person_rounded,
-                      size: avatarRadius * 1.2,
-                      color: _primaryNavy,
-                    ),
-                  ),
-                ),
               ),
             ),
-
-            // Number Badge
             Positioned(
               bottom: -8,
               child: Container(
@@ -820,7 +776,6 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
 
         const SizedBox(height: 12),
 
-        // Name
         Text(
           name,
           maxLines: 1,
@@ -834,7 +789,6 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
           ),
         ),
 
-        // Score
         Text(
           score,
           maxLines: 1,
@@ -850,7 +804,6 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
 
         const SizedBox(height: 8),
 
-        // Pedestal Container (full width within the spot's assigned column)
         Container(
           width: double.infinity,
           height: pedestalHeight,
@@ -882,7 +835,6 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
       ),
       child: Row(
         children: [
-          // Rank Number
           Text(
             user.rank,
             style: const TextStyle(
@@ -895,34 +847,20 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
 
           const SizedBox(width: 14),
 
-          // User Avatar
           Container(
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
             ),
-            child: CircleAvatar(
+            child: _buildAvatarWidget(
+              avatarUrl: user.avatarUrl,
+              initials: user.initials,
               radius: 19,
-              backgroundColor: const Color(0xFFEFF5FB),
-              child: ClipOval(
-                child: Image.network(
-                  user.avatarUrl,
-                  width: 38,
-                  height: 38,
-                  fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) => const Icon(
-                    Icons.person_rounded,
-                    size: 24,
-                    color: _primaryNavy,
-                  ),
-                ),
-              ),
             ),
           ),
 
           const SizedBox(width: 12),
 
-          // User Info
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -957,7 +895,6 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
 
           const SizedBox(width: 8),
 
-          // Rank Badge Pill (e.g. TOP 10)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
             decoration: BoxDecoration(
@@ -1003,7 +940,12 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
         children: [
           // Header Row
           Padding(
-            padding: const EdgeInsets.only(left: 16, right: 16, top: 14, bottom: 10),
+            padding: const EdgeInsets.only(
+              left: 16,
+              right: 16,
+              top: 14,
+              bottom: 10,
+            ),
             child: Row(
               children: [
                 const SizedBox(
@@ -1047,7 +989,7 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
                   ),
                 ),
                 const SizedBox(
-                  width: 80,
+                  width: 96,
                   child: Text(
                     'BADGE',
                     textAlign: TextAlign.right,
@@ -1066,7 +1008,6 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
 
           const Divider(height: 1, thickness: 1, color: Color(0xFFF1F3F6)),
 
-          // Dynamically rendered user rows
           ...users.asMap().entries.map((entry) {
             final index = entry.key;
             final user = entry.value;
@@ -1077,7 +1018,11 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
               children: [
                 _buildLeaderboardRow(user),
                 if (!isLast)
-                  const Divider(height: 1, thickness: 1, color: Color(0xFFF1F3F6)),
+                  const Divider(
+                    height: 1,
+                    thickness: 1,
+                    color: Color(0xFFF1F3F6),
+                  ),
               ],
             );
           }),
@@ -1092,7 +1037,6 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
       child: Row(
         children: [
-          // Rank column (Medals for 1-3, numbers for others)
           SizedBox(
             width: 38,
             child: _buildRankBadge(user.rank),
@@ -1100,26 +1044,13 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
 
           const SizedBox(width: 8),
 
-          // User Avatar & Name
           Expanded(
             child: Row(
               children: [
-                CircleAvatar(
+                _buildAvatarWidget(
+                  avatarUrl: user.avatarUrl,
+                  initials: user.initials,
                   radius: 16,
-                  backgroundColor: const Color(0xFFEFF5FB),
-                  child: ClipOval(
-                    child: Image.network(
-                      user.avatarUrl,
-                      width: 32,
-                      height: 32,
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) => const Icon(
-                        Icons.person_rounded,
-                        size: 20,
-                        color: _primaryNavy,
-                      ),
-                    ),
-                  ),
                 ),
 
                 const SizedBox(width: 10),
@@ -1136,7 +1067,9 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
                         style: TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 12.5,
-                          fontWeight: user.isCurrentUser ? FontWeight.w700 : FontWeight.w600,
+                          fontWeight: user.isCurrentUser
+                              ? FontWeight.w700
+                              : FontWeight.w600,
                           color: _primaryNavy,
                         ),
                       ),
@@ -1144,11 +1077,17 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
                         const SizedBox(height: 1),
                         Text(
                           user.subtitle!,
-                          style: const TextStyle(
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: 10,
-                            fontWeight: FontWeight.w600,
-                            color: Color(0xFF1E6FD9),
+                            fontWeight: user.isCurrentUser
+                                ? FontWeight.w600
+                                : FontWeight.w500,
+                            color: user.isCurrentUser
+                                ? const Color(0xFF1E6FD9)
+                                : _secondaryGrey,
                           ),
                         ),
                       ],
@@ -1159,7 +1098,6 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
             ),
           ),
 
-          // Score / Points
           SizedBox(
             width: 60,
             child: Text(
@@ -1174,9 +1112,8 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
             ),
           ),
 
-          // Badge Pill
           SizedBox(
-            width: 80,
+            width: 96,
             child: Align(
               alignment: Alignment.centerRight,
               child: Container(
@@ -1194,13 +1131,17 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
                       color: user.badgeTextColor,
                     ),
                     const SizedBox(width: 3),
-                    Text(
-                      user.badgeText,
-                      style: TextStyle(
-                        fontFamily: 'Poppins',
-                        fontSize: 9.5,
-                        fontWeight: FontWeight.w700,
-                        color: user.badgeTextColor,
+                    Flexible(
+                      child: Text(
+                        user.badgeText,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w700,
+                          color: user.badgeTextColor,
+                        ),
                       ),
                     ),
                   ],
@@ -1278,31 +1219,42 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
           const SizedBox(height: 14),
 
           _buildPointGuideItem(
-            icon: Icons.warning_amber_rounded,
+            icon: Icons.info_outline_rounded,
             iconColor: const Color(0xFF2E7D32),
             iconBgColor: const Color(0xFFE8F5E9),
-            title: 'Submit a hazard report',
-            pointsText: '+10 pts per approved report',
+            title: 'Low severity hazard report',
+            pointsText: '+1 pt · Counts as 1 report',
           ),
 
           const SizedBox(height: 12),
 
           _buildPointGuideItem(
-            icon: Icons.map_outlined,
-            iconColor: const Color(0xFF1E6FD9),
-            iconBgColor: const Color(0xFFEBF3FC),
-            title: 'Complete safe routes',
-            pointsText: '+5 pts per completed route',
-          ),
-
-          const SizedBox(height: 12),
-
-          _buildPointGuideItem(
-            icon: Icons.star_rounded,
+            icon: Icons.warning_amber_rounded,
             iconColor: const Color(0xFFF57F17),
             iconBgColor: const Color(0xFFFFF8E1),
-            title: 'Daily login streak',
-            pointsText: '+2 pts per day',
+            title: 'Medium severity hazard report',
+            pointsText: '+2 pts · Counts as 1 report',
+          ),
+
+          const SizedBox(height: 12),
+
+          _buildPointGuideItem(
+            icon: Icons.report_problem_rounded,
+            iconColor: const Color(0xFFC62828),
+            iconBgColor: const Color(0xFFFFEBEE),
+            title: 'High severity hazard report',
+            pointsText: '+3 pts · Counts as 1 report',
+          ),
+
+          const SizedBox(height: 12),
+
+          _buildPointGuideItem(
+            icon: Icons.trending_up_rounded,
+            iconColor: const Color(0xFF1E6FD9),
+            iconBgColor: const Color(0xFFEBF3FC),
+            title: 'Contributor Level Progression',
+            pointsText:
+                'Level 1 requires 20 pts · +1/4 more pts each level up (Lv 2: 25 pts)',
           ),
         ],
       ),

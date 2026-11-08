@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -6,12 +7,17 @@ import '../Authentication/auth_error_handler.dart';
 import '../Authentication/auth_service.dart';
 import '../Authentication/login_page.dart';
 import '../navigation/app_navigation.dart';
+import '../services/hazard_report_service.dart';
+import '../services/leaderboard_service.dart';
 import '../services/profile_service.dart';
+import '../services/safe_route_service.dart';
 import '../services/security_service.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
+import 'my_reports_screen.dart';
 import 'personal_information_screen.dart';
 import 'saved_locations_screen.dart';
+import 'saved_routes_screen.dart';
 import 'security_screen.dart';
 import 'user_leaderboard_screen.dart';
 
@@ -30,6 +36,9 @@ class UserProfileScreen extends StatefulWidget {
   final SecurityService? securityService;
   final AuthService? authService;
   final ImagePicker? imagePicker;
+  final LeaderboardService? leaderboardService;
+  final HazardReportService? hazardReportService;
+  final SafeRouteService? safeRouteService;
 
   const UserProfileScreen({
     super.key,
@@ -37,6 +46,9 @@ class UserProfileScreen extends StatefulWidget {
     this.securityService,
     this.authService,
     this.imagePicker,
+    this.leaderboardService,
+    this.hazardReportService,
+    this.safeRouteService,
   });
 
   @override
@@ -49,8 +61,18 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   late final ProfileService _profileService;
   late final SecurityService _securityService;
   late final ImagePicker _picker;
+  late final HazardReportService _hazardReportService;
+  late final SafeRouteService _safeRouteService;
+  late final LeaderboardService _leaderboardService;
+  StreamSubscription<HazardReportData>? _reportSubscription;
 
   UserProfile? _profile;
+  UserGamificationStats _gamificationStats = UserGamificationStats.fromCounts(
+    reportCount: 0,
+    totalPoints: 0,
+    savedRoutesCount: 0,
+    daysActive: 1,
+  );
   Uint8List? _pendingAvatarBytes;
   bool _isLoadingProfile = true;
   bool _isUploadingAvatar = false;
@@ -63,7 +85,36 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     _profileService = widget.profileService ?? ProfileService();
     _securityService = widget.securityService ?? SecurityService();
     _picker = widget.imagePicker ?? ImagePicker();
+    _hazardReportService = widget.hazardReportService ?? HazardReportService();
+    _safeRouteService = widget.safeRouteService ??
+        SafeRouteService(hazardReportService: _hazardReportService);
+    _leaderboardService = widget.leaderboardService ??
+        LeaderboardService(
+          hazardReportService: _hazardReportService,
+          safeRouteService: _safeRouteService,
+        );
     _loadProfile();
+    _loadGamificationStats();
+    _reportSubscription = HazardReportService.reportStream.listen((_) {
+      _loadGamificationStats();
+    });
+  }
+
+  @override
+  void dispose() {
+    _reportSubscription?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadGamificationStats() async {
+    try {
+      final stats =
+          await _leaderboardService.fetchCurrentUserGamificationStats();
+      if (!mounted) return;
+      setState(() {
+        _gamificationStats = stats;
+      });
+    } catch (_) {}
   }
 
   Future<void> _loadProfile({bool silent = false}) async {
@@ -117,6 +168,33 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _openMyReports() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (context) => MyReportsScreen(
+          hazardReportService: _hazardReportService,
+        ),
+      ),
+    );
+    if (mounted) {
+      await _loadGamificationStats();
+    }
+  }
+
+  Future<void> _openSavedRoutes() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (context) => SavedRoutesScreen(
+          safeRouteService: _safeRouteService,
+          hazardReportService: _hazardReportService,
+        ),
+      ),
+    );
+    if (mounted) {
+      await _loadGamificationStats();
+    }
   }
 
   String _friendlyError(Object error) {
@@ -436,21 +514,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                               title: 'Security',
                               subtitle:
                                   'Change password and manage account access',
-                              onTap: _openSecurity,
-                            ),
-                            _buildSettingsTile(
-                              icon: Icons.notifications_none_rounded,
-                              title: 'Notification Settings',
-                              subtitle: 'Choose what updates you want to receive',
-                              onTap: () {},
-                            ),
-                            _buildSettingsTile(
-                              icon: Icons.location_on_outlined,
-                              title: 'Location Preferences',
-                              subtitle:
-                                  'Set your default location and travel options',
                               showDivider: false,
-                              onTap: () {},
+                              onTap: _openSecurity,
                             ),
                           ],
                         ),
@@ -465,7 +530,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                               icon: Icons.assignment_outlined,
                               title: 'My Reports',
                               subtitle: 'View and manage your submitted reports',
-                              onTap: () {},
+                              onTap: _openMyReports,
                             ),
                             _buildSettingsTile(
                               icon: Icons.favorite_border_rounded,
@@ -485,7 +550,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                               title: 'Saved Routes',
                               subtitle: 'View and edit your saved routes',
                               showDivider: false,
-                              onTap: () {},
+                              onTap: _openSavedRoutes,
                             ),
                           ],
                         ),
@@ -766,10 +831,26 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       ),
       child: Row(
         children: [
-          _buildStatItem('12', 'Reports', "You've shared"),
-          _buildStatItem('8', 'Helpful Votes', 'From the community'),
-          _buildStatItem('5', 'Safe Routes', 'Saved'),
-          _buildStatItem('28', 'Days Active', 'Keep it up!'),
+          _buildStatItem(
+            '${_gamificationStats.reportCount}',
+            'Reports',
+            "You've shared",
+          ),
+          _buildStatItem(
+            '${_gamificationStats.totalPoints}',
+            'Safety Points',
+            'From reports',
+          ),
+          _buildStatItem(
+            '${_gamificationStats.savedRoutesCount}',
+            'Safe Routes',
+            'Saved',
+          ),
+          _buildStatItem(
+            '${_gamificationStats.daysActive}',
+            'Days Active',
+            'Keep it up!',
+          ),
         ],
       ),
     );
@@ -833,13 +914,16 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                 await Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (context) => const UserLeaderboardScreen(),
+                    builder: (context) => UserLeaderboardScreen(
+                      leaderboardService: _leaderboardService,
+                    ),
                   ),
                 );
                 if (mounted) {
                   setState(() {
                     _isNavigatingToLeaderboard = false;
                   });
+                  await _loadGamificationStats();
                 }
               },
         style: ElevatedButton.styleFrom(
@@ -865,6 +949,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
 
   /// Contributor Badge Card
   Widget _buildContributorBadgeCard() {
+    final levelProgress = _gamificationStats.levelProgress;
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -891,11 +977,11 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Overline row: COMMUNITY MEMBER & Level 2
-                const Row(
+                // Overline row: COMMUNITY MEMBER & Level X
+                Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
+                    const Text(
                       'COMMUNITY MEMBER',
                       style: TextStyle(
                         fontFamily: 'Poppins',
@@ -906,8 +992,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                       ),
                     ),
                     Text(
-                      'Level 2',
-                      style: TextStyle(
+                      'Level ${levelProgress.level}',
+                      style: const TextStyle(
                         fontFamily: 'Poppins',
                         fontSize: 10.5,
                         fontWeight: FontWeight.w700,
@@ -920,9 +1006,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                 const SizedBox(height: 3),
 
                 // Title
-                const Text(
-                  'Safety Contributor',
-                  style: TextStyle(
+                Text(
+                  'Safety Contributor · ${levelProgress.badgeLabel}',
+                  style: const TextStyle(
                     fontFamily: 'Poppins',
                     fontSize: 15,
                     fontWeight: FontWeight.w700,
@@ -933,9 +1019,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                 const SizedBox(height: 2),
 
                 // Subtitle
-                const Text(
-                  "You're helping make your community safer!",
-                  style: TextStyle(
+                Text(
+                  '${levelProgress.pointsRemainingToNextLevel} pts needed for Level ${levelProgress.level + 1} (${_gamificationStats.totalPoints} total pts)',
+                  style: const TextStyle(
                     fontFamily: 'Poppins',
                     fontSize: 10.5,
                     fontWeight: FontWeight.w400,
@@ -951,19 +1037,20 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                     Expanded(
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(4),
-                        child: const LinearProgressIndicator(
-                          value: 120 / 200,
-                          backgroundColor: Color(0xFFD6E4F0),
-                          valueColor:
-                              AlwaysStoppedAnimation<Color>(_primaryNavy),
+                        child: LinearProgressIndicator(
+                          value: levelProgress.progressFraction,
+                          backgroundColor: const Color(0xFFD6E4F0),
+                          valueColor: const AlwaysStoppedAnimation<Color>(
+                            _primaryNavy,
+                          ),
                           minHeight: 6,
                         ),
                       ),
                     ),
                     const SizedBox(width: 8),
-                    const Text(
-                      '120 / 200 pts',
-                      style: TextStyle(
+                    Text(
+                      '${levelProgress.currentLevelPoints} / ${levelProgress.nextLevelRequiredPoints} pts',
+                      style: const TextStyle(
                         fontFamily: 'Poppins',
                         fontSize: 10,
                         fontWeight: FontWeight.w500,
