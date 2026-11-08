@@ -1273,8 +1273,8 @@ class _MapScreenState extends State<MapScreen> {
 
     final width = (bestDistance / metersPerPixel).clamp(24.0, 96.0);
     final label = bestDistance >= 1000
-        ? '${(bestDistance / 1000).toStringAsFixed(bestDistance % 1000 == 0 ? 0 : 1)} km'
-        : '${bestDistance.toInt()} m';
+        ? '${(bestDistance / 1000).toStringAsFixed(0)} km'
+        : '${bestDistance.toStringAsFixed(0)} m';
 
     return (width: width, label: label);
   }
