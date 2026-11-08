@@ -5,6 +5,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:dreamteam_sd3/services/gemini_hazard_service.dart';
 import 'package:dreamteam_sd3/services/hazard_report_service.dart';
 import 'package:dreamteam_sd3/services/location_service.dart';
+import 'package:dreamteam_sd3/widgets/camera_capture_screen.dart';
 import 'package:dreamteam_sd3/widgets/interactive_location_picker.dart';
 
 export 'package:dreamteam_sd3/services/hazard_report_service.dart'
@@ -22,6 +23,7 @@ void showReportHazardModal(
   BuildContext context, {
   LatLng? initialLocation,
   void Function(HazardReportData report)? onReportSubmitted,
+  Future<XFile?> Function(BuildContext context)? cameraLauncher,
 }) {
   showModalBottomSheet(
     context: context,
@@ -60,6 +62,7 @@ void showReportHazardModal(
                   onClose: () => Navigator.pop(modalContext),
                   initialLocation: initialLocation,
                   onReportSubmitted: onReportSubmitted,
+                  cameraLauncher: cameraLauncher,
                 ),
               ],
             ),
@@ -76,6 +79,7 @@ void showReportHazardDialog(
   BuildContext context, {
   LatLng? initialLocation,
   void Function(HazardReportData report)? onReportSubmitted,
+  Future<XFile?> Function(BuildContext context)? cameraLauncher,
 }) {
   showDialog(
     context: context,
@@ -100,6 +104,7 @@ void showReportHazardDialog(
               onClose: () => Navigator.pop(dialogContext),
               initialLocation: initialLocation,
               onReportSubmitted: onReportSubmitted,
+              cameraLauncher: cameraLauncher,
             ),
           ),
         ),
@@ -118,6 +123,7 @@ class ReportHazardContentWidget extends StatefulWidget {
   final HazardReportService? hazardReportService;
   final ImagePicker? imagePicker;
   final Future<LatLng> Function()? currentLocationResolver;
+  final Future<XFile?> Function(BuildContext context)? cameraLauncher;
 
   const ReportHazardContentWidget({
     super.key,
@@ -128,6 +134,7 @@ class ReportHazardContentWidget extends StatefulWidget {
     this.hazardReportService,
     this.imagePicker,
     this.currentLocationResolver,
+    this.cameraLauncher,
   });
 
   @override
@@ -149,6 +156,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
   String? _imageMimeType;
   bool _isAnalyzing = false;
   bool _isSubmitting = false;
+  int _analysisRequestId = 0;
   String? _errorMessage;
   GeminiHazardResult? _aiResult;
 
@@ -326,7 +334,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
                   ),
                   onTap: () {
                     Navigator.pop(sheetContext);
-                    _pickAndProcessImage(ImageSource.camera);
+                    _takePhotoWithCamera();
                   },
                 ),
                 ListTile(
@@ -364,6 +372,51 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
     );
   }
 
+  Future<void> _takePhotoWithCamera() async {
+    if (_isAnalyzing || _isSubmitting) return;
+    try {
+      XFile? capturedFile;
+
+      if (widget.cameraLauncher != null) {
+        capturedFile = await widget.cameraLauncher!(context);
+      } else if (widget.imagePicker != null) {
+        capturedFile = await _picker.pickImage(
+          source: ImageSource.camera,
+          maxWidth: 1600,
+          maxHeight: 1600,
+          imageQuality: 85,
+        );
+      } else {
+        final result = await Navigator.of(context).push<CameraCaptureResult>(
+          MaterialPageRoute(
+            builder: (ctx) => const CameraCaptureScreen(
+              maxWidth: 1600,
+              maxHeight: 1600,
+            ),
+            fullscreenDialog: true,
+          ),
+        );
+
+        if (!mounted || result == null) return;
+
+        if (result.openGallery) {
+          await _pickAndProcessImage(ImageSource.gallery);
+          return;
+        }
+
+        capturedFile = result.file;
+      }
+
+      if (capturedFile != null && mounted) {
+        await _processImageFile(capturedFile);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      _showErrorDialog(
+          'Failed to take photo: ${e.toString().replaceAll('Exception: ', '')}');
+    }
+  }
+
   Future<void> _pickAndProcessImage(ImageSource source) async {
     if (_isAnalyzing || _isSubmitting) return;
     try {
@@ -375,22 +428,58 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
       );
 
       if (file == null || !mounted) return;
-
-      final bytes = await file.readAsBytes();
+      await _processImageFile(file);
+    } catch (e) {
       if (!mounted) return;
+      setState(() {
+        _isAnalyzing = false;
+        _selectedImageBytes = null;
+        _imageFileName = null;
+        _imageMimeType = null;
+        _aiResult = null;
+        _titleController.clear();
+        _descriptionController.clear();
+        _errorMessage =
+            'Failed to select image: ${e.toString().replaceAll('Exception: ', '')}';
+      });
+      _showErrorDialog(_errorMessage!);
+    }
+  }
+
+  Future<void> _processImageFile(XFile file) async {
+    if (!mounted || _isAnalyzing || _isSubmitting) return;
+
+    final int requestId = ++_analysisRequestId;
+    setState(() {
+      _isAnalyzing = true;
+      _errorMessage = null;
+      _aiResult = null;
+    });
+
+    try {
+      final normalizedFile = await CameraCaptureScreen.normalizeImageFile(
+        file,
+        maxWidth: 1600,
+        maxHeight: 1600,
+      );
+      if (!mounted || requestId != _analysisRequestId) return;
+
+      final bytes = await normalizedFile.readAsBytes();
+      if (!mounted || requestId != _analysisRequestId) return;
+
+      final effectiveName = normalizedFile.name.trim().isNotEmpty
+          ? normalizedFile.name.trim()
+          : (file.name.trim().isNotEmpty ? file.name.trim() : null);
 
       final mimeType = _detectMimeType(
         bytes: bytes,
-        fileName: file.name,
-        rawMimeType: file.mimeType,
+        fileName: effectiveName,
+        rawMimeType: normalizedFile.mimeType ?? file.mimeType,
       );
 
       setState(() {
-        _isAnalyzing = true;
-        _errorMessage = null;
-        _aiResult = null;
         _selectedImageBytes = bytes;
-        _imageFileName = file.name.trim().isNotEmpty ? file.name.trim() : null;
+        _imageFileName = effectiveName;
         _imageMimeType = mimeType;
       });
 
@@ -400,7 +489,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
         mimeType: mimeType,
       );
 
-      if (!mounted) return;
+      if (!mounted || requestId != _analysisRequestId) return;
 
       if (!result.isHazard) {
         // User uploaded something other than a hazard -> report error
@@ -427,7 +516,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
         });
       }
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || requestId != _analysisRequestId) return;
       setState(() {
         _isAnalyzing = false;
         _selectedImageBytes = null;
@@ -436,7 +525,8 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
         _aiResult = null;
         _titleController.clear();
         _descriptionController.clear();
-        _errorMessage = 'Failed to analyze image: ${e.toString().replaceAll('Exception: ', '')}';
+        _errorMessage =
+            'Failed to analyze image: ${e.toString().replaceAll('Exception: ', '')}';
       });
       _showErrorDialog(_errorMessage!);
     }

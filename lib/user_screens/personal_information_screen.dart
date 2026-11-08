@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../Authentication/auth_error_handler.dart';
 import '../services/profile_service.dart';
+import '../widgets/camera_capture_screen.dart';
 import '../widgets/interactive_location_picker.dart';
 
 const Color _primaryNavy = Color(0xFF233253);
@@ -327,15 +328,48 @@ class _PersonalInformationScreenState extends State<PersonalInformationScreen> {
   Future<void> _pickAndUploadPhoto(ImageSource source) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final picked = await _picker.pickImage(
-        source: source,
-        maxWidth: 1024,
-        maxHeight: 1024,
-        imageQuality: 85,
-      );
+      XFile? picked;
+      if (source == ImageSource.camera && widget.imagePicker == null) {
+        final result = await Navigator.of(context).push<CameraCaptureResult>(
+          MaterialPageRoute(
+            builder: (ctx) => const CameraCaptureScreen(
+              maxWidth: 1024,
+              maxHeight: 1024,
+              maxBytes: ProfileService.maxAvatarBytes,
+            ),
+            fullscreenDialog: true,
+          ),
+        );
+        if (!mounted || result == null) return;
+        if (result.openGallery) {
+          picked = await _picker.pickImage(
+            source: ImageSource.gallery,
+            maxWidth: 1024,
+            maxHeight: 1024,
+            imageQuality: 85,
+          );
+        } else {
+          picked = result.file;
+        }
+      } else {
+        picked = await _picker.pickImage(
+          source: source,
+          maxWidth: 1024,
+          maxHeight: 1024,
+          imageQuality: 85,
+        );
+      }
       if (picked == null || !mounted) return;
 
-      final bytes = await picked.readAsBytes();
+      final normalizedFile = await CameraCaptureScreen.normalizeImageFile(
+        picked,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        maxBytes: ProfileService.maxAvatarBytes,
+      );
+      if (!mounted) return;
+
+      final bytes = await normalizedFile.readAsBytes();
       if (!mounted) return;
 
       setState(() {
@@ -346,8 +380,10 @@ class _PersonalInformationScreenState extends State<PersonalInformationScreen> {
 
       final updatedProfile = await _service.uploadAvatar(
         bytes: bytes,
-        fileName: picked.name.isNotEmpty ? picked.name : picked.path,
-        mimeType: picked.mimeType,
+        fileName: normalizedFile.name.isNotEmpty
+            ? normalizedFile.name
+            : (picked.name.isNotEmpty ? picked.name : picked.path),
+        mimeType: normalizedFile.mimeType ?? picked.mimeType,
       );
 
       if (!mounted) return;
