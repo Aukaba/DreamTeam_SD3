@@ -746,12 +746,8 @@ class SafeRouteService {
   // ---------------------------------------------------------------------------
 
   static String formatDistance(double meters) {
-    if (!meters.isFinite || meters <= 0) return '0 m';
     if (meters < 1000) {
-      if (meters >= 100) {
-        return '${((meters / 10).round() * 10)} m';
-      }
-      return '${meters.round()} m';
+      return '${meters.round().clamp(1, 999)} m';
     }
     final km = meters / 1000.0;
     return '${km.toStringAsFixed(km >= 10 ? 0 : 1)} km';

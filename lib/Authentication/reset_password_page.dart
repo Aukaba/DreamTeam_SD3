@@ -6,6 +6,7 @@ import 'login_page.dart';
 import 'auth_service.dart';
 import 'auth_error_handler.dart';
 import '../services/security_service.dart';
+import '../user_screens/help_support_screen.dart';
 
 class ResetPasswordPage extends StatefulWidget {
   const ResetPasswordPage({super.key});
@@ -232,12 +233,28 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                     ),
                     const Spacer(),
                     // Need Help
-                    Text(
-                      'Need Help?',
-                      style: GoogleFonts.inter(
-                        color: const Color(0xFF263354),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w400,
+                    InkWell(
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const HelpSupportScreen(),
+                          ),
+                        );
+                      },
+                      borderRadius: BorderRadius.circular(8),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 4,
+                        ),
+                        child: Text(
+                          'Need Help?',
+                          style: GoogleFonts.inter(
+                            color: const Color(0xFF263354),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
                       ),
                     ),
                   ],
