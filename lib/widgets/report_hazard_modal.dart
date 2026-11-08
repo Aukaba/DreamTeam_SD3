@@ -156,6 +156,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
   String? _imageMimeType;
   bool _isAnalyzing = false;
   bool _isSubmitting = false;
+  int _analysisRequestId = 0;
   String? _errorMessage;
   GeminiHazardResult? _aiResult;
 
@@ -378,10 +379,8 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
 
       if (widget.cameraLauncher != null) {
         capturedFile = await widget.cameraLauncher!(context);
-      } else if (widget.imagePicker != null &&
-          widget.imagePicker is! ImagePicker) {
-        // Fallback for tests that inject a FakeImagePicker
-        capturedFile = await widget.imagePicker!.pickImage(
+      } else if (widget.imagePicker != null) {
+        capturedFile = await _picker.pickImage(
           source: ImageSource.camera,
           maxWidth: 1600,
           maxHeight: 1600,
@@ -390,7 +389,10 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
       } else {
         final result = await Navigator.of(context).push<CameraCaptureResult>(
           MaterialPageRoute(
-            builder: (ctx) => const CameraCaptureScreen(),
+            builder: (ctx) => const CameraCaptureScreen(
+              maxWidth: 1600,
+              maxHeight: 1600,
+            ),
             fullscreenDialog: true,
           ),
         );
@@ -445,23 +447,39 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
   }
 
   Future<void> _processImageFile(XFile file) async {
-    if (!mounted) return;
+    if (!mounted || _isAnalyzing || _isSubmitting) return;
+
+    final int requestId = ++_analysisRequestId;
+    setState(() {
+      _isAnalyzing = true;
+      _errorMessage = null;
+      _aiResult = null;
+    });
+
     try {
-      final bytes = await file.readAsBytes();
-      if (!mounted) return;
+      final normalizedFile = await CameraCaptureScreen.normalizeImageFile(
+        file,
+        maxWidth: 1600,
+        maxHeight: 1600,
+      );
+      if (!mounted || requestId != _analysisRequestId) return;
+
+      final bytes = await normalizedFile.readAsBytes();
+      if (!mounted || requestId != _analysisRequestId) return;
+
+      final effectiveName = normalizedFile.name.trim().isNotEmpty
+          ? normalizedFile.name.trim()
+          : (file.name.trim().isNotEmpty ? file.name.trim() : null);
 
       final mimeType = _detectMimeType(
         bytes: bytes,
-        fileName: file.name,
-        rawMimeType: file.mimeType,
+        fileName: effectiveName,
+        rawMimeType: normalizedFile.mimeType ?? file.mimeType,
       );
 
       setState(() {
-        _isAnalyzing = true;
-        _errorMessage = null;
-        _aiResult = null;
         _selectedImageBytes = bytes;
-        _imageFileName = file.name.trim().isNotEmpty ? file.name.trim() : null;
+        _imageFileName = effectiveName;
         _imageMimeType = mimeType;
       });
 
@@ -471,7 +489,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
         mimeType: mimeType,
       );
 
-      if (!mounted) return;
+      if (!mounted || requestId != _analysisRequestId) return;
 
       if (!result.isHazard) {
         // User uploaded something other than a hazard -> report error
@@ -498,7 +516,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
         });
       }
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || requestId != _analysisRequestId) return;
       setState(() {
         _isAnalyzing = false;
         _selectedImageBytes = null;

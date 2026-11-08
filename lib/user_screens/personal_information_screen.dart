@@ -329,11 +329,14 @@ class _PersonalInformationScreenState extends State<PersonalInformationScreen> {
     final messenger = ScaffoldMessenger.of(context);
     try {
       XFile? picked;
-      if (source == ImageSource.camera &&
-          (widget.imagePicker == null || widget.imagePicker is! ImagePicker)) {
+      if (source == ImageSource.camera && widget.imagePicker == null) {
         final result = await Navigator.of(context).push<CameraCaptureResult>(
           MaterialPageRoute(
-            builder: (ctx) => const CameraCaptureScreen(),
+            builder: (ctx) => const CameraCaptureScreen(
+              maxWidth: 1024,
+              maxHeight: 1024,
+              maxBytes: ProfileService.maxAvatarBytes,
+            ),
             fullscreenDialog: true,
           ),
         );
@@ -358,7 +361,15 @@ class _PersonalInformationScreenState extends State<PersonalInformationScreen> {
       }
       if (picked == null || !mounted) return;
 
-      final bytes = await picked.readAsBytes();
+      final normalizedFile = await CameraCaptureScreen.normalizeImageFile(
+        picked,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        maxBytes: ProfileService.maxAvatarBytes,
+      );
+      if (!mounted) return;
+
+      final bytes = await normalizedFile.readAsBytes();
       if (!mounted) return;
 
       setState(() {
@@ -369,8 +380,10 @@ class _PersonalInformationScreenState extends State<PersonalInformationScreen> {
 
       final updatedProfile = await _service.uploadAvatar(
         bytes: bytes,
-        fileName: picked.name.isNotEmpty ? picked.name : picked.path,
-        mimeType: picked.mimeType,
+        fileName: normalizedFile.name.isNotEmpty
+            ? normalizedFile.name
+            : (picked.name.isNotEmpty ? picked.name : picked.path),
+        mimeType: normalizedFile.mimeType ?? picked.mimeType,
       );
 
       if (!mounted) return;
