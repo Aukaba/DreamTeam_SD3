@@ -9,6 +9,7 @@ import 'location_service.dart';
 /// Data model representing a submitted or persisted hazard report.
 class HazardReportData {
   final String? reportId;
+  final String? userId;
   final String category;
   final String securityLevel;
   final String title;
@@ -19,10 +20,12 @@ class HazardReportData {
   final String? imageUrl;
   final int confidence;
   final String status;
+  final int pointsAwarded;
   final DateTime timestamp;
 
   const HazardReportData({
     this.reportId,
+    this.userId,
     required this.category,
     required this.securityLevel,
     required this.title,
@@ -33,8 +36,12 @@ class HazardReportData {
     this.imageUrl,
     this.confidence = 98,
     this.status = 'active',
+    int? pointsAwarded,
     required this.timestamp,
-  });
+  }) : pointsAwarded = pointsAwarded ??
+            (securityLevel == 'High'
+                ? 3
+                : (securityLevel == 'Medium' ? 2 : 1));
 
   static double? _parseCoordinate(dynamic value) {
     if (value is num) {
@@ -88,13 +95,21 @@ class HazardReportData {
 
     final rawId =
         row['reportID']?.toString() ?? row['report_id']?.toString();
+    final rawUserId = row['user_id']?.toString().trim();
 
     final rawStatus = row['status']?.toString().trim().toLowerCase() ?? '';
     final status =
         (rawStatus == 'resolved' || rawStatus == 'archived') ? rawStatus : 'active';
 
+    final rawPoints = row['points_awarded'];
+    final int pointsAwarded = rawPoints is num
+        ? rawPoints.round()
+        : (int.tryParse(rawPoints?.toString() ?? '') ??
+            HazardReportService.calculateSeverityPoints(normalizedSecurity));
+
     return HazardReportData(
       reportId: (rawId != null && rawId.trim().isNotEmpty) ? rawId.trim() : null,
+      userId: (rawUserId != null && rawUserId.isNotEmpty) ? rawUserId : null,
       category: normalizedCategory,
       securityLevel: normalizedSecurity,
       title: title,
@@ -104,12 +119,14 @@ class HazardReportData {
       imageUrl: row['image_url']?.toString(),
       confidence: confidence,
       status: status,
+      pointsAwarded: pointsAwarded,
       timestamp: timestamp,
     );
   }
 
   HazardReportData copyWith({
     String? reportId,
+    String? userId,
     String? category,
     String? securityLevel,
     String? title,
@@ -120,12 +137,15 @@ class HazardReportData {
     String? imageUrl,
     int? confidence,
     String? status,
+    int? pointsAwarded,
     DateTime? timestamp,
   }) {
+    final nextSecurity = securityLevel ?? this.securityLevel;
     return HazardReportData(
       reportId: reportId ?? this.reportId,
+      userId: userId ?? this.userId,
       category: category ?? this.category,
-      securityLevel: securityLevel ?? this.securityLevel,
+      securityLevel: nextSecurity,
       title: title ?? this.title,
       description: description ?? this.description,
       address: address ?? this.address,
@@ -134,6 +154,10 @@ class HazardReportData {
       imageUrl: imageUrl ?? this.imageUrl,
       confidence: confidence ?? this.confidence,
       status: status ?? this.status,
+      pointsAwarded: pointsAwarded ??
+          (securityLevel != null
+              ? HazardReportService.calculateSeverityPoints(nextSecurity)
+              : this.pointsAwarded),
       timestamp: timestamp ?? this.timestamp,
     );
   }
@@ -208,6 +232,23 @@ class HazardReportService {
   static String cleanCategory(String category) {
     final stripped = category.replaceAll(RegExp(r'^[^\w\s]+\s*'), '').trim();
     return stripped.isNotEmpty ? stripped : category.trim();
+  }
+
+  /// Calculates points awarded for a report based on its severity level:
+  /// - Low -> 1 pt
+  /// - Medium -> 2 pts
+  /// - High (or Critical) -> 3 pts
+  static int calculateSeverityPoints(String? severityLevel) {
+    final norm = (severityLevel ?? '').trim().toLowerCase();
+    if (norm.contains('high') ||
+        norm.contains('critical') ||
+        norm.contains('severe')) {
+      return 3;
+    }
+    if (norm.contains('med') || norm.contains('mod')) {
+      return 2;
+    }
+    return 1;
   }
 
   /// Formats a human-readable relative timestamp (e.g. "Just now", "5m ago", "2h ago").
@@ -449,5 +490,82 @@ class HazardReportService {
       }
     }
     return allActive.take(limit).toList();
+  }
+
+  /// Fetches all hazard reports submitted by [userId] (or the current authenticated user)
+  /// from `public.ReportTable`, ordered newest first.
+  Future<List<HazardReportData>> fetchUserReports({
+    String? userId,
+    int limit = 100,
+  }) async {
+    final client = _tryGetClient();
+    final targetUserId = userId ?? client?.auth.currentUser?.id;
+
+    final mergedById = <String, HazardReportData>{};
+    final unkeyed = <HazardReportData>[];
+
+    void addReport(HazardReportData report) {
+      final id = report.reportId;
+      if (id != null && id.isNotEmpty) {
+        mergedById.putIfAbsent(id, () => report);
+      } else {
+        unkeyed.add(report);
+      }
+    }
+
+    for (final sessionReport in _sessionReports) {
+      if (targetUserId == null ||
+          sessionReport.userId == null ||
+          sessionReport.userId == targetUserId) {
+        addReport(sessionReport);
+      }
+    }
+
+    if (client != null && targetUserId != null && targetUserId.isNotEmpty) {
+      try {
+        final rawRows = await client
+            .from('ReportTable')
+            .select()
+            .eq('user_id', targetUserId)
+            .order('created_at', ascending: false)
+            .limit(limit);
+
+        for (final dynamic item in (rawRows as List<dynamic>)) {
+          if (item is Map<String, dynamic>) {
+            addReport(HazardReportData.fromReportRow(item));
+          }
+        }
+      } catch (e) {
+        debugPrint('Warning: Failed to fetch user reports from ReportTable: $e');
+      }
+    }
+
+    final combined = <HazardReportData>[
+      ...mergedById.values,
+      ...unkeyed,
+    ];
+    combined.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    if (combined.length > limit) {
+      return combined.sublist(0, limit);
+    }
+    return combined;
+  }
+
+  /// Deletes a user's own submitted report from `public.ReportTable` and local session cache.
+  Future<void> deleteUserReport(String reportId) async {
+    final trimmed = reportId.trim();
+    if (trimmed.isEmpty) return;
+
+    _sessionReports.removeWhere((r) => r.reportId == trimmed);
+
+    final client = _tryGetClient();
+    final currentUserId = client?.auth.currentUser?.id;
+    if (client != null && currentUserId != null) {
+      await client
+          .from('ReportTable')
+          .delete()
+          .eq('reportID', trimmed)
+          .eq('user_id', currentUserId);
+    }
   }
 }
