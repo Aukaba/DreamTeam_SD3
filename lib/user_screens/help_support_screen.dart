@@ -96,16 +96,28 @@ class HelpSupportScreen extends StatelessWidget {
     final messenger = ScaffoldMessenger.of(context);
     try {
       await Clipboard.setData(ClipboardData(text: text));
-    } catch (_) {}
-    messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text('$label copied: $text'),
-          backgroundColor: _primaryNavy,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('$label copied: $text'),
+            backgroundColor: _primaryNavy,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+    } catch (_) {
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              'Failed to copy $label. Please copy it manually: $text',
+            ),
+            backgroundColor: _alertRed,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+    }
   }
 
   @override
