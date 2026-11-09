@@ -92,13 +92,22 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
 
     if (!mounted) return;
     setState(() {
-      _activeReports = reports;
+      _activeReports =
+          reports.where((r) => r.status == 'active').toList();
       _isLoadingHazards = false;
     });
   }
 
   void _onNewReportSubmitted(HazardReportData report) {
-    if (!mounted || report.location == null || report.status != 'active') {
+    if (!mounted || report.location == null) {
+      return;
+    }
+    if (report.status != 'active') {
+      if (report.reportId != null && report.reportId!.isNotEmpty) {
+        setState(() {
+          _activeReports.removeWhere((r) => r.reportId == report.reportId);
+        });
+      }
       return;
     }
     setState(() {

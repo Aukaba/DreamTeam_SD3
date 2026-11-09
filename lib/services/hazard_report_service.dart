@@ -6,6 +6,166 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'gemini_hazard_service.dart';
 import 'location_service.dart';
 
+/// Canonical lifecycle statuses for a community hazard report:
+/// - [pending]: Newly reported; awaits admin verification and is not shown on the map.
+/// - [active]: Verified by an admin and actively displayed on the live map.
+/// - [resolved]: Hazard is no longer present and is hidden from the live map.
+class HazardReportStatuses {
+  static const String pending = 'pending';
+  static const String active = 'active';
+  static const String resolved = 'resolved';
+  static const String archived = 'archived';
+  static const String rejected = 'rejected';
+
+  static String normalize(
+    String? raw, {
+    String defaultStatus = active,
+  }) {
+    switch (raw?.trim().toLowerCase()) {
+      case pending:
+      case 'pending_verification':
+      case 'needs_verification':
+        return pending;
+      case active:
+      case 'verified':
+        return active;
+      case resolved:
+      case 'cleared':
+        return resolved;
+      case archived:
+        return archived;
+      case rejected:
+        return rejected;
+      default:
+        return defaultStatus;
+    }
+  }
+
+  static String labelFor(String? status) {
+    switch (normalize(status)) {
+      case pending:
+        return 'Pending - Needs Verification';
+      case resolved:
+        return 'Resolved';
+      case archived:
+        return 'Archived';
+      case rejected:
+        return 'Rejected';
+      case active:
+      default:
+        return 'Active';
+    }
+  }
+
+  static String descriptionFor(String? status) {
+    switch (normalize(status)) {
+      case pending:
+        return 'Needs admin verification before appearing on the map';
+      case resolved:
+        return 'Hazard is no longer present and is not shown on the map';
+      case archived:
+        return 'Archived report';
+      case rejected:
+        return 'Report was not approved during verification';
+      case active:
+      default:
+        return 'Verified and currently shown on the live map';
+    }
+  }
+
+  /// Returns true only when [status] is accepted (`active` or `resolved`),
+  /// so unaccepted (`pending`, `rejected`, `archived`) reports do not reflect
+  /// on the user's reports or point counts until verified.
+  static bool isAcceptedForUserReports(String? status) {
+    final norm = normalize(status, defaultStatus: pending);
+    return norm == active || norm == resolved;
+  }
+}
+
+/// Data model representing a user-submitted camera proof that a hazard is resolved,
+/// stored in `public.hazard_resolution_reports` for admin verification.
+class HazardResolutionReportData {
+  final String id;
+  final String reportId;
+  final String? reportedBy;
+  final String hazardCategory;
+  final String detectedHazard;
+  final String hazardDescription;
+  final String severityLevel;
+  final String locationAddress;
+  final LatLng? location;
+  final String? originalImageUrl;
+  final String resolutionImageUrl;
+  final Uint8List? resolutionImageBytes;
+  final String? resolutionNote;
+  final String status; // 'pending', 'approved', 'rejected'
+  final DateTime createdAt;
+
+  const HazardResolutionReportData({
+    required this.id,
+    required this.reportId,
+    this.reportedBy,
+    required this.hazardCategory,
+    required this.detectedHazard,
+    this.hazardDescription = '',
+    required this.severityLevel,
+    required this.locationAddress,
+    this.location,
+    this.originalImageUrl,
+    required this.resolutionImageUrl,
+    this.resolutionImageBytes,
+    this.resolutionNote,
+    this.status = 'pending',
+    required this.createdAt,
+  });
+
+  factory HazardResolutionReportData.fromRow(Map<String, dynamic> row) {
+    final lat = HazardReportData._parseCoordinate(row['latitude']);
+    final lng = HazardReportData._parseCoordinate(row['longitude']);
+    final LatLng? parsedLocation = (lat != null &&
+            lng != null &&
+            lat >= -90.0 &&
+            lat <= 90.0 &&
+            lng >= -180.0 &&
+            lng <= 180.0)
+        ? LatLng(lat, lng)
+        : null;
+
+    final rawCreatedAt = row['created_at']?.toString();
+    final DateTime createdAt = rawCreatedAt != null
+        ? (DateTime.tryParse(rawCreatedAt)?.toLocal() ?? DateTime.now())
+        : DateTime.now();
+
+    final rawStatus = row['status']?.toString().trim().toLowerCase() ?? '';
+    final normalizedStatus =
+        (rawStatus == 'approved' || rawStatus == 'rejected')
+            ? rawStatus
+            : 'pending';
+
+    return HazardResolutionReportData(
+      id: row['id']?.toString() ?? generateUuidV4(),
+      reportId: row['report_id']?.toString() ?? '',
+      reportedBy: row['reported_by']?.toString(),
+      hazardCategory: HazardCategories.normalize(
+        row['hazard_category']?.toString(),
+      ),
+      detectedHazard: row['detected_hazard']?.toString().trim() ?? 'Hazard',
+      hazardDescription: row['hazard_description']?.toString().trim() ?? '',
+      severityLevel: HazardSecurityLevels.normalize(
+        row['severity_level']?.toString(),
+      ),
+      locationAddress:
+          row['location_address']?.toString().trim() ?? 'Current Location',
+      location: parsedLocation,
+      originalImageUrl: row['original_image_url']?.toString(),
+      resolutionImageUrl: row['resolution_image_url']?.toString() ?? '',
+      resolutionNote: row['resolution_note']?.toString(),
+      status: normalizedStatus,
+      createdAt: createdAt,
+    );
+  }
+}
+
 /// Data model representing a submitted or persisted hazard report.
 class HazardReportData {
   final String? reportId;
@@ -20,6 +180,8 @@ class HazardReportData {
   final String? imageUrl;
   final int confidence;
   final String status;
+  final String? resolutionStatus;
+  final String? resolutionImageUrl;
   final int pointsAwarded;
   final DateTime timestamp;
 
@@ -36,6 +198,8 @@ class HazardReportData {
     this.imageUrl,
     this.confidence = 98,
     this.status = 'active',
+    this.resolutionStatus,
+    this.resolutionImageUrl,
     int? pointsAwarded,
     required this.timestamp,
   }) : pointsAwarded = pointsAwarded ??
@@ -98,8 +262,21 @@ class HazardReportData {
     final rawUserId = row['user_id']?.toString().trim();
 
     final rawStatus = row['status']?.toString().trim().toLowerCase() ?? '';
-    final status =
-        (rawStatus == 'resolved' || rawStatus == 'archived') ? rawStatus : 'active';
+    final status = HazardReportStatuses.normalize(
+      rawStatus,
+      defaultStatus: HazardReportStatuses.active,
+    );
+
+    final rawResolutionStatus =
+        row['resolution_status']?.toString().trim().toLowerCase();
+    final String? resolutionStatus = (rawResolutionStatus != null &&
+            rawResolutionStatus.isNotEmpty)
+        ? rawResolutionStatus
+        : null;
+    final String? resolutionImageUrl =
+        row['resolution_image_url']?.toString().trim().isNotEmpty == true
+            ? row['resolution_image_url'].toString().trim()
+            : null;
 
     final rawPoints = row['points_awarded'];
     final int pointsAwarded = rawPoints is num
@@ -119,6 +296,8 @@ class HazardReportData {
       imageUrl: row['image_url']?.toString(),
       confidence: confidence,
       status: status,
+      resolutionStatus: resolutionStatus,
+      resolutionImageUrl: resolutionImageUrl,
       pointsAwarded: pointsAwarded,
       timestamp: timestamp,
     );
@@ -137,6 +316,8 @@ class HazardReportData {
     String? imageUrl,
     int? confidence,
     String? status,
+    String? resolutionStatus,
+    String? resolutionImageUrl,
     int? pointsAwarded,
     DateTime? timestamp,
   }) {
@@ -154,6 +335,8 @@ class HazardReportData {
       imageUrl: imageUrl ?? this.imageUrl,
       confidence: confidence ?? this.confidence,
       status: status ?? this.status,
+      resolutionStatus: resolutionStatus ?? this.resolutionStatus,
+      resolutionImageUrl: resolutionImageUrl ?? this.resolutionImageUrl,
       pointsAwarded: pointsAwarded ??
           (securityLevel != null
               ? HazardReportService.calculateSeverityPoints(nextSecurity)
@@ -184,8 +367,13 @@ class HazardReportService {
   final Future<LatLng> Function()? _locationResolver;
 
   static final List<HazardReportData> _sessionReports = <HazardReportData>[];
+  static final Map<String, HazardResolutionReportData>
+      _sessionResolutionReports = <String, HazardResolutionReportData>{};
   static final StreamController<HazardReportData> _reportStreamController =
       StreamController<HazardReportData>.broadcast();
+  static final StreamController<HazardResolutionReportData>
+      _resolutionStreamController =
+      StreamController<HazardResolutionReportData>.broadcast();
 
   HazardReportService({
     SupabaseClient? client,
@@ -208,9 +396,33 @@ class HazardReportService {
   static Stream<HazardReportData> get reportStream =>
       _reportStreamController.stream;
 
+  /// Broadcast stream emitting newly submitted hazard resolution reports.
+  static Stream<HazardResolutionReportData> get resolutionStream =>
+      _resolutionStreamController.stream;
+
   /// Snapshot of reports submitted during the active app session.
   static List<HazardReportData> get sessionReports =>
       List<HazardReportData>.unmodifiable(_sessionReports);
+
+  /// Snapshot of resolution reports submitted during the active app session, keyed by `reportId`.
+  static Map<String, HazardResolutionReportData> get sessionResolutionReports =>
+      Map<String, HazardResolutionReportData>.unmodifiable(
+        _sessionResolutionReports,
+      );
+
+  /// Returns true if a resolution report is currently pending admin verification for [reportId].
+  static bool hasPendingResolution(String? reportId) {
+    if (reportId == null || reportId.trim().isEmpty) return false;
+    final key = reportId.trim();
+    final sessionRes = _sessionResolutionReports[key];
+    if (sessionRes != null && sessionRes.status == 'pending') return true;
+    for (final r in _sessionReports) {
+      if (r.reportId == key && r.resolutionStatus == 'pending') {
+        return true;
+      }
+    }
+    return false;
+  }
 
   /// Records a newly submitted report in session state and notifies listeners (e.g. [MapScreen], Home, Alerts).
   static void recordSubmittedReport(HazardReportData report) {
@@ -222,9 +434,29 @@ class HazardReportService {
     _reportStreamController.add(report);
   }
 
+  /// Records a newly submitted hazard resolution report in session state and notifies listeners.
+  static void recordSubmittedResolutionReport(
+    HazardResolutionReportData resolution,
+  ) {
+    final reportId = resolution.reportId.trim();
+    if (reportId.isNotEmpty) {
+      _sessionResolutionReports[reportId] = resolution;
+      for (int i = 0; i < _sessionReports.length; i++) {
+        if (_sessionReports[i].reportId == reportId) {
+          _sessionReports[i] = _sessionReports[i].copyWith(
+            resolutionStatus: resolution.status,
+            resolutionImageUrl: resolution.resolutionImageUrl,
+          );
+        }
+      }
+    }
+    _resolutionStreamController.add(resolution);
+  }
+
   @visibleForTesting
   static void clearSessionReports() {
     _sessionReports.clear();
+    _sessionResolutionReports.clear();
   }
 
   /// Strips leading emoji for clean database storage, matching the `ReportTable` format.
@@ -377,7 +609,7 @@ class HazardReportService {
       'latitude': effectiveLocation.latitude,
       'longitude': effectiveLocation.longitude,
       'image_url': imageUrl,
-      'status': 'active',
+      'status': HazardReportStatuses.pending,
       'created_at': DateTime.now().toUtc().toIso8601String(),
     };
 
@@ -389,6 +621,10 @@ class HazardReportService {
           .select()
           .maybeSingle();
       final savedRow = response ?? payload;
+      final persistedStatus = HazardReportStatuses.normalize(
+        savedRow['status']?.toString(),
+        defaultStatus: HazardReportStatuses.pending,
+      );
       recordSubmittedReport(
         HazardReportData.fromReportRow(savedRow).copyWith(
           category: HazardCategories.normalize(category),
@@ -396,7 +632,7 @@ class HazardReportService {
           description: trimmedDescription,
           location: effectiveLocation,
           imageBytes: imageBytes,
-          status: 'active',
+          status: persistedStatus,
         ),
       );
       return savedRow;
@@ -404,6 +640,130 @@ class HazardReportService {
       debugPrint('Error inserting into ReportTable: $e');
       rethrow;
     }
+  }
+
+  /// Submits a user camera resolution report for an existing hazard into
+  /// `public.hazard_resolution_reports` (and uploads the proof image to `hazard-reports`)
+  /// so an admin can verify that the hazard is resolved.
+  Future<HazardResolutionReportData> submitHazardResolutionReport({
+    required String reportId,
+    required String category,
+    required String title,
+    required String description,
+    required String securityLevel,
+    required String locationAddress,
+    LatLng? location,
+    String? originalImageUrl,
+    required Uint8List resolutionImageBytes,
+    String? mimeType,
+    String? resolutionNote,
+  }) async {
+    final trimmedReportId = reportId.trim();
+    if (trimmedReportId.isEmpty) {
+      throw ArgumentError('reportId must not be empty');
+    }
+
+    final resolutionId = generateUuidV4();
+    final client = _tryGetClient();
+    final currentUserId = client?.auth.currentUser?.id;
+    bool reportAnonymously = false;
+    if (client != null && currentUserId != null) {
+      try {
+        final securityRow = await client
+            .from('user_security_settings')
+            .select('anonymous_reporting')
+            .eq('user_id', currentUserId)
+            .maybeSingle();
+        reportAnonymously =
+            securityRow?['anonymous_reporting'] as bool? ?? false;
+      } catch (_) {
+        reportAnonymously = false;
+      }
+    }
+
+    // 1. Upload resolution proof photo to Supabase Storage bucket `hazard-reports`
+    String? resolutionImageUrl;
+    if (resolutionImageBytes.isNotEmpty && client != null) {
+      resolutionImageUrl = await uploadHazardPhoto(
+        reportId: 'resolutions/${trimmedReportId}_$resolutionId',
+        bytes: resolutionImageBytes,
+        mimeType: mimeType,
+      );
+    }
+    final effectiveResolutionUrl =
+        (resolutionImageUrl != null && resolutionImageUrl.trim().isNotEmpty)
+            ? resolutionImageUrl.trim()
+            : 'local://resolution/$resolutionId.jpg';
+
+    final nowUtcIso = DateTime.now().toUtc().toIso8601String();
+    final cleanedCategory = cleanCategory(category);
+    final normalizedSeverity = HazardSecurityLevels.normalize(securityLevel);
+    final trimmedTitle =
+        title.trim().isNotEmpty ? title.trim() : cleanedCategory;
+    final trimmedDesc = description.trim();
+    final trimmedAddr = locationAddress.trim().isNotEmpty
+        ? locationAddress.trim()
+        : 'Current Location';
+    final trimmedNote = resolutionNote?.trim();
+
+    final payload = <String, dynamic>{
+      'id': resolutionId,
+      'report_id': trimmedReportId,
+      'reported_by': reportAnonymously ? null : currentUserId,
+      'hazard_category': cleanedCategory,
+      'detected_hazard': trimmedTitle,
+      'hazard_description': trimmedDesc.isNotEmpty ? trimmedDesc : null,
+      'severity_level': normalizedSeverity,
+      'location_address': trimmedAddr,
+      'latitude': location?.latitude,
+      'longitude': location?.longitude,
+      'original_image_url': originalImageUrl,
+      'resolution_image_url': effectiveResolutionUrl,
+      'resolution_note':
+          (trimmedNote != null && trimmedNote.isNotEmpty) ? trimmedNote : null,
+      'status': 'pending',
+      'created_at': nowUtcIso,
+      'updated_at': nowUtcIso,
+    };
+
+    Map<String, dynamic> savedRow = payload;
+    if (client != null) {
+      try {
+        final response = await client
+            .from('hazard_resolution_reports')
+            .insert(payload)
+            .select()
+            .maybeSingle();
+        if (response != null) {
+          savedRow = response;
+        }
+      } catch (e) {
+        debugPrint('Error inserting into hazard_resolution_reports: $e');
+        rethrow;
+      }
+    }
+
+    final record = HazardResolutionReportData.fromRow(savedRow);
+    final enriched = HazardResolutionReportData(
+      id: record.id,
+      reportId: trimmedReportId,
+      reportedBy: record.reportedBy,
+      hazardCategory: HazardCategories.normalize(category),
+      detectedHazard: trimmedTitle,
+      hazardDescription: trimmedDesc,
+      severityLevel: normalizedSeverity,
+      locationAddress: trimmedAddr,
+      location: location ?? record.location,
+      originalImageUrl: originalImageUrl ?? record.originalImageUrl,
+      resolutionImageUrl: record.resolutionImageUrl,
+      resolutionImageBytes: resolutionImageBytes,
+      resolutionNote: record.resolutionNote,
+      status: record.status,
+      createdAt: record.createdAt,
+    );
+
+    recordSubmittedResolutionReport(enriched);
+    return enriched;
   }
 
   /// Loads saved hazard reports from `public.ReportTable` (with usable coordinates),
@@ -420,7 +780,14 @@ class HazardReportService {
       if (activeOnly && report.status != 'active') return;
       final id = report.reportId;
       if (id != null && id.isNotEmpty) {
-        mergedById.putIfAbsent(id, () => report);
+        final sessionRes = _sessionResolutionReports[id];
+        final effective = (sessionRes != null && report.resolutionStatus == null)
+            ? report.copyWith(
+                resolutionStatus: sessionRes.status,
+                resolutionImageUrl: sessionRes.resolutionImageUrl,
+              )
+            : report;
+        mergedById.putIfAbsent(id, () => effective);
       } else {
         unkeyed.add(report);
       }
@@ -492,11 +859,14 @@ class HazardReportService {
     return allActive.take(limit).toList();
   }
 
-  /// Fetches all hazard reports submitted by [userId] (or the current authenticated user)
-  /// from `public.ReportTable`, ordered newest first.
+  /// Fetches accepted (`active` or `resolved`) hazard reports submitted by [userId]
+  /// (or the current authenticated user) from `public.ReportTable`, ordered newest first.
+  /// Unaccepted (`pending`, `rejected`, `archived`) reports are excluded by default so
+  /// they do not reflect on the user's reports or points until verified.
   Future<List<HazardReportData>> fetchUserReports({
     String? userId,
     int limit = 100,
+    bool includeUnaccepted = false,
   }) async {
     final client = _tryGetClient();
     final targetUserId = userId ?? client?.auth.currentUser?.id;
@@ -505,9 +875,20 @@ class HazardReportService {
     final unkeyed = <HazardReportData>[];
 
     void addReport(HazardReportData report) {
+      if (!includeUnaccepted &&
+          !HazardReportStatuses.isAcceptedForUserReports(report.status)) {
+        return;
+      }
       final id = report.reportId;
       if (id != null && id.isNotEmpty) {
-        mergedById.putIfAbsent(id, () => report);
+        final sessionRes = _sessionResolutionReports[id];
+        final effective = (sessionRes != null && report.resolutionStatus == null)
+            ? report.copyWith(
+                resolutionStatus: sessionRes.status,
+                resolutionImageUrl: sessionRes.resolutionImageUrl,
+              )
+            : report;
+        mergedById.putIfAbsent(id, () => effective);
       } else {
         unkeyed.add(report);
       }
@@ -523,10 +904,20 @@ class HazardReportService {
 
     if (client != null && targetUserId != null && targetUserId.isNotEmpty) {
       try {
-        final rawRows = await client
+        var query = client
             .from('ReportTable')
             .select()
-            .eq('user_id', targetUserId)
+            .eq('user_id', targetUserId);
+        if (!includeUnaccepted) {
+          query = query.inFilter(
+            'status',
+            const <String>[
+              HazardReportStatuses.active,
+              HazardReportStatuses.resolved,
+            ],
+          );
+        }
+        final rawRows = await query
             .order('created_at', ascending: false)
             .limit(limit);
 
