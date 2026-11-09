@@ -15,6 +15,7 @@ import '../services/security_service.dart';
 import '../widgets/camera_capture_screen.dart';
 import '../widgets/custom_wavy_header.dart';
 import '../widgets/safe_route_bottom_nav.dart';
+import 'help_support_screen.dart';
 import 'my_reports_screen.dart';
 import 'personal_information_screen.dart';
 import 'saved_locations_screen.dart';
@@ -196,6 +197,14 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     if (mounted) {
       await _loadGamificationStats();
     }
+  }
+
+  Future<void> _openHelpSupport() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (context) => const HelpSupportScreen(),
+      ),
+    );
   }
 
   String _friendlyError(Object error) {
@@ -601,13 +610,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                                 icon: Icons.help_outline_rounded,
                                 title: 'Help & Support',
                                 subtitle: 'FAQs, guides, and contact support',
-                                onTap: () {},
-                              ),
-                              _buildSettingsTile(
-                                icon: Icons.settings_outlined,
-                                title: 'App Settings',
-                                subtitle: 'Appearance, language, and more',
-                                onTap: () {},
+                                onTap: _openHelpSupport,
                               ),
                               _buildSettingsTile(
                                 icon: Icons.logout_rounded,

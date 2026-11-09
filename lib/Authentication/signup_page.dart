@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login_page.dart';
 import 'auth_service.dart';
 import 'auth_error_handler.dart';
+import '../user_screens/help_support_screen.dart';
 
 class SignupPage extends StatefulWidget {
   const SignupPage({super.key});
@@ -236,12 +237,28 @@ class _SignupPageState extends State<SignupPage> {
                     ),
                     const Spacer(),
                     // Need Help
-                    Text(
-                      'Need Help?',
-                      style: GoogleFonts.inter(
-                        color: const Color(0xFF263354),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w400,
+                    InkWell(
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const HelpSupportScreen(),
+                          ),
+                        );
+                      },
+                      borderRadius: BorderRadius.circular(8),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 4,
+                        ),
+                        child: Text(
+                          'Need Help?',
+                          style: GoogleFonts.inter(
+                            color: const Color(0xFF263354),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
                       ),
                     ),
                   ],

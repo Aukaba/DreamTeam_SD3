@@ -53,14 +53,12 @@ class _MockSavedLocationService extends SavedLocationService {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  const primaryNavy = Color(0xFF233253);
+  const primaryNavyHome = Color(0xFF233253);
+  const primaryNavyRoute = Color(0xFF263354);
   const secondaryGrey = Color(0xFF8A94A6);
 
   group('Header Typography & RefreshIndicator Displacement Regression Tests', () {
     testWidgets('UserHomeScreen has Figma typography and settled displacement below header', (tester) async {
-      await tester.binding.setSurfaceSize(const Size(390, 844));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-
       await tester.pumpWidget(
         MaterialApp(
           home: UserHomeScreen(
@@ -103,15 +101,12 @@ void main() {
       expect(titleText.style?.fontFamily, 'Poppins');
       expect(titleText.style?.fontSize, 24);
       expect(titleText.style?.fontWeight, FontWeight.w700);
-      expect(titleText.style?.color, primaryNavy);
+      expect(titleText.style?.color, primaryNavyHome);
       expect(titleText.style?.letterSpacing, -0.4);
       expect(titleText.style?.height, 1.2);
     });
 
     testWidgets('RouteScreen has Figma typography and settled displacement below header', (tester) async {
-      await tester.binding.setSurfaceSize(const Size(390, 844));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-
       await tester.pumpWidget(
         MaterialApp(
           home: RouteScreen(
@@ -152,7 +147,7 @@ void main() {
       expect(titleText.style?.fontFamily, 'Poppins');
       expect(titleText.style?.fontSize, 24);
       expect(titleText.style?.fontWeight, FontWeight.w700);
-      expect(titleText.style?.color, primaryNavy);
+      expect(titleText.style?.color, primaryNavyRoute);
       expect(titleText.style?.letterSpacing, -0.4);
       expect(titleText.style?.height, 1.2);
 
@@ -170,9 +165,6 @@ void main() {
     });
 
     testWidgets('AlertsScreen has Figma typography and settled displacement below header', (tester) async {
-      await tester.binding.setSurfaceSize(const Size(390, 844));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-
       await tester.pumpWidget(
         MaterialApp(
           home: AlertsScreen(
@@ -209,7 +201,7 @@ void main() {
       expect(titleText.style?.fontFamily, 'Poppins');
       expect(titleText.style?.fontSize, 24);
       expect(titleText.style?.fontWeight, FontWeight.w700);
-      expect(titleText.style?.color, primaryNavy);
+      expect(titleText.style?.color, primaryNavyHome);
       expect(titleText.style?.letterSpacing, -0.4);
       expect(titleText.style?.height, 1.2);
 
@@ -227,9 +219,6 @@ void main() {
     });
 
     testWidgets('UserProfileScreen has Figma typography and settled displacement below header', (tester) async {
-      await tester.binding.setSurfaceSize(const Size(390, 844));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-
       final profileService = _MockProfileService();
 
       await tester.pumpWidget(
@@ -258,7 +247,7 @@ void main() {
       expect(nameText.style?.fontFamily, 'Poppins');
       expect(nameText.style?.fontSize, 18);
       expect(nameText.style?.fontWeight, FontWeight.w700);
-      expect(nameText.style?.color, primaryNavy);
+      expect(nameText.style?.color, primaryNavyHome);
 
       // Username
       final usernameFinder = find.text('@gelic');
@@ -280,4 +269,3 @@ void main() {
     });
   });
 }
-
