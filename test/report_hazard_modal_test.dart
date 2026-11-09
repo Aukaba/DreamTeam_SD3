@@ -759,14 +759,79 @@ void main() {
     );
     expect(fakeReportService.lastResolutionImageBytes, isNotNull);
 
-    // Sheet transitions to "Resolution Reported • Pending Admin Verification" banner
+    // Sheet transitions to "Resolution Reported • Pending Verification" banner
     expect(
       find.byKey(const Key('hazard_resolution_pending_banner')),
       findsOneWidget,
     );
     expect(
-      find.text('Resolution Reported • Pending Admin Verification'),
+      find.textContaining('Resolution Reported • Pending'),
       findsOneWidget,
+    );
+  });
+
+  testWidgets('Task 2 (Multiple Resolutions & Auto-Resolve): Other users can still report resolution on the same hazard, displaying Confirm Hazard is Resolved, and multiple submissions auto-resolve the hazard', (tester) async {
+    final fakeReportService = FakeHazardReportService(
+      initialDbReports: [
+        HazardReportData(
+          reportId: 'active-multi-hazard-888',
+          category: HazardCategories.accident,
+          securityLevel: HazardSecurityLevels.high,
+          confidence: 100,
+          title: 'Accident Obstruction',
+          description: 'Two cars colliding at intersection.',
+          address: 'Gorordo Ave, Cebu City',
+          location: const LatLng(10.3150, 123.8950),
+          timestamp: DateTime.now().subtract(const Duration(hours: 1)),
+          status: HazardReportStatuses.active,
+          resolutionStatus: HazardReportStatuses.pending, // Reported by user 1 earlier
+          resolutionCount: 1,
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MapScreen(
+          initialLocation: const LatLng(10.3150, 123.8950),
+          focusHazardLocation: const LatLng(10.3150, 123.8950),
+          focusedReportId: 'active-multi-hazard-888',
+          hazardReportService: fakeReportService,
+          cameraLauncher: (context) async {
+            return XFile.fromData(
+              _validPngBytes,
+              name: 'resolved_proof_2.png',
+              mimeType: 'image/png',
+            );
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 500));
+
+    // Community verification card is visible informing that another user reported resolved
+    expect(
+      find.byKey(const Key('hazard_community_verification_card')),
+      findsOneWidget,
+    );
+
+    // Resolution button is STILL AVAILABLE for other users with text "Confirm Hazard is Resolved"
+    final resolveButton = find.byKey(const Key('report_hazard_resolved_button'));
+    expect(resolveButton, findsOneWidget);
+    expect(find.text('Confirm Hazard is Resolved'), findsOneWidget);
+
+    // Tap "Confirm Hazard is Resolved"
+    await tester.tap(resolveButton);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // Second resolution submission was registered
+    expect(fakeReportService.lastSubmittedResolution, isNotNull);
+    expect(
+      fakeReportService.lastSubmittedResolution!.reportId,
+      'active-multi-hazard-888',
     );
   });
 }

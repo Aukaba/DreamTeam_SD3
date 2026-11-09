@@ -182,6 +182,7 @@ class HazardReportData {
   final String status;
   final String? resolutionStatus;
   final String? resolutionImageUrl;
+  final int resolutionCount;
   final int pointsAwarded;
   final DateTime timestamp;
 
@@ -200,6 +201,7 @@ class HazardReportData {
     this.status = 'active',
     this.resolutionStatus,
     this.resolutionImageUrl,
+    this.resolutionCount = 0,
     int? pointsAwarded,
     required this.timestamp,
   }) : pointsAwarded = pointsAwarded ??
@@ -284,6 +286,11 @@ class HazardReportData {
         : (int.tryParse(rawPoints?.toString() ?? '') ??
             HazardReportService.calculateSeverityPoints(normalizedSecurity));
 
+    final rawResCount = row['resolution_count'];
+    final int resolutionCount = rawResCount is num
+        ? rawResCount.toInt()
+        : (int.tryParse(rawResCount?.toString() ?? '') ?? 0);
+
     return HazardReportData(
       reportId: (rawId != null && rawId.trim().isNotEmpty) ? rawId.trim() : null,
       userId: (rawUserId != null && rawUserId.isNotEmpty) ? rawUserId : null,
@@ -298,6 +305,7 @@ class HazardReportData {
       status: status,
       resolutionStatus: resolutionStatus,
       resolutionImageUrl: resolutionImageUrl,
+      resolutionCount: resolutionCount,
       pointsAwarded: pointsAwarded,
       timestamp: timestamp,
     );
@@ -318,6 +326,7 @@ class HazardReportData {
     String? status,
     String? resolutionStatus,
     String? resolutionImageUrl,
+    int? resolutionCount,
     int? pointsAwarded,
     DateTime? timestamp,
   }) {
@@ -337,6 +346,7 @@ class HazardReportData {
       status: status ?? this.status,
       resolutionStatus: resolutionStatus ?? this.resolutionStatus,
       resolutionImageUrl: resolutionImageUrl ?? this.resolutionImageUrl,
+      resolutionCount: resolutionCount ?? this.resolutionCount,
       pointsAwarded: pointsAwarded ??
           (securityLevel != null
               ? HazardReportService.calculateSeverityPoints(nextSecurity)
@@ -374,6 +384,17 @@ class HazardReportService {
   static final StreamController<HazardResolutionReportData>
       _resolutionStreamController =
       StreamController<HazardResolutionReportData>.broadcast();
+  static final StreamController<void> _remoteReportChangesController =
+      StreamController<void>.broadcast();
+
+  static Stream<void> get remoteReportChangesStream =>
+      _remoteReportChangesController.stream;
+
+  static void notifyRemoteReportChange() {
+    if (!_remoteReportChangesController.isClosed) {
+      _remoteReportChangesController.add(null);
+    }
+  }
 
   HazardReportService({
     SupabaseClient? client,
@@ -447,6 +468,31 @@ class HazardReportService {
         _sessionResolutionReports,
       );
 
+  /// Returns the current signed-in user ID or null.
+  String? get currentUserId => _tryGetClient()?.auth.currentUser?.id;
+
+  /// Returns true if this user (or anonymous user session) has already submitted a resolution report for [reportId].
+  static bool hasUserSubmittedResolution(String? reportId, [String? userId]) {
+    if (reportId == null || reportId.trim().isEmpty) return false;
+    final key = reportId.trim();
+    final sessionRes = _sessionResolutionReports[key];
+    if (sessionRes != null) {
+      if (userId == null ||
+          sessionRes.reportedBy == null ||
+          sessionRes.reportedBy == userId) {
+        return true;
+      }
+    }
+    for (final r in _sessionReports) {
+      if (r.reportId == key && r.resolutionStatus == 'pending') {
+        if (userId == null || r.userId == null || r.userId == userId) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   /// Returns true if a resolution report is currently pending admin verification for [reportId].
   static bool hasPendingResolution(String? reportId) {
     if (reportId == null || reportId.trim().isEmpty) return false;
@@ -480,14 +526,19 @@ class HazardReportService {
       _sessionResolutionReports[reportId] = resolution;
       for (int i = 0; i < _sessionReports.length; i++) {
         if (_sessionReports[i].reportId == reportId) {
+          final isApproved = resolution.status == 'approved';
           _sessionReports[i] = _sessionReports[i].copyWith(
             resolutionStatus: resolution.status,
             resolutionImageUrl: resolution.resolutionImageUrl,
+            status: isApproved ? 'resolved' : null,
           );
         }
       }
     }
     _resolutionStreamController.add(resolution);
+    if (resolution.status == 'approved') {
+      _remoteReportChangesController.add(null);
+    }
   }
 
   @visibleForTesting
@@ -830,6 +881,18 @@ class HazardReportService {
         if (response != null) {
           savedRow = response;
         }
+        // Check if multiple resolution reports triggered auto-resolution on ReportTable
+        try {
+          final parentCheck = await client
+              .from('ReportTable')
+              .select('status, resolution_status')
+              .eq('reportID', trimmedReportId)
+              .maybeSingle();
+          if (parentCheck != null && parentCheck['status'] == 'resolved') {
+            savedRow = Map<String, dynamic>.from(savedRow);
+            savedRow['status'] = 'approved';
+          }
+        } catch (_) {}
       } catch (e) {
         // If conflict on pending resolution (due to unique index), retrieve existing
         try {
