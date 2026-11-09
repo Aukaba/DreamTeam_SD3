@@ -26,7 +26,8 @@ ALTER TABLE public."ReportTable"
   ADD COLUMN IF NOT EXISTS resolution_status text,
   ADD COLUMN IF NOT EXISTS resolution_image_url text,
   ADD COLUMN IF NOT EXISTS resolution_reported_by uuid REFERENCES auth.users(id) ON DELETE SET NULL,
-  ADD COLUMN IF NOT EXISTS resolution_reported_at timestamp with time zone;
+  ADD COLUMN IF NOT EXISTS resolution_reported_at timestamp with time zone,
+  ADD COLUMN IF NOT EXISTS resolution_count integer DEFAULT 0;
 
 ALTER TABLE public."ReportTable"
   DROP CONSTRAINT IF EXISTS "ReportTable_resolution_status_check";
@@ -114,8 +115,13 @@ BEGIN
       NEW.status := 'pending';
     END IF;
   ELSIF tg_op = 'UPDATE' THEN
-    IF NEW.status IS DISTINCT FROM OLD.status AND NOT COALESCE(public.verify_admin_access(), false) THEN
-      RAISE EXCEPTION 'Only administrators can update report status.';
+    IF NEW.status IS DISTINCT FROM OLD.status THEN
+      -- Allow status transition to 'resolved' when triggered internally by the resolution quorum trigger (Comment 2)
+      IF pg_trigger_depth() > 1 AND NEW.status = 'resolved' THEN
+        NULL;
+      ELSIF NOT COALESCE(public.verify_admin_access(), false) THEN
+        RAISE EXCEPTION 'Only administrators can update report status.';
+      END IF;
     END IF;
   END IF;
   RETURN NEW;
@@ -342,7 +348,9 @@ CREATE INDEX IF NOT EXISTS idx_hazard_resolution_reports_reported_by
 CREATE INDEX IF NOT EXISTS idx_hazard_resolution_reports_status_created
   ON public.hazard_resolution_reports (status, created_at DESC);
 
--- Idempotency constraint: prevent duplicate pending reviews for the same report by the same user
+-- Idempotency constraint: allow multiple distinct users to submit resolution reports for the same hazard,
+-- while preventing duplicate pending submissions (Comment 1)
+DROP INDEX IF EXISTS public.idx_hazard_resolution_reports_unique_pending;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_hazard_resolution_reports_unique_pending
   ON public.hazard_resolution_reports (
     report_id,
@@ -366,9 +374,11 @@ AS $$
 DECLARE
   v_report_status text;
 BEGIN
+  -- Serialize submissions for the same hazard by locking the parent ReportTable row (Comment 3)
   SELECT status INTO v_report_status
   FROM public."ReportTable"
-  WHERE "reportID" = NEW.report_id;
+  WHERE "reportID" = NEW.report_id
+  FOR UPDATE;
 
   IF v_report_status IS NULL THEN
     RAISE EXCEPTION 'Target hazard report % does not exist.', NEW.report_id;
@@ -401,7 +411,12 @@ DECLARE
   v_pending RECORD;
   v_approved RECORD;
   v_rejected RECORD;
+  v_pending_count integer := 0;
 BEGIN
+  SELECT COUNT(*) INTO v_pending_count
+  FROM public.hazard_resolution_reports
+  WHERE report_id = p_report_id AND status = 'pending';
+
   -- 1. If any pending resolution report remains, show pending
   SELECT resolution_image_url, reported_by, created_at
   INTO v_pending
@@ -415,7 +430,8 @@ BEGIN
     SET resolution_status = 'pending',
         resolution_image_url = v_pending.resolution_image_url,
         resolution_reported_by = v_pending.reported_by,
-        resolution_reported_at = v_pending.created_at
+        resolution_reported_at = v_pending.created_at,
+        resolution_count = v_pending_count
     WHERE "reportID" = p_report_id;
     RETURN;
   END IF;
@@ -433,7 +449,8 @@ BEGIN
     SET resolution_status = 'approved',
         resolution_image_url = v_approved.resolution_image_url,
         resolution_reported_by = v_approved.reported_by,
-        resolution_reported_at = v_approved.created_at
+        resolution_reported_at = v_approved.created_at,
+        resolution_count = 0
     WHERE "reportID" = p_report_id;
     RETURN;
   END IF;
@@ -451,7 +468,8 @@ BEGIN
     SET resolution_status = 'rejected',
         resolution_image_url = v_rejected.resolution_image_url,
         resolution_reported_by = v_rejected.reported_by,
-        resolution_reported_at = v_rejected.created_at
+        resolution_reported_at = v_rejected.created_at,
+        resolution_count = 0
     WHERE "reportID" = p_report_id;
     RETURN;
   END IF;
@@ -461,7 +479,8 @@ BEGIN
   SET resolution_status = NULL,
       resolution_image_url = NULL,
       resolution_reported_by = NULL,
-      resolution_reported_at = NULL
+      resolution_reported_at = NULL,
+      resolution_count = 0
   WHERE "reportID" = p_report_id;
 END;
 $$;
@@ -475,9 +494,62 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
+DECLARE
+  v_pending_count integer;
+  v_distinct_reporters integer;
 BEGIN
+  IF pg_trigger_depth() > 1 THEN
+    RETURN COALESCE(NEW, OLD);
+  END IF;
+
   IF tg_op = 'INSERT' THEN
-    PERFORM public.recompute_report_table_resolution_state(NEW.report_id);
+    -- Serialize submissions for the same hazard by locking the parent ReportTable row (Comment 3)
+    PERFORM 1
+    FROM public."ReportTable"
+    WHERE "reportID" = NEW.report_id
+    FOR UPDATE;
+
+    -- Count pending resolution reports and distinct non-null reporters (Comment 1)
+    SELECT
+      COUNT(*),
+      COUNT(DISTINCT reported_by) FILTER (WHERE reported_by IS NOT NULL)
+    INTO
+      v_pending_count,
+      v_distinct_reporters
+    FROM public.hazard_resolution_reports
+    WHERE report_id = NEW.report_id
+      AND status = 'pending';
+
+    -- When multiple distinct authenticated users (>= 2) report resolution on the same hazard,
+    -- the system automatically marks the hazard resolved! (Comment 1)
+    IF v_distinct_reporters >= 2 THEN
+      -- 1. Update parent hazard to resolved in ReportTable
+      UPDATE public."ReportTable"
+      SET status = 'resolved',
+          resolution_status = 'approved',
+          resolved_at = timezone('utc'::text, now()),
+          resolution_image_url = NEW.resolution_image_url,
+          resolution_reported_by = NEW.reported_by,
+          resolution_reported_at = NEW.created_at,
+          resolution_count = v_pending_count
+      WHERE "reportID" = NEW.report_id
+        AND status = 'active';
+
+      -- 2. Only approve child resolution reports if parent was actually active and updated (Comment 6)
+      IF FOUND THEN
+        UPDATE public.hazard_resolution_reports
+        SET status = 'approved',
+            verified_at = timezone('utc'::text, now()),
+            updated_at = timezone('utc'::text, now())
+        WHERE report_id = NEW.report_id
+          AND status = 'pending';
+      ELSE
+        PERFORM public.recompute_report_table_resolution_state(NEW.report_id);
+      END IF;
+    ELSE
+      PERFORM public.recompute_report_table_resolution_state(NEW.report_id);
+    END IF;
+
   ELSIF tg_op = 'UPDATE' THEN
     IF NEW.status = 'approved' AND COALESCE(OLD.status, '') <> 'approved' THEN
       -- Only transition linked hazard from 'active' to 'resolved' (Comment 5)
@@ -716,6 +788,7 @@ ALTER TABLE public."ReportTable"
   DROP CONSTRAINT IF EXISTS "ReportTable_resolution_status_check";
 
 ALTER TABLE public."ReportTable"
+  DROP COLUMN IF EXISTS resolution_count,
   DROP COLUMN IF EXISTS resolution_reported_at,
   DROP COLUMN IF EXISTS resolution_reported_by,
   DROP COLUMN IF EXISTS resolution_image_url,

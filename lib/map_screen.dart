@@ -105,6 +105,7 @@ class _HazardItem {
   final String status;
   final String? resolutionStatus;
   final String? resolutionImageUrl;
+  final int resolutionCount;
   final Color themeColor;
   final Color bgColor;
   final Color iconBgColor;
@@ -129,6 +130,7 @@ class _HazardItem {
     this.status = 'active',
     this.resolutionStatus,
     this.resolutionImageUrl,
+    this.resolutionCount = 0,
     required this.themeColor,
     required this.bgColor,
     required this.iconBgColor,
@@ -143,6 +145,7 @@ class _HazardItem {
     String? status,
     String? resolutionStatus,
     String? resolutionImageUrl,
+    int? resolutionCount,
   }) {
     return _HazardItem(
       id: id,
@@ -160,6 +163,7 @@ class _HazardItem {
       status: status ?? this.status,
       resolutionStatus: resolutionStatus ?? this.resolutionStatus,
       resolutionImageUrl: resolutionImageUrl ?? this.resolutionImageUrl,
+      resolutionCount: resolutionCount ?? this.resolutionCount,
       themeColor: themeColor,
       bgColor: bgColor,
       iconBgColor: iconBgColor,
@@ -236,6 +240,7 @@ class _MapScreenState extends State<MapScreen> {
   final List<_HazardItem> _reportedHazards = <_HazardItem>[];
   bool _isLoadingReports = true;
   bool _hasHandledInitialFocus = false;
+  int _savedReportsFetchGeneration = 0;
 
   // Route preview & Turn-by-Turn Navigation state
   PlannedRouteResult? _activeRoute;
@@ -344,8 +349,9 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _loadSavedReports() async {
+    final fetchGen = ++_savedReportsFetchGeneration;
     final savedReports = await _hazardReportService.fetchReports();
-    if (!mounted) return;
+    if (!mounted || fetchGen != _savedReportsFetchGeneration) return;
     _HazardItem? focusedItem;
     setState(() {
       _isLoadingReports = false;
@@ -2688,6 +2694,7 @@ class _MapScreenState extends State<MapScreen> {
       status: report.status,
       resolutionStatus: report.resolutionStatus,
       resolutionImageUrl: report.resolutionImageUrl,
+      resolutionCount: report.resolutionCount,
       themeColor: themeColor,
       bgColor: bgColor,
       iconBgColor: iconBgColor,
@@ -2817,13 +2824,24 @@ class _MapScreenState extends State<MapScreen> {
 
       if (!mounted) return;
 
+      final isAutoResolved = resolutionData.status == 'approved';
+
       setState(() {
-        for (int i = 0; i < _reportedHazards.length; i++) {
-          if (_reportedHazards[i].id == hazard.id) {
-            _reportedHazards[i] = _reportedHazards[i].copyWith(
-              resolutionStatus: resolutionData.status,
-              resolutionImageUrl: resolutionData.resolutionImageUrl,
-            );
+        if (isAutoResolved) {
+          _reportedHazards.removeWhere(
+            (h) =>
+                h.id == hazard.id ||
+                (hazard.reportId != null && h.reportId == hazard.reportId),
+          );
+        } else {
+          for (int i = 0; i < _reportedHazards.length; i++) {
+            if (_reportedHazards[i].id == hazard.id) {
+              _reportedHazards[i] = _reportedHazards[i].copyWith(
+                resolutionStatus: resolutionData.status,
+                resolutionImageUrl: resolutionData.resolutionImageUrl,
+                resolutionCount: _reportedHazards[i].resolutionCount + 1,
+              );
+            }
           }
         }
       });
@@ -2838,14 +2856,20 @@ class _MapScreenState extends State<MapScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
+          SnackBar(
             content: Text(
-              'Resolution report submitted! Pending admin verification.',
+              isAutoResolved
+                  ? 'Hazard confirmed resolved by community! Automatically resolved and removed from map.'
+                  : 'Resolution report submitted! When multiple people request resolution, it will automatically resolve.',
             ),
             backgroundColor: _safeGreen,
             behavior: SnackBarBehavior.floating,
           ),
         );
+      }
+
+      if (isAutoResolved && sheetContext.mounted) {
+        Navigator.of(sheetContext).pop();
       }
     } catch (e) {
       if (!mounted) return;
@@ -2871,10 +2895,8 @@ class _MapScreenState extends State<MapScreen> {
         (hazard.reportId != null && hazard.reportId!.trim().isNotEmpty)
             ? hazard.reportId!.trim()
             : hazard.id;
-    String? currentResolutionStatus = hazard.resolutionStatus ??
-        (HazardReportService.hasPendingResolution(effectiveReportId)
-            ? HazardReportStatuses.pending
-            : null);
+    final currentUserId = _hazardReportService.currentUserId;
+    String? currentResolutionStatus = hazard.resolutionStatus;
     bool isSubmittingResolution = false;
     Uint8List? capturedResolutionBytes;
 
@@ -2888,8 +2910,18 @@ class _MapScreenState extends State<MapScreen> {
       builder: (sheetCtx) {
         return StatefulBuilder(
           builder: (sheetContext, setSheetState) {
-            final isResolutionPending =
-                currentResolutionStatus == HazardReportStatuses.pending;
+            final hasUserSubmitted = (capturedResolutionBytes != null) ||
+                HazardReportService.hasUserSubmittedResolution(
+                  effectiveReportId,
+                  currentUserId,
+                );
+            final bool isPendingVerification =
+                currentResolutionStatus == HazardReportStatuses.pending ||
+                hazard.resolutionStatus == HazardReportStatuses.pending ||
+                hazard.resolutionCount > 0;
+            final bool isUserPending = hasUserSubmitted &&
+                (currentResolutionStatus == HazardReportStatuses.pending ||
+                    capturedResolutionBytes != null);
 
             return SafeArea(
               child: SingleChildScrollView(
@@ -3044,7 +3076,7 @@ class _MapScreenState extends State<MapScreen> {
                       ],
                     ),
                     const SizedBox(height: 16),
-                    if (isResolutionPending)
+                    if (isUserPending)
                       Container(
                         key: const Key('hazard_resolution_pending_banner'),
                         width: double.infinity,
@@ -3099,7 +3131,7 @@ class _MapScreenState extends State<MapScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    'Resolution Reported • Pending Admin Verification',
+                                    'Resolution Reported • Pending Verification',
                                     style: TextStyle(
                                       fontFamily: 'Poppins',
                                       fontSize: 12,
@@ -3109,7 +3141,7 @@ class _MapScreenState extends State<MapScreen> {
                                   ),
                                   SizedBox(height: 2),
                                   Text(
-                                    'Your camera proof has been submitted for admin review.',
+                                    'You submitted camera proof. When multiple people report resolution, this hazard will automatically resolve.',
                                     style: TextStyle(
                                       fontFamily: 'Poppins',
                                       fontSize: 11,
@@ -3122,7 +3154,54 @@ class _MapScreenState extends State<MapScreen> {
                           ],
                         ),
                       )
-                    else
+                    else ...[
+                      if (isPendingVerification)
+                        Container(
+                          key: const Key('hazard_community_verification_card'),
+                          width: double.infinity,
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEFF6FF),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: const Color(0xFFBFDBFE)),
+                          ),
+                          child: const Row(
+                            children: [
+                              Icon(
+                                Icons.group_work_rounded,
+                                size: 22,
+                                color: Color(0xFF1D4ED8),
+                              ),
+                              SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Reported Resolved by Community',
+                                      style: TextStyle(
+                                        fontFamily: 'Poppins',
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w700,
+                                        color: Color(0xFF1E40AF),
+                                      ),
+                                    ),
+                                    SizedBox(height: 2),
+                                    Text(
+                                      'Confirm with a photo below. Multiple reports will automatically resolve this hazard for everyone.',
+                                      style: TextStyle(
+                                        fontFamily: 'Poppins',
+                                        fontSize: 11,
+                                        color: Color(0xFF1E3A8A),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       SizedBox(
                         width: double.infinity,
                         height: 48,
@@ -3170,7 +3249,9 @@ class _MapScreenState extends State<MapScreen> {
                           label: Text(
                             isSubmittingResolution
                                 ? 'Submitting Proof...'
-                                : 'Report Hazard as Resolved',
+                                : (isPendingVerification
+                                    ? 'Confirm Hazard is Resolved'
+                                    : 'Report Hazard as Resolved'),
                             style: const TextStyle(
                               fontFamily: 'Poppins',
                               fontSize: 13,
@@ -3179,6 +3260,7 @@ class _MapScreenState extends State<MapScreen> {
                           ),
                         ),
                       ),
+                    ],
                   ],
                 ),
               ),
