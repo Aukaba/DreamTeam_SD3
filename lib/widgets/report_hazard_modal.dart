@@ -775,8 +775,14 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
               submittedTimestamp)
           : submittedTimestamp;
 
+      final persistedStatus = HazardReportStatuses.normalize(
+        insertedRow['status']?.toString(),
+        defaultStatus: HazardReportStatuses.pending,
+      );
+
       final report = HazardReportData(
         reportId: insertedRow['reportID']?.toString(),
+        userId: insertedRow['user_id']?.toString(),
         category: submittedCategory,
         securityLevel: submittedSecurityLevel,
         title: submittedTitle,
@@ -786,6 +792,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
         imageBytes: submittedImageBytes,
         imageUrl: insertedRow['image_url']?.toString(),
         confidence: submittedConfidence,
+        status: persistedStatus,
         timestamp: persistedTimestamp,
       );
 
@@ -806,7 +813,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  '${report.category} reported successfully! Recorded in database.',
+                  '${report.category} reported! Pending admin verification.',
                   style: const TextStyle(fontFamily: 'Poppins', fontSize: 13),
                 ),
               ),

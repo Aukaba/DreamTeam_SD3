@@ -34,8 +34,15 @@ class _FakeHazardReportService extends HazardReportService {
   Future<List<HazardReportData>> fetchUserReports({
     String? userId,
     int limit = 100,
+    bool includeUnaccepted = false,
   }) async {
-    return List<HazardReportData>.from(userReports);
+    return userReports
+        .where(
+          (r) =>
+              includeUnaccepted ||
+              HazardReportStatuses.isAcceptedForUserReports(r.status),
+        )
+        .toList();
   }
 
   @override

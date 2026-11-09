@@ -8,6 +8,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:dreamteam_sd3/map_screen.dart';
 import 'package:dreamteam_sd3/services/gemini_hazard_service.dart';
 import 'package:dreamteam_sd3/services/hazard_report_service.dart';
+import 'package:dreamteam_sd3/user_screens/my_reports_screen.dart';
 import 'package:dreamteam_sd3/widgets/report_hazard_modal.dart';
 
 /// Valid 1x1 transparent PNG so Image.memory decodes cleanly in widget tests.
@@ -67,6 +68,8 @@ class FakeGeminiHazardService extends GeminiHazardService {
 
 class FakeHazardReportService extends HazardReportService {
   Map<String, dynamic>? lastSubmittedPayload;
+  HazardResolutionReportData? lastSubmittedResolution;
+  Uint8List? lastResolutionImageBytes;
   Completer<Map<String, dynamic>>? pendingSubmitCompleter;
   final List<HazardReportData> storedDbReports;
 
@@ -97,7 +100,7 @@ class FakeHazardReportService extends HazardReportService {
       'longitude': location?.longitude,
       'image_url':
           'https://wupbsnrtrsontoajxkir.supabase.co/storage/v1/object/public/hazard-reports/fake-uuid-1234.jpg',
-      'status': 'active',
+      'status': 'pending',
       'created_at': '2026-11-06T00:00:00Z',
     };
 
@@ -108,22 +111,67 @@ class FakeHazardReportService extends HazardReportService {
   }
 
   @override
+  Future<HazardResolutionReportData> submitHazardResolutionReport({
+    required String reportId,
+    required String category,
+    required String title,
+    required String description,
+    required String securityLevel,
+    required String locationAddress,
+    LatLng? location,
+    String? originalImageUrl,
+    required Uint8List resolutionImageBytes,
+    String? mimeType,
+    String? resolutionNote,
+  }) async {
+    lastResolutionImageBytes = resolutionImageBytes;
+    final data = HazardResolutionReportData(
+      id: 'res-uuid-9999',
+      reportId: reportId,
+      hazardCategory: category,
+      detectedHazard: title,
+      hazardDescription: description,
+      severityLevel: securityLevel,
+      locationAddress: locationAddress,
+      location: location,
+      originalImageUrl: originalImageUrl,
+      resolutionImageUrl:
+          'https://wupbsnrtrsontoajxkir.supabase.co/storage/v1/object/public/hazard-reports/resolutions/$reportId.jpg',
+      resolutionImageBytes: resolutionImageBytes,
+      resolutionNote: resolutionNote,
+      status: HazardReportStatuses.pending,
+      createdAt: DateTime.now(),
+    );
+    HazardReportService.recordSubmittedResolutionReport(data);
+    lastSubmittedResolution = data;
+    return data;
+  }
+
+  @override
   Future<List<HazardReportData>> fetchReports({
     int limit = 100,
-    bool activeOnly = true,
+    bool activeOnly = false,
   }) async {
     final byId = <String, HazardReportData>{};
     for (final s in HazardReportService.sessionReports) {
-      if (activeOnly && s.status != 'active') continue;
       if (s.reportId != null) byId[s.reportId!] = s;
     }
     for (final db in storedDbReports) {
-      if (activeOnly && db.status != 'active') continue;
       if (db.reportId != null) {
         byId.putIfAbsent(db.reportId!, () => db);
       }
     }
     return byId.values.take(limit).toList();
+  }
+
+  @override
+  Future<List<HazardReportData>> fetchUserReports({
+    String? userId,
+    int limit = 100,
+    bool includeUnaccepted = true,
+  }) async {
+    // Return all fixture rows unfiltered so MyReportsScreen's own filtering is exercised (Comment 15)
+    return List<HazardReportData>.from(storedDbReports);
   }
 }
 
@@ -497,5 +545,228 @@ void main() {
     expect(find.byKey(const ValueKey('ai_locked_category_box')), findsNothing);
     expect(find.text(HazardCategories.flood), findsNothing);
     expect(find.text('Add a photo'), findsOneWidget);
+  });
+
+  testWidgets('Task 1: Newly reported hazard is pending, hidden from MapScreen until active, and hidden again when resolved', (tester) async {
+    final fakeReportService = FakeHazardReportService(
+      initialDbReports: [
+        HazardReportData(
+          reportId: 'pending-rep-1',
+          category: HazardCategories.roadDamage,
+          securityLevel: HazardSecurityLevels.high,
+          title: 'Unverified Pothole Report',
+          description: 'Needs admin verification first.',
+          address: 'Colon St, Cebu City',
+          location: const LatLng(10.3155, 123.8920),
+          timestamp: DateTime.now(),
+          status: HazardReportStatuses.pending,
+        ),
+        HazardReportData(
+          reportId: 'active-rep-2',
+          category: HazardCategories.accident,
+          securityLevel: HazardSecurityLevels.high,
+          title: 'Overturned Vehicle on Roadway',
+          description: 'Verified active hazard on roadway.',
+          address: 'Natalio Bacalso Ave, Cebu City',
+          location: const LatLng(10.3158, 123.8921),
+          timestamp: DateTime.now(),
+          status: HazardReportStatuses.active,
+        ),
+        HazardReportData(
+          reportId: 'resolved-rep-3',
+          category: HazardCategories.fallenTree,
+          securityLevel: HazardSecurityLevels.medium,
+          title: 'Cleared Fallen Tree',
+          description: 'Already cleared and resolved.',
+          address: 'Mango Ave, Cebu City',
+          location: const LatLng(10.3161, 123.8923),
+          timestamp: DateTime.now(),
+          status: HazardReportStatuses.resolved,
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MapScreen(
+          initialLocation: const LatLng(10.3157, 123.8920),
+          hazardReportService: fakeReportService,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Only the 1 active hazard is shown on the map; pending and resolved are excluded
+    expect(find.text('1 nearby hazard'), findsOneWidget);
+    await tester.tap(find.text('1 nearby hazard'));
+    await tester.pump(const Duration(milliseconds: 350));
+
+    expect(
+      find.textContaining('Overturned Vehicle on Roadway', findRichText: true),
+      findsWidgets,
+    );
+    expect(
+      find.textContaining('Unverified Pothole Report', findRichText: true),
+      findsNothing,
+    );
+    expect(
+      find.textContaining('Cleared Fallen Tree', findRichText: true),
+      findsNothing,
+    );
+  });
+
+  testWidgets('Task 1: MyReportsScreen excludes unaccepted (pending/rejected) reports and only counts and displays active and resolved reports', (tester) async {
+    final fakeReportService = FakeHazardReportService(
+      initialDbReports: [
+        HazardReportData(
+          reportId: 'rep-pending',
+          category: HazardCategories.roadDamage,
+          securityLevel: HazardSecurityLevels.high, // 3 pts, but pending -> NOT counted
+          title: 'Pending Road Crack',
+          description: 'Awaiting admin verification',
+          address: 'Lahug, Cebu City',
+          location: const LatLng(10.3200, 123.8900),
+          timestamp: DateTime.now(),
+          status: HazardReportStatuses.pending,
+        ),
+        HazardReportData(
+          reportId: 'rep-active',
+          category: HazardCategories.flood,
+          securityLevel: HazardSecurityLevels.medium, // 2 pts
+          title: 'Active Street Flood',
+          description: 'Verified by admin',
+          address: 'Mabolo, Cebu City',
+          location: const LatLng(10.3100, 123.9000),
+          timestamp: DateTime.now(),
+          status: HazardReportStatuses.active,
+        ),
+        HazardReportData(
+          reportId: 'rep-resolved',
+          category: HazardCategories.fallenTree,
+          securityLevel: HazardSecurityLevels.low, // 1 pt
+          title: 'Resolved Tree Branch',
+          description: 'Cleared from road',
+          address: 'Talamban, Cebu City',
+          location: const LatLng(10.3400, 123.9100),
+          timestamp: DateTime.now(),
+          status: HazardReportStatuses.resolved,
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MyReportsScreen(
+          hazardReportService: fakeReportService,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Unaccepted (pending) report must NOT be displayed or counted in Submitted Reports (2) or Points Earned (3 pts = 2 + 1)
+    expect(find.text('Pending Road Crack'), findsNothing);
+    expect(find.text('Active Street Flood'), findsOneWidget);
+    expect(find.text('Resolved Tree Branch'), findsOneWidget);
+    expect(find.text('2'), findsOneWidget); // 2 Submitted Reports (active + resolved)
+    expect(find.text('3 pts'), findsOneWidget); // 2 + 1 = 3 pts (pending +3 pts excluded)
+
+    // Filter by Active
+    await tester.tap(find.widgetWithText(ChoiceChip, 'Active'));
+    await tester.pumpAndSettle();
+    expect(find.text('Active Street Flood'), findsOneWidget);
+    expect(find.text('Resolved Tree Branch'), findsNothing);
+
+    // Filter by Resolved
+    await tester.tap(find.widgetWithText(ChoiceChip, 'Resolved'));
+    await tester.pumpAndSettle();
+    expect(find.text('Active Street Flood'), findsNothing);
+    expect(find.text('Resolved Tree Branch'), findsOneWidget);
+  });
+
+  testWidgets('Task 2: Hazard detail sheet has Report Hazard as Resolved button that captures camera photo and stores resolution report for admin verification', (tester) async {
+    final fakeReportService = FakeHazardReportService(
+      initialDbReports: [
+        HazardReportData(
+          reportId: 'active-hazard-777',
+          category: HazardCategories.accident,
+          securityLevel: HazardSecurityLevels.high,
+          confidence: 100,
+          title: 'Overturned Vehicle on Roadway',
+          description:
+              'A silver sedan is flipped upside down on a busy street following a collision.',
+          address: 'Natalio Bacalso Avenue, Cebu City',
+          location: const LatLng(10.2985, 123.8805),
+          timestamp: DateTime.now().subtract(const Duration(days: 3)),
+          status: HazardReportStatuses.active,
+        ),
+      ],
+    );
+
+    bool cameraLaunched = false;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MapScreen(
+          initialLocation: const LatLng(10.2985, 123.8805),
+          focusHazardLocation: const LatLng(10.2985, 123.8805),
+          focusedReportId: 'active-hazard-777',
+          hazardReportService: fakeReportService,
+          cameraLauncher: (context) async {
+            cameraLaunched = true;
+            return XFile.fromData(
+              _validPngBytes,
+              name: 'resolved_proof.png',
+              mimeType: 'image/png',
+            );
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 500));
+
+    // Hazard detail bottom sheet is open with the "Report Hazard as Resolved" button
+    final resolveButton = find.byKey(const Key('report_hazard_resolved_button'));
+    expect(resolveButton, findsOneWidget);
+    expect(find.text('Report Hazard as Resolved'), findsOneWidget);
+
+    // Tap "Report Hazard as Resolved" -> launches camera and submits resolution report
+    await tester.ensureVisible(resolveButton);
+    await tester.pump();
+    await tester.tap(resolveButton);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(cameraLaunched, isTrue);
+    expect(fakeReportService.lastSubmittedResolution, isNotNull);
+    expect(
+      fakeReportService.lastSubmittedResolution!.reportId,
+      'active-hazard-777',
+    );
+    expect(
+      fakeReportService.lastSubmittedResolution!.detectedHazard,
+      'Overturned Vehicle on Roadway',
+    );
+    expect(
+      fakeReportService.lastSubmittedResolution!.locationAddress,
+      'Natalio Bacalso Avenue, Cebu City',
+    );
+    expect(
+      fakeReportService.lastSubmittedResolution!.status,
+      HazardReportStatuses.pending,
+    );
+    expect(fakeReportService.lastResolutionImageBytes, isNotNull);
+
+    // Sheet transitions to "Resolution Reported • Pending Admin Verification" banner
+    expect(
+      find.byKey(const Key('hazard_resolution_pending_banner')),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Resolution Reported • Pending Admin Verification'),
+      findsOneWidget,
+    );
   });
 }
