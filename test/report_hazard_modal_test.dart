@@ -150,15 +150,13 @@ class FakeHazardReportService extends HazardReportService {
   @override
   Future<List<HazardReportData>> fetchReports({
     int limit = 100,
-    bool activeOnly = true,
+    bool activeOnly = false,
   }) async {
     final byId = <String, HazardReportData>{};
     for (final s in HazardReportService.sessionReports) {
-      if (activeOnly && s.status != 'active') continue;
       if (s.reportId != null) byId[s.reportId!] = s;
     }
     for (final db in storedDbReports) {
-      if (activeOnly && db.status != 'active') continue;
       if (db.reportId != null) {
         byId.putIfAbsent(db.reportId!, () => db);
       }
@@ -170,15 +168,10 @@ class FakeHazardReportService extends HazardReportService {
   Future<List<HazardReportData>> fetchUserReports({
     String? userId,
     int limit = 100,
-    bool includeUnaccepted = false,
+    bool includeUnaccepted = true,
   }) async {
-    return storedDbReports
-        .where(
-          (r) =>
-              includeUnaccepted ||
-              HazardReportStatuses.isAcceptedForUserReports(r.status),
-        )
-        .toList();
+    // Return all fixture rows unfiltered so MyReportsScreen's own filtering is exercised (Comment 15)
+    return List<HazardReportData>.from(storedDbReports);
   }
 }
 

@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
@@ -147,6 +148,103 @@ void main() {
         MapScreen.classifyHazardForMap(HazardCategories.other),
         (filterCategoryIndex: 3, icon: Icons.warning_amber_rounded),
       );
+    });
+  });
+
+  group('Hazard Resolution Submission & Status Validation Tests (Comments 3, 9, 16)', () {
+    test('submitHazardResolutionReport throws ArgumentError on empty reportId or bytes', () async {
+      final service = HazardReportService();
+      expect(
+        () => service.submitHazardResolutionReport(
+          reportId: '',
+          category: HazardCategories.accident,
+          title: 'Accident',
+          description: '',
+          securityLevel: HazardSecurityLevels.high,
+          locationAddress: 'Cebu City',
+          resolutionImageBytes: Uint8List.fromList([1, 2, 3]),
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+
+      expect(
+        () => service.submitHazardResolutionReport(
+          reportId: 'valid-report-id',
+          category: HazardCategories.accident,
+          title: 'Accident',
+          description: '',
+          securityLevel: HazardSecurityLevels.high,
+          locationAddress: 'Cebu City',
+          resolutionImageBytes: Uint8List(0),
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('submitHazardResolutionReport throws StateError and aborts without inserting when upload fails (Comment 3)', () async {
+      final service = HazardReportService();
+      // Without a valid Supabase client / storage upload, uploadHazardPhoto returns null,
+      // which must fail submission rather than inserting a pending record with local:// (Comment 3)
+      expect(
+        () => service.submitHazardResolutionReport(
+          reportId: 'hazard-without-upload-123',
+          category: HazardCategories.flood,
+          title: 'Flooded Underpass',
+          description: 'Water drained',
+          securityLevel: HazardSecurityLevels.medium,
+          locationAddress: 'Mambaling, Cebu City',
+          resolutionImageBytes: Uint8List.fromList([137, 80, 78, 71]),
+        ),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        HazardReportService.hasPendingResolution('hazard-without-upload-123'),
+        isFalse,
+      );
+    });
+
+    test('HazardReportStatuses only counts active and resolved as accepted for user reports', () {
+      expect(HazardReportStatuses.isAcceptedForUserReports('active'), isTrue);
+      expect(HazardReportStatuses.isAcceptedForUserReports('resolved'), isTrue);
+      expect(HazardReportStatuses.isAcceptedForUserReports('pending'), isFalse);
+      expect(HazardReportStatuses.isAcceptedForUserReports('rejected'), isFalse);
+      expect(HazardReportStatuses.isAcceptedForUserReports('archived'), isFalse);
+      expect(HazardReportStatuses.isAcceptedForUserReports(null), isFalse);
+    });
+
+    test('parses hazard_resolution_reports rows accurately', () {
+      final row = {
+        'id': 'res-101',
+        'report_id': 'rep-777',
+        'reported_by': 'usr-555',
+        'hazard_category': 'Road damage',
+        'detected_hazard': 'Repaired Pothole',
+        'hazard_description': 'Asphalt patch completed',
+        'severity_level': 'High',
+        'location_address': 'Gorordo Ave, Cebu City',
+        'latitude': 10.3200,
+        'longitude': 123.8950,
+        'original_image_url': 'https://example.com/orig.jpg',
+        'resolution_image_url': 'https://example.com/res.jpg',
+        'resolution_note': 'Road is now clear',
+        'status': 'pending',
+        'created_at': '2026-11-09T12:00:00Z',
+      };
+
+      final data = HazardResolutionReportData.fromRow(row);
+      expect(data.id, 'res-101');
+      expect(data.reportId, 'rep-777');
+      expect(data.reportedBy, 'usr-555');
+      expect(data.hazardCategory, HazardCategories.roadDamage);
+      expect(data.detectedHazard, 'Repaired Pothole');
+      expect(data.hazardDescription, 'Asphalt patch completed');
+      expect(data.severityLevel, HazardSecurityLevels.high);
+      expect(data.locationAddress, 'Gorordo Ave, Cebu City');
+      expect(data.location, const LatLng(10.3200, 123.8950));
+      expect(data.originalImageUrl, 'https://example.com/orig.jpg');
+      expect(data.resolutionImageUrl, 'https://example.com/res.jpg');
+      expect(data.resolutionNote, 'Road is now clear');
+      expect(data.status, 'pending');
     });
   });
 }

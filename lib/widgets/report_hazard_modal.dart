@@ -782,6 +782,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
 
       final report = HazardReportData(
         reportId: insertedRow['reportID']?.toString(),
+        userId: insertedRow['user_id']?.toString(),
         category: submittedCategory,
         securityLevel: submittedSecurityLevel,
         title: submittedTitle,

@@ -45,7 +45,31 @@ CREATE INDEX IF NOT EXISTS "idx_ReportTable_pending_resolutions"
   ON public."ReportTable" (resolution_status, resolution_reported_at DESC)
   WHERE resolution_status = 'pending';
 
--- Allow admins (in addition to report owners) to update or delete rows in ReportTable
+-- Allow admins (in addition to report owners) to update or delete rows in ReportTable.
+-- Restrict client inserts and non-admin updates so unreviewed reports cannot be set to 'active'.
+DROP POLICY IF EXISTS "Allow anon users to insert hazard reports" ON public."ReportTable";
+CREATE POLICY "Allow anon users to insert hazard reports"
+  ON public."ReportTable"
+  FOR INSERT
+  TO anon
+  WITH CHECK (
+    user_id IS NULL
+    AND (status IS NULL OR status = 'pending')
+  );
+
+DROP POLICY IF EXISTS "Allow authenticated users to insert hazard reports" ON public."ReportTable";
+CREATE POLICY "Allow authenticated users to insert hazard reports"
+  ON public."ReportTable"
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    (user_id IS NULL OR (SELECT auth.uid()) = user_id)
+    AND (
+      (status IS NULL OR status = 'pending')
+      OR (SELECT public.verify_admin_access())
+    )
+  );
+
 DROP POLICY IF EXISTS "Allow users to update own hazard reports" ON public."ReportTable";
 DROP POLICY IF EXISTS "Allow users or admins to update hazard reports" ON public."ReportTable";
 CREATE POLICY "Allow users or admins to update hazard reports"
@@ -57,8 +81,11 @@ CREATE POLICY "Allow users or admins to update hazard reports"
     OR (SELECT public.verify_admin_access())
   )
   WITH CHECK (
-    (SELECT auth.uid()) = user_id
-    OR (SELECT public.verify_admin_access())
+    (SELECT public.verify_admin_access())
+    OR (
+      (SELECT auth.uid()) = user_id
+      AND status = 'pending'
+    )
   );
 
 DROP POLICY IF EXISTS "Allow users to delete own hazard reports" ON public."ReportTable";
@@ -72,7 +99,38 @@ CREATE POLICY "Allow users or admins to delete hazard reports"
     OR (SELECT public.verify_admin_access())
   );
 
--- Automatically stamp verified_at / resolved_at when ReportTable.status changes
+-- Enforce that non-admins cannot insert active reports or alter report status
+CREATE OR REPLACE FUNCTION public.enforce_report_table_status_authorization()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF tg_op = 'INSERT' THEN
+    IF NEW.status IS NULL THEN
+      NEW.status := 'pending';
+    ELSIF NEW.status <> 'pending' AND NOT COALESCE(public.verify_admin_access(), false) THEN
+      NEW.status := 'pending';
+    END IF;
+  ELSIF tg_op = 'UPDATE' THEN
+    IF NEW.status IS DISTINCT FROM OLD.status AND NOT COALESCE(public.verify_admin_access(), false) THEN
+      RAISE EXCEPTION 'Only administrators can update report status.';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.enforce_report_table_status_authorization() FROM public, anon, authenticated;
+
+DROP TRIGGER IF EXISTS on_report_table_enforce_status_auth ON public."ReportTable";
+CREATE TRIGGER on_report_table_enforce_status_auth
+  BEFORE INSERT OR UPDATE OF status ON public."ReportTable"
+  FOR EACH ROW
+  EXECUTE FUNCTION public.enforce_report_table_status_authorization();
+
+-- Automatically stamp verified_at / resolved_at when ReportTable.status changes by an admin
 CREATE OR REPLACE FUNCTION public.handle_report_table_status_timestamps()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -284,13 +342,133 @@ CREATE INDEX IF NOT EXISTS idx_hazard_resolution_reports_reported_by
 CREATE INDEX IF NOT EXISTS idx_hazard_resolution_reports_status_created
   ON public.hazard_resolution_reports (status, created_at DESC);
 
+-- Idempotency constraint: prevent duplicate pending reviews for the same report by the same user
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hazard_resolution_reports_unique_pending
+  ON public.hazard_resolution_reports (
+    report_id,
+    COALESCE(reported_by, '00000000-0000-0000-0000-000000000000'::uuid)
+  )
+  WHERE status = 'pending';
+
 DROP TRIGGER IF EXISTS on_hazard_resolution_reports_updated ON public.hazard_resolution_reports;
 CREATE TRIGGER on_hazard_resolution_reports_updated
   BEFORE UPDATE ON public.hazard_resolution_reports
   FOR EACH ROW
   EXECUTE FUNCTION public.set_updated_at();
 
--- Synchronize resolution submission & admin approval with public."ReportTable"
+-- Enforce that resolution submissions only target currently 'active' hazards
+CREATE OR REPLACE FUNCTION public.validate_hazard_resolution_submission()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_report_status text;
+BEGIN
+  SELECT status INTO v_report_status
+  FROM public."ReportTable"
+  WHERE "reportID" = NEW.report_id;
+
+  IF v_report_status IS NULL THEN
+    RAISE EXCEPTION 'Target hazard report % does not exist.', NEW.report_id;
+  END IF;
+
+  IF v_report_status <> 'active' THEN
+    RAISE EXCEPTION 'Resolution reports can only be submitted for active hazards (current status: %).', v_report_status;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.validate_hazard_resolution_submission() FROM public, anon, authenticated;
+
+DROP TRIGGER IF EXISTS on_hazard_resolution_reports_validate ON public.hazard_resolution_reports;
+CREATE TRIGGER on_hazard_resolution_reports_validate
+  BEFORE INSERT ON public.hazard_resolution_reports
+  FOR EACH ROW
+  EXECUTE FUNCTION public.validate_hazard_resolution_submission();
+
+-- Recompute resolution summary on ReportTable from all remaining resolution submissions
+CREATE OR REPLACE FUNCTION public.recompute_report_table_resolution_state(p_report_id text)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_pending RECORD;
+  v_approved RECORD;
+  v_rejected RECORD;
+BEGIN
+  -- 1. If any pending resolution report remains, show pending
+  SELECT resolution_image_url, reported_by, created_at
+  INTO v_pending
+  FROM public.hazard_resolution_reports
+  WHERE report_id = p_report_id AND status = 'pending'
+  ORDER BY created_at DESC
+  LIMIT 1;
+
+  IF FOUND THEN
+    UPDATE public."ReportTable"
+    SET resolution_status = 'pending',
+        resolution_image_url = v_pending.resolution_image_url,
+        resolution_reported_by = v_pending.reported_by,
+        resolution_reported_at = v_pending.created_at
+    WHERE "reportID" = p_report_id;
+    RETURN;
+  END IF;
+
+  -- 2. Else if an approved resolution report exists, show approved
+  SELECT resolution_image_url, reported_by, created_at
+  INTO v_approved
+  FROM public.hazard_resolution_reports
+  WHERE report_id = p_report_id AND status = 'approved'
+  ORDER BY created_at DESC
+  LIMIT 1;
+
+  IF FOUND THEN
+    UPDATE public."ReportTable"
+    SET resolution_status = 'approved',
+        resolution_image_url = v_approved.resolution_image_url,
+        resolution_reported_by = v_approved.reported_by,
+        resolution_reported_at = v_approved.created_at
+    WHERE "reportID" = p_report_id;
+    RETURN;
+  END IF;
+
+  -- 3. Else if a rejected resolution report exists, show rejected
+  SELECT resolution_image_url, reported_by, created_at
+  INTO v_rejected
+  FROM public.hazard_resolution_reports
+  WHERE report_id = p_report_id AND status = 'rejected'
+  ORDER BY created_at DESC
+  LIMIT 1;
+
+  IF FOUND THEN
+    UPDATE public."ReportTable"
+    SET resolution_status = 'rejected',
+        resolution_image_url = v_rejected.resolution_image_url,
+        resolution_reported_by = v_rejected.reported_by,
+        resolution_reported_at = v_rejected.created_at
+    WHERE "reportID" = p_report_id;
+    RETURN;
+  END IF;
+
+  -- 4. No resolution records remain
+  UPDATE public."ReportTable"
+  SET resolution_status = NULL,
+      resolution_image_url = NULL,
+      resolution_reported_by = NULL,
+      resolution_reported_at = NULL
+  WHERE "reportID" = p_report_id;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.recompute_report_table_resolution_state(text) FROM public, anon, authenticated;
+
+-- Synchronize resolution submission, approval, rejection, and deletion with public."ReportTable"
 CREATE OR REPLACE FUNCTION public.sync_report_table_from_resolution_report()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -299,28 +477,23 @@ SET search_path = public
 AS $$
 BEGIN
   IF tg_op = 'INSERT' THEN
-    UPDATE public."ReportTable"
-    SET resolution_status = 'pending',
-        resolution_image_url = NEW.resolution_image_url,
-        resolution_reported_by = NEW.reported_by,
-        resolution_reported_at = NEW.created_at
-    WHERE "reportID" = NEW.report_id;
+    PERFORM public.recompute_report_table_resolution_state(NEW.report_id);
   ELSIF tg_op = 'UPDATE' THEN
     IF NEW.status = 'approved' AND COALESCE(OLD.status, '') <> 'approved' THEN
+      -- Only transition linked hazard from 'active' to 'resolved' (Comment 5)
       UPDATE public."ReportTable"
       SET status = 'resolved',
           resolution_status = 'approved',
           resolved_at = COALESCE(NEW.verified_at, timezone('utc'::text, now()))
       WHERE "reportID" = NEW.report_id
-        AND status <> 'resolved';
-    ELSIF NEW.status = 'rejected' AND COALESCE(OLD.status, '') <> 'rejected' THEN
-      UPDATE public."ReportTable"
-      SET resolution_status = 'rejected'
-      WHERE "reportID" = NEW.report_id;
+        AND status = 'active';
     END IF;
+    PERFORM public.recompute_report_table_resolution_state(NEW.report_id);
+  ELSIF tg_op = 'DELETE' THEN
+    PERFORM public.recompute_report_table_resolution_state(OLD.report_id);
   END IF;
 
-  RETURN NEW;
+  RETURN COALESCE(NEW, OLD);
 END;
 $$;
 
@@ -328,48 +501,29 @@ REVOKE EXECUTE ON FUNCTION public.sync_report_table_from_resolution_report() FRO
 
 DROP TRIGGER IF EXISTS on_hazard_resolution_report_sync ON public.hazard_resolution_reports;
 CREATE TRIGGER on_hazard_resolution_report_sync
-  AFTER INSERT OR UPDATE ON public.hazard_resolution_reports
+  AFTER INSERT OR UPDATE OR DELETE ON public.hazard_resolution_reports
   FOR EACH ROW
   EXECUTE FUNCTION public.sync_report_table_from_resolution_report();
 
--- If an admin directly marks ReportTable.status = 'resolved', approve any pending resolution reports
-CREATE OR REPLACE FUNCTION public.sync_resolution_reports_on_report_resolved()
-RETURNS trigger
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-  IF NEW.status = 'resolved' AND COALESCE(OLD.status, '') <> 'resolved' THEN
-    UPDATE public.hazard_resolution_reports
-    SET status = 'approved',
-        verified_by = COALESCE(verified_by, auth.uid()),
-        verified_at = COALESCE(verified_at, timezone('utc'::text, now())),
-        updated_at = timezone('utc'::text, now())
-    WHERE report_id = NEW."reportID"
-      AND status = 'pending';
-  END IF;
-  RETURN NEW;
-END;
-$$;
-
-REVOKE EXECUTE ON FUNCTION public.sync_resolution_reports_on_report_resolved() FROM public, anon, authenticated;
-
+-- Drop opposing trigger on ReportTable to prevent unreviewed proofs from auto-approving and avoid deadlocks (Comment 6, 8)
 DROP TRIGGER IF EXISTS on_report_table_resolved_sync_resolutions ON public."ReportTable";
-CREATE TRIGGER on_report_table_resolved_sync_resolutions
-  AFTER UPDATE OF status ON public."ReportTable"
-  FOR EACH ROW
-  EXECUTE FUNCTION public.sync_resolution_reports_on_report_resolved();
+DROP FUNCTION IF EXISTS public.sync_resolution_reports_on_report_resolved();
 
 ALTER TABLE public.hazard_resolution_reports ENABLE ROW LEVEL SECURITY;
 
+-- Comment 2: Remove public SELECT access and restrict to reporter or admin
 DROP POLICY IF EXISTS "Allow public read access to hazard resolution reports" ON public.hazard_resolution_reports;
-CREATE POLICY "Allow public read access to hazard resolution reports"
+DROP POLICY IF EXISTS "Allow reporters or admins to view hazard resolution reports" ON public.hazard_resolution_reports;
+CREATE POLICY "Allow reporters or admins to view hazard resolution reports"
   ON public.hazard_resolution_reports
   FOR SELECT
-  TO public
-  USING (true);
+  TO authenticated
+  USING (
+    (SELECT auth.uid()) = reported_by
+    OR (SELECT public.verify_admin_access())
+  );
 
+-- Comment 4: Enforce target hazard is active before accepting resolution submission
 DROP POLICY IF EXISTS "Allow anon users to insert pending hazard resolution reports" ON public.hazard_resolution_reports;
 CREATE POLICY "Allow anon users to insert pending hazard resolution reports"
   ON public.hazard_resolution_reports
@@ -378,6 +532,11 @@ CREATE POLICY "Allow anon users to insert pending hazard resolution reports"
   WITH CHECK (
     reported_by IS NULL
     AND status = 'pending'
+    AND EXISTS (
+      SELECT 1 FROM public."ReportTable" r
+      WHERE r."reportID" = report_id
+        AND r.status = 'active'
+    )
   );
 
 DROP POLICY IF EXISTS "Allow authenticated users to insert pending hazard resolution reports" ON public.hazard_resolution_reports;
@@ -388,6 +547,11 @@ CREATE POLICY "Allow authenticated users to insert pending hazard resolution rep
   WITH CHECK (
     (reported_by IS NULL OR (SELECT auth.uid()) = reported_by)
     AND status = 'pending'
+    AND EXISTS (
+      SELECT 1 FROM public."ReportTable" r
+      WHERE r."reportID" = report_id
+        AND r.status = 'active'
+    )
   );
 
 DROP POLICY IF EXISTS "Allow admins to update hazard resolution reports" ON public.hazard_resolution_reports;
@@ -408,8 +572,9 @@ CREATE POLICY "Allow reporters or admins to delete hazard resolution reports"
     OR (SELECT public.verify_admin_access())
   );
 
+-- Grants: DO NOT grant SELECT to anon or public (Comment 2)
 REVOKE ALL ON public.hazard_resolution_reports FROM anon, authenticated, public;
-GRANT SELECT, INSERT ON public.hazard_resolution_reports TO anon;
+GRANT INSERT ON public.hazard_resolution_reports TO anon;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.hazard_resolution_reports TO authenticated;
 
 -- ============================================================================
@@ -524,14 +689,28 @@ DROP FUNCTION IF EXISTS public.sync_resolution_reports_on_report_resolved();
 DROP TRIGGER IF EXISTS on_hazard_resolution_report_sync ON public.hazard_resolution_reports;
 DROP FUNCTION IF EXISTS public.sync_report_table_from_resolution_report();
 
+DROP TRIGGER IF EXISTS on_hazard_resolution_reports_validate ON public.hazard_resolution_reports;
+DROP FUNCTION IF EXISTS public.validate_hazard_resolution_submission();
+
+DROP FUNCTION IF EXISTS public.recompute_report_table_resolution_state(text);
+
+DROP INDEX IF EXISTS public.idx_hazard_resolution_reports_unique_pending;
 DROP TRIGGER IF EXISTS on_hazard_resolution_reports_updated ON public.hazard_resolution_reports;
 DROP TABLE IF EXISTS public.hazard_resolution_reports;
+
+DROP TRIGGER IF EXISTS on_report_table_enforce_status_auth ON public."ReportTable";
+DROP FUNCTION IF EXISTS public.enforce_report_table_status_authorization();
 
 DROP TRIGGER IF EXISTS on_report_table_status_timestamps ON public."ReportTable";
 DROP FUNCTION IF EXISTS public.handle_report_table_status_timestamps();
 
 DROP INDEX IF EXISTS public."idx_ReportTable_pending_resolutions";
 DROP INDEX IF EXISTS public."idx_ReportTable_status_created_at";
+
+-- Comment 13: Migrate pending and rejected rows to 'archived' so rolled back clients safely exclude them
+UPDATE public."ReportTable"
+SET status = 'archived'
+WHERE status IN ('pending', 'rejected');
 
 ALTER TABLE public."ReportTable"
   DROP CONSTRAINT IF EXISTS "ReportTable_resolution_status_check";
@@ -548,3 +727,9 @@ ALTER TABLE public."ReportTable"
 ALTER TABLE public."ReportTable"
   ALTER COLUMN status SET DEFAULT 'active';
 
+ALTER TABLE public."ReportTable"
+  DROP CONSTRAINT IF EXISTS "ReportTable_status_check";
+
+ALTER TABLE public."ReportTable"
+  ADD CONSTRAINT "ReportTable_status_check"
+  CHECK (status IN ('active', 'resolved', 'archived'));

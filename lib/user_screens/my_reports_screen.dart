@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../map_screen.dart';
 import '../services/hazard_report_service.dart';
 import '../services/leaderboard_service.dart';
@@ -27,6 +28,7 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
   late final HazardReportService _hazardReportService;
   StreamSubscription<HazardReportData>? _reportSubscription;
   StreamSubscription<HazardResolutionReportData>? _resolutionSubscription;
+  RealtimeChannel? _remoteReportsChannel;
 
   List<HazardReportData> _reports = const <HazardReportData>[];
   bool _isLoading = true;
@@ -43,12 +45,23 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
     _resolutionSubscription = HazardReportService.resolutionStream.listen((_) {
       _loadUserReports();
     });
+    _remoteReportsChannel = _hazardReportService.subscribeToRemoteReportChanges(
+      onReportChanged: () {
+        if (mounted) {
+          _loadUserReports();
+        }
+      },
+    );
   }
 
   @override
   void dispose() {
     _reportSubscription?.cancel();
     _resolutionSubscription?.cancel();
+    if (_remoteReportsChannel != null) {
+      _hazardReportService
+          .unsubscribeFromRemoteReportChanges(_remoteReportsChannel);
+    }
     super.dispose();
   }
 

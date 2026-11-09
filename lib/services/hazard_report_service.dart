@@ -400,6 +400,43 @@ class HazardReportService {
   static Stream<HazardResolutionReportData> get resolutionStream =>
       _resolutionStreamController.stream;
 
+  /// Subscribes to real-time changes on `ReportTable` in Supabase,
+  /// calling [onReportChanged] whenever a report status or record is updated remotely.
+  RealtimeChannel? subscribeToRemoteReportChanges({
+    required void Function() onReportChanged,
+  }) {
+    final client = _tryGetClient();
+    if (client == null) return null;
+    try {
+      final channelName = 'public:ReportTable:${generateUuidV4()}';
+      final channel = client.channel(channelName);
+      channel
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'ReportTable',
+            callback: (_) {
+              onReportChanged();
+            },
+          )
+          .subscribe();
+      return channel;
+    } catch (e) {
+      debugPrint('Warning: Failed to subscribe to ReportTable realtime: $e');
+      return null;
+    }
+  }
+
+  /// Removes and unsubscribes a RealtimeChannel.
+  void unsubscribeFromRemoteReportChanges(RealtimeChannel? channel) {
+    if (channel == null) return;
+    final client = _tryGetClient();
+    if (client == null) return;
+    try {
+      client.removeChannel(channel);
+    } catch (_) {}
+  }
+
   /// Snapshot of reports submitted during the active app session.
   static List<HazardReportData> get sessionReports =>
       List<HazardReportData>.unmodifiable(_sessionReports);
@@ -663,6 +700,10 @@ class HazardReportService {
       throw ArgumentError('reportId must not be empty');
     }
 
+    if (resolutionImageBytes.isEmpty) {
+      throw ArgumentError('resolutionImageBytes must not be empty');
+    }
+
     final resolutionId = generateUuidV4();
     final client = _tryGetClient();
     final currentUserId = client?.auth.currentUser?.id;
@@ -681,19 +722,71 @@ class HazardReportService {
       }
     }
 
+    final effectiveUserId = reportAnonymously ? null : currentUserId;
+
+    // Idempotency check: if user already submitted a pending resolution for this hazard (Comment 9)
+    if (client != null) {
+      try {
+        var query = client
+            .from('hazard_resolution_reports')
+            .select()
+            .eq('report_id', trimmedReportId)
+            .eq('status', 'pending');
+        if (effectiveUserId != null) {
+          query = query.eq('reported_by', effectiveUserId);
+        } else {
+          query = query.filter('reported_by', 'is', 'null');
+        }
+        final existingPending = await query.maybeSingle();
+        if (existingPending != null) {
+          final record = HazardResolutionReportData.fromRow(existingPending);
+          final existingEnriched = HazardResolutionReportData(
+            id: record.id,
+            reportId: trimmedReportId,
+            reportedBy: record.reportedBy,
+            hazardCategory: HazardCategories.normalize(category),
+            detectedHazard: title.trim().isNotEmpty
+                ? title.trim()
+                : cleanCategory(category),
+            hazardDescription: description.trim(),
+            severityLevel: HazardSecurityLevels.normalize(securityLevel),
+            locationAddress: locationAddress.trim().isNotEmpty
+                ? locationAddress.trim()
+                : 'Current Location',
+            location: location ?? record.location,
+            originalImageUrl: originalImageUrl ?? record.originalImageUrl,
+            resolutionImageUrl: record.resolutionImageUrl,
+            resolutionImageBytes: resolutionImageBytes,
+            resolutionNote: record.resolutionNote,
+            status: record.status,
+            createdAt: record.createdAt,
+          );
+          recordSubmittedResolutionReport(existingEnriched);
+          return existingEnriched;
+        }
+      } catch (e) {
+        debugPrint(
+            'Warning: Could not check for existing pending resolution: $e');
+      }
+    }
+
     // 1. Upload resolution proof photo to Supabase Storage bucket `hazard-reports`
     String? resolutionImageUrl;
-    if (resolutionImageBytes.isNotEmpty && client != null) {
+    if (client != null) {
       resolutionImageUrl = await uploadHazardPhoto(
         reportId: 'resolutions/${trimmedReportId}_$resolutionId',
         bytes: resolutionImageBytes,
         mimeType: mimeType,
       );
     }
-    final effectiveResolutionUrl =
-        (resolutionImageUrl != null && resolutionImageUrl.trim().isNotEmpty)
-            ? resolutionImageUrl.trim()
-            : 'local://resolution/$resolutionId.jpg';
+
+    // Fail the submission without inserting if proof photo upload fails (Comment 3)
+    if (resolutionImageUrl == null || resolutionImageUrl.trim().isEmpty) {
+      throw StateError(
+        'Failed to upload resolution proof photo to storage. A valid proof image is required before submitting.',
+      );
+    }
+    final effectiveResolutionUrl = resolutionImageUrl.trim();
 
     final nowUtcIso = DateTime.now().toUtc().toIso8601String();
     final cleanedCategory = cleanCategory(category);
@@ -709,7 +802,7 @@ class HazardReportService {
     final payload = <String, dynamic>{
       'id': resolutionId,
       'report_id': trimmedReportId,
-      'reported_by': reportAnonymously ? null : currentUserId,
+      'reported_by': effectiveUserId,
       'hazard_category': cleanedCategory,
       'detected_hazard': trimmedTitle,
       'hazard_description': trimmedDesc.isNotEmpty ? trimmedDesc : null,
@@ -738,8 +831,29 @@ class HazardReportService {
           savedRow = response;
         }
       } catch (e) {
-        debugPrint('Error inserting into hazard_resolution_reports: $e');
-        rethrow;
+        // If conflict on pending resolution (due to unique index), retrieve existing
+        try {
+          var query = client
+              .from('hazard_resolution_reports')
+              .select()
+              .eq('report_id', trimmedReportId)
+              .eq('status', 'pending');
+          if (effectiveUserId != null) {
+            query = query.eq('reported_by', effectiveUserId);
+          } else {
+            query = query.filter('reported_by', 'is', 'null');
+          }
+          final conflictExisting = await query.maybeSingle();
+          if (conflictExisting != null) {
+            savedRow = conflictExisting;
+          } else {
+            debugPrint('Error inserting into hazard_resolution_reports: $e');
+            rethrow;
+          }
+        } catch (_) {
+          debugPrint('Error inserting into hazard_resolution_reports: $e');
+          rethrow;
+        }
       }
     }
 
@@ -894,40 +1008,48 @@ class HazardReportService {
       }
     }
 
-    for (final sessionReport in _sessionReports) {
-      if (targetUserId == null ||
-          sessionReport.userId == null ||
-          sessionReport.userId == targetUserId) {
-        addReport(sessionReport);
-      }
-    }
-
+    final dbById = <String, HazardReportData>{};
+    bool dbQuerySucceeded = false;
     if (client != null && targetUserId != null && targetUserId.isNotEmpty) {
       try {
-        var query = client
+        final rawRows = await client
             .from('ReportTable')
             .select()
-            .eq('user_id', targetUserId);
-        if (!includeUnaccepted) {
-          query = query.inFilter(
-            'status',
-            const <String>[
-              HazardReportStatuses.active,
-              HazardReportStatuses.resolved,
-            ],
-          );
-        }
-        final rawRows = await query
+            .eq('user_id', targetUserId)
             .order('created_at', ascending: false)
             .limit(limit);
+        dbQuerySucceeded = true;
 
         for (final dynamic item in (rawRows as List<dynamic>)) {
           if (item is Map<String, dynamic>) {
-            addReport(HazardReportData.fromReportRow(item));
+            final parsed = HazardReportData.fromReportRow(item);
+            if (parsed.reportId != null && parsed.reportId!.isNotEmpty) {
+              dbById[parsed.reportId!] = parsed;
+            }
+            addReport(parsed);
+          }
+        }
+
+        // Sync session cache statuses with authoritative DB statuses
+        for (int i = 0; i < _sessionReports.length; i++) {
+          final sr = _sessionReports[i];
+          final id = sr.reportId;
+          if (id != null && dbById.containsKey(id)) {
+            _sessionReports[i] = sr.copyWith(status: dbById[id]!.status);
           }
         }
       } catch (e) {
         debugPrint('Warning: Failed to fetch user reports from ReportTable: $e');
+      }
+    }
+
+    if (!dbQuerySucceeded) {
+      for (final sessionReport in _sessionReports) {
+        if (targetUserId == null ||
+            sessionReport.userId == null ||
+            sessionReport.userId == targetUserId) {
+          addReport(sessionReport);
+        }
       }
     }
 

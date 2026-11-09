@@ -505,7 +505,12 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         backgroundColor: _bgBeige,
         body: RefreshIndicator(
           color: _primaryNavy,
-          onRefresh: () => _loadProfile(silent: true),
+          onRefresh: () async {
+            await Future.wait(<Future<void>>[
+              _loadProfile(silent: true),
+              _loadGamificationStats(),
+            ]);
+          },
           child: SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(
               parent: BouncingScrollPhysics(),

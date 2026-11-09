@@ -7,6 +7,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart' hide Path;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'services/cebu_landmark_service.dart';
 import 'services/gemini_hazard_service.dart';
 import 'services/hazard_report_service.dart';
@@ -231,6 +232,7 @@ class _MapScreenState extends State<MapScreen> {
   late final SafeRouteService _safeRouteService;
   StreamSubscription<HazardReportData>? _reportSubscription;
   StreamSubscription<HazardResolutionReportData>? _resolutionSubscription;
+  RealtimeChannel? _remoteReportsChannel;
   final List<_HazardItem> _reportedHazards = <_HazardItem>[];
   bool _isLoadingReports = true;
   bool _hasHandledInitialFocus = false;
@@ -312,6 +314,13 @@ class _MapScreenState extends State<MapScreen> {
         HazardReportService.reportStream.listen(_onExternalReportSubmitted);
     _resolutionSubscription =
         HazardReportService.resolutionStream.listen(_onResolutionSubmitted);
+    _remoteReportsChannel = _hazardReportService.subscribeToRemoteReportChanges(
+      onReportChanged: () {
+        if (mounted) {
+          _loadSavedReports();
+        }
+      },
+    );
     _searchController.addListener(_onSearchChanged);
     _loadSavedReports();
     _initDeviceLocation();
@@ -340,6 +349,10 @@ class _MapScreenState extends State<MapScreen> {
     _HazardItem? focusedItem;
     setState(() {
       _isLoadingReports = false;
+      final dbReportIds = savedReports
+          .map((r) => r.reportId)
+          .whereType<String>()
+          .toSet();
       final mergedById = <String, _HazardItem>{};
       for (final report in savedReports) {
         // Only active hazards (verified by admin) are shown on the map.
@@ -348,6 +361,12 @@ class _MapScreenState extends State<MapScreen> {
         mergedById.putIfAbsent(item.id, () => item);
       }
       for (final existing in _reportedHazards) {
+        // If it exists in the database, DB status is authoritative.
+        // Don't retain stale active items that DB says are resolved or pending.
+        if (existing.reportId != null &&
+            dbReportIds.contains(existing.reportId)) {
+          continue;
+        }
         if (existing.status == 'active') {
           mergedById.putIfAbsent(existing.id, () => existing);
         }
@@ -1302,6 +1321,10 @@ class _MapScreenState extends State<MapScreen> {
     _gpsPositionSub?.cancel();
     _reportSubscription?.cancel();
     _resolutionSubscription?.cancel();
+    if (_remoteReportsChannel != null) {
+      _hazardReportService
+          .unsubscribeFromRemoteReportChanges(_remoteReportsChannel);
+    }
     _searchDebounceTimer?.cancel();
     _reverseGeocodeDebounceTimer?.cancel();
     _searchController.removeListener(_onSearchChanged);
@@ -2715,6 +2738,7 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _captureAndSubmitHazardResolution(
     _HazardItem hazard, {
+    required BuildContext sheetContext,
     required void Function(void Function()) setSheetState,
     required ValueChanged<bool> onSubmittingChanged,
     required ValueChanged<String?> onResolutionSubmitted,
@@ -2756,9 +2780,11 @@ class _MapScreenState extends State<MapScreen> {
 
       if (capturedFile == null || !mounted) return;
 
-      setSheetState(() {
-        onSubmittingChanged(true);
-      });
+      if (sheetContext.mounted) {
+        setSheetState(() {
+          onSubmittingChanged(true);
+        });
+      }
 
       final normalizedFile = await CameraCaptureScreen.normalizeImageFile(
         capturedFile,
@@ -2802,33 +2828,41 @@ class _MapScreenState extends State<MapScreen> {
         }
       });
 
-      setSheetState(() {
-        onSubmittingChanged(false);
-        onCapturedPreviewChanged(imageBytes);
-        onResolutionSubmitted(resolutionData.status);
-      });
+      if (sheetContext.mounted) {
+        setSheetState(() {
+          onSubmittingChanged(false);
+          onCapturedPreviewChanged(imageBytes);
+          onResolutionSubmitted(resolutionData.status);
+        });
+      }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Resolution report submitted! Pending admin verification.',
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Resolution report submitted! Pending admin verification.',
+            ),
+            backgroundColor: _safeGreen,
+            behavior: SnackBarBehavior.floating,
           ),
-          backgroundColor: _safeGreen,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+        );
+      }
     } catch (e) {
       if (!mounted) return;
-      setSheetState(() {
-        onSubmittingChanged(false);
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Could not submit resolution report: $e'),
-          backgroundColor: const Color(0xFFDC2626),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      if (sheetContext.mounted) {
+        setSheetState(() {
+          onSubmittingChanged(false);
+        });
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not submit resolution report: $e'),
+            backgroundColor: const Color(0xFFDC2626),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     }
   }
 
@@ -3098,6 +3132,7 @@ class _MapScreenState extends State<MapScreen> {
                               ? null
                               : () => _captureAndSubmitHazardResolution(
                                     hazard,
+                                    sheetContext: sheetContext,
                                     setSheetState: setSheetState,
                                     onSubmittingChanged: (submitting) {
                                       isSubmittingResolution = submitting;
