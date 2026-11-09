@@ -217,80 +217,89 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
       },
       child: Scaffold(
         backgroundColor: _bgWarm,
-        body: RefreshIndicator(
-          color: _primaryNavy,
-          onRefresh: _loadHomeData,
-          child: SingleChildScrollView(
-            physics: const AlwaysScrollableScrollPhysics(
-              parent: BouncingScrollPhysics(),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // 1. Inline Scrollable Header
-                _buildScrollableHeader(),
-
-                // 2. Main Scrollable Content pulled up snugly against the wave
-                Transform.translate(
-                  offset: const Offset(0, -36),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Greeting & Subtitle
-                        Text(
-                          _greetingText(),
-                          style: const TextStyle(
-                            fontFamily: 'Poppins',
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: _secondaryGrey,
-                            letterSpacing: 1.4,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        const Text(
-                          'Stay safe out there.',
-                          style: TextStyle(
-                            fontFamily: 'Poppins',
-                            fontSize: 24,
-                            fontWeight: FontWeight.w600,
-                            color: _primaryNavy,
-                            letterSpacing: -0.4,
-                          ),
-                        ),
-
-                        const SizedBox(height: 16),
-
-                        // 3. Live Map Card
-                        _buildLiveMapCard(),
-
-                        const SizedBox(height: 16),
-
-                        // 4. Action Buttons
-                        _buildActionButtons(),
-
-                        const SizedBox(height: 24),
-
-                        // 5. Recent Hazards Section
-                        _buildRecentHazardsSection(),
-
-                        const SizedBox(height: 24),
-
-                        // 6. Hazards by Type Section
-                        _buildHazardsByTypeSection(),
-
-                        const SizedBox(height: 40),
-                      ],
-                    ),
-                  ),
+        body: Stack(
+          children: [
+            // 1. Bottom layer: Scrollable content with RefreshIndicator
+            RefreshIndicator(
+              color: _primaryNavy,
+              displacement: CustomWavyHeader.height(context) + 16.0,
+              edgeOffset: CustomWavyHeader.height(context) - 16.0,
+              onRefresh: _loadHomeData,
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(
+                  parent: BouncingScrollPhysics(),
                 ),
-              ],
+                padding: EdgeInsets.fromLTRB(
+                  20.0,
+                  CustomWavyHeader.height(context) - 16.0,
+                  20.0,
+                  0.0,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Greeting & Subtitle
+                    Text(
+                      _greetingText(),
+                      style: const TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: _secondaryGrey,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Stay safe out there.',
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 24,
+                        fontWeight: FontWeight.w700,
+                        color: _primaryNavy,
+                        letterSpacing: -0.4,
+                        height: 1.2,
+                      ),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // 3. Live Map Card
+                    _buildLiveMapCard(),
+
+                    const SizedBox(height: 16),
+
+                    // 4. Action Buttons
+                    _buildActionButtons(),
+
+                    const SizedBox(height: 24),
+
+                    // 5. Recent Hazards Section
+                    _buildRecentHazardsSection(),
+
+                    const SizedBox(height: 24),
+
+                    // 6. Hazards by Type Section
+                    _buildHazardsByTypeSection(),
+
+                    const SizedBox(height: 40),
+                  ],
+                ),
+              ),
             ),
-          ),
+
+            // 2. Top layer: Fixed SafeRoute wavy header pinned to the top
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: IgnorePointer(
+                child: _buildScrollableHeader(),
+              ),
+            ),
+          ],
         ),
-        bottomNavigationBar: _buildBottomNavigationBar(),
+          bottomNavigationBar: _buildBottomNavigationBar(),
       ),
     );
   }

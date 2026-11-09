@@ -503,141 +503,149 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       },
       child: Scaffold(
         backgroundColor: _bgBeige,
-        body: RefreshIndicator(
-          color: _primaryNavy,
-          onRefresh: () async {
-            await Future.wait(<Future<void>>[
-              _loadProfile(silent: true),
-              _loadGamificationStats(),
-            ]);
-          },
-          child: SingleChildScrollView(
-            physics: const AlwaysScrollableScrollPhysics(
-              parent: BouncingScrollPhysics(),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // 1. Top Custom Wavy Header with SafeRoute Logo
-                const CustomWavyHeader(),
+        body: Stack(
+          children: [
+            // 1. Bottom layer: Scrollable content with RefreshIndicator
+            RefreshIndicator(
+              color: _primaryNavy,
+              displacement: CustomWavyHeader.height(context) + 16.0,
+              edgeOffset: CustomWavyHeader.height(context) - 16.0,
+              onRefresh: () async {
+                await Future.wait(<Future<void>>[
+                  _loadProfile(silent: true),
+                  _loadGamificationStats(),
+                ]);
+              },
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(
+                  parent: BouncingScrollPhysics(),
+                ),
+                padding: EdgeInsets.fromLTRB(
+                  20.0,
+                  CustomWavyHeader.height(context) - 16.0,
+                  20.0,
+                  0.0,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Profile Header Section (Avatar, Info, Edit Button)
+                    _buildProfileHeader(),
 
-                // 2. Main Scrollable Content pulled up into the wave curve
-                Transform.translate(
-                  offset: const Offset(0, -36),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Profile Header Section (Avatar, Info, Edit Button)
-                        _buildProfileHeader(),
+                          const SizedBox(height: 28),
 
-                        const SizedBox(height: 28),
+                          // Stats Row (Reports, Helpful Votes, Safe Routes, Days Active)
+                          _buildStatsRow(),
 
-                        // Stats Row (Reports, Helpful Votes, Safe Routes, Days Active)
-                        _buildStatsRow(),
+                          const SizedBox(height: 28),
 
-                        const SizedBox(height: 28),
+                          // View Leaderboard Button
+                          _buildLeaderboardButton(),
 
-                        // View Leaderboard Button
-                        _buildLeaderboardButton(),
+                          const SizedBox(height: 26),
 
-                        const SizedBox(height: 26),
+                          // Contributor Badge Card (Safety Contributor Level 2)
+                          _buildContributorBadgeCard(),
 
-                        // Contributor Badge Card (Safety Contributor Level 2)
-                        _buildContributorBadgeCard(),
+                          const SizedBox(height: 32),
 
-                        const SizedBox(height: 32),
+                          // Account Settings Section
+                          _buildSectionHeader('ACCOUNT'),
+                          _buildSettingsGroup(
+                            children: [
+                              _buildSettingsTile(
+                                icon: Icons.shield_outlined,
+                                title: 'Personal Information',
+                                subtitle: 'Name, email, and contact details',
+                                onTap: _openPersonalInformation,
+                              ),
+                              _buildSettingsTile(
+                                icon: Icons.lock_outline_rounded,
+                                title: 'Security',
+                                subtitle:
+                                    'Change password and manage account access',
+                                showDivider: false,
+                                onTap: _openSecurity,
+                              ),
+                            ],
+                          ),
 
-                        // Account Settings Section
-                        _buildSectionHeader('ACCOUNT'),
-                        _buildSettingsGroup(
-                          children: [
-                            _buildSettingsTile(
-                              icon: Icons.shield_outlined,
-                              title: 'Personal Information',
-                              subtitle: 'Name, email, and contact details',
-                              onTap: _openPersonalInformation,
-                            ),
-                            _buildSettingsTile(
-                              icon: Icons.lock_outline_rounded,
-                              title: 'Security',
-                              subtitle:
-                                  'Change password and manage account access',
-                              showDivider: false,
-                              onTap: _openSecurity,
-                            ),
-                          ],
-                        ),
+                          const SizedBox(height: 32),
 
-                        const SizedBox(height: 32),
+                          // Community Settings Section
+                          _buildSectionHeader('COMMUNITY'),
+                          _buildSettingsGroup(
+                            children: [
+                              _buildSettingsTile(
+                                icon: Icons.assignment_outlined,
+                                title: 'My Reports',
+                                subtitle: 'View and manage your submitted reports',
+                                onTap: _openMyReports,
+                              ),
+                              _buildSettingsTile(
+                                icon: Icons.favorite_border_rounded,
+                                title: 'Saved Locations',
+                                subtitle: 'Your favorite places and marked areas',
+                                onTap: () {
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                      builder: (context) =>
+                                          const SavedLocationsScreen(),
+                                    ),
+                                  );
+                                },
+                              ),
+                              _buildSettingsTile(
+                                icon: Icons.alt_route_rounded,
+                                title: 'Saved Routes',
+                                subtitle: 'View and edit your saved routes',
+                                showDivider: false,
+                                onTap: _openSavedRoutes,
+                              ),
+                            ],
+                          ),
 
-                        // Community Settings Section
-                        _buildSectionHeader('COMMUNITY'),
-                        _buildSettingsGroup(
-                          children: [
-                            _buildSettingsTile(
-                              icon: Icons.assignment_outlined,
-                              title: 'My Reports',
-                              subtitle: 'View and manage your submitted reports',
-                              onTap: _openMyReports,
-                            ),
-                            _buildSettingsTile(
-                              icon: Icons.favorite_border_rounded,
-                              title: 'Saved Locations',
-                              subtitle: 'Your favorite places and marked areas',
-                              onTap: () {
-                                Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (context) =>
-                                        const SavedLocationsScreen(),
-                                  ),
-                                );
-                              },
-                            ),
-                            _buildSettingsTile(
-                              icon: Icons.alt_route_rounded,
-                              title: 'Saved Routes',
-                              subtitle: 'View and edit your saved routes',
-                              showDivider: false,
-                              onTap: _openSavedRoutes,
-                            ),
-                          ],
-                        ),
+                          const SizedBox(height: 32),
 
-                        const SizedBox(height: 32),
+                          // Support Settings Section
+                          _buildSectionHeader('SUPPORT'),
+                          _buildSettingsGroup(
+                            children: [
+                              _buildSettingsTile(
+                                icon: Icons.help_outline_rounded,
+                                title: 'Help & Support',
+                                subtitle: 'FAQs, guides, and contact support',
+                                onTap: _openHelpSupport,
+                              ),
+                              _buildSettingsTile(
+                                icon: Icons.logout_rounded,
+                                title: 'Log Out',
+                                subtitle: 'Sign out from your account',
+                                isDestructive: true,
+                                showDivider: false,
+                                onTap: () => _showLogoutDialog(context),
+                              ),
+                            ],
+                          ),
 
-                        // Support Settings Section
-                        _buildSectionHeader('SUPPORT'),
-                        _buildSettingsGroup(
-                          children: [
-                            _buildSettingsTile(
-                              icon: Icons.help_outline_rounded,
-                              title: 'Help & Support',
-                              subtitle: 'FAQs, guides, and contact support',
-                              onTap: _openHelpSupport,
-                            ),
-                            _buildSettingsTile(
-                              icon: Icons.logout_rounded,
-                              title: 'Log Out',
-                              subtitle: 'Sign out from your account',
-                              isDestructive: true,
-                              showDivider: false,
-                              onTap: () => _showLogoutDialog(context),
-                            ),
-                          ],
-                        ),
-
-                        const SizedBox(height: 36),
-                      ],
+                          const SizedBox(height: 36),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        bottomNavigationBar: SafeRouteBottomNav(
+
+                  // 2. Top layer: Fixed SafeRoute wavy header pinned to the top
+                  const Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: IgnorePointer(
+                      child: CustomWavyHeader(),
+                    ),
+                  ),
+                ],
+              ),
+              bottomNavigationBar: SafeRouteBottomNav(
           currentIndex: 3,
           onTap: (index) =>
               AppNavigation.navigateTo(context, index, currentIndex: 3),
@@ -750,7 +758,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     fontFamily: 'Poppins',
-                    fontSize: 17,
+                    fontSize: 18,
                     fontWeight: FontWeight.w700,
                     color: _primaryNavy,
                   ),
@@ -763,9 +771,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontFamily: 'Poppins',
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w600,
-                      color: _accentBlue,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: _secondaryGrey,
                     ),
                   ),
                 ],

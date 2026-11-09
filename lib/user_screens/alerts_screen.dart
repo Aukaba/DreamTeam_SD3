@@ -427,213 +427,222 @@ class _AlertsScreenState extends State<AlertsScreen> {
       },
       child: Scaffold(
         backgroundColor: _bgWarm,
-        body: RefreshIndicator(
-          color: _primaryNavy,
-          onRefresh: _loadAlerts,
-          child: SingleChildScrollView(
-            physics: const AlwaysScrollableScrollPhysics(
-              parent: BouncingScrollPhysics(),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // Top Wave Header with Logo
-                const CustomWavyHeader(),
-
-                // Main Scrollable Content pulled up into the wave curve
-                Transform.translate(
-                  offset: const Offset(0, -36),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Overline + Mark all read action
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text(
-                              'NOTIFICATIONS',
-                              style: TextStyle(
-                                fontFamily: 'Poppins',
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                                color: _secondaryGrey,
-                                letterSpacing: 1.5,
+        body: Stack(
+          children: [
+            // 1. Bottom layer: Scrollable content with RefreshIndicator
+            RefreshIndicator(
+              color: _primaryNavy,
+              displacement: CustomWavyHeader.height(context) + 16.0,
+              edgeOffset: CustomWavyHeader.height(context) - 16.0,
+              onRefresh: _loadAlerts,
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(
+                  parent: BouncingScrollPhysics(),
+                ),
+                padding: EdgeInsets.fromLTRB(
+                  20.0,
+                  CustomWavyHeader.height(context) - 16.0,
+                  20.0,
+                  0.0,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                          // Overline + Mark all read action
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text(
+                                'NOTIFICATIONS',
+                                style: TextStyle(
+                                  fontFamily: 'Poppins',
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: _secondaryGrey,
+                                  letterSpacing: 1.5,
+                                ),
                               ),
-                            ),
-                            if (_unreadCount > 0)
-                              GestureDetector(
-                                onTap: _handleMarkAllAsRead,
-                                child: const Text(
-                                  'Mark all read',
-                                  style: TextStyle(
-                                    fontFamily: 'Poppins',
-                                    fontSize: 11.5,
-                                    fontWeight: FontWeight.w600,
-                                    color: _systemBlue,
+                              if (_unreadCount > 0)
+                                GestureDetector(
+                                  onTap: _handleMarkAllAsRead,
+                                  child: const Text(
+                                    'Mark all read',
+                                    style: TextStyle(
+                                      fontFamily: 'Poppins',
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w600,
+                                      color: _systemBlue,
+                                    ),
                                   ),
                                 ),
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-
-                        // Main Title
-                        const Text(
-                          'Stay updated,\nstay safer.',
-                          style: TextStyle(
-                            fontFamily: 'Poppins',
-                            fontSize: 24,
-                            fontWeight: FontWeight.w700,
-                            color: _primaryNavy,
-                            height: 1.2,
+                            ],
                           ),
-                        ),
-                        const SizedBox(height: 6),
+                          const SizedBox(height: 4),
 
-                        // Subtitle
-                        const Text(
-                          'Get the latest alerts, community reports, and important updates in your area.',
-                          style: TextStyle(
-                            fontFamily: 'Poppins',
-                            fontSize: 12,
-                            fontWeight: FontWeight.w400,
-                            color: _secondaryGrey,
-                            height: 1.35,
+                          // Main Title
+                          const Text(
+                            'Stay updated,\nstay safer.',
+                            style: TextStyle(
+                              fontFamily: 'Poppins',
+                              fontSize: 24,
+                              fontWeight: FontWeight.w700,
+                              color: _primaryNavy,
+                              letterSpacing: -0.4,
+                              height: 1.2,
+                            ),
                           ),
-                        ),
+                          const SizedBox(height: 6),
 
-                        const SizedBox(height: 20),
-
-                        // Filter Chips Row
-                        _buildFilterChipsRow(),
-
-                        const SizedBox(height: 24),
-
-                        if (_isLoading && filtered.isEmpty)
-                          const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 40),
-                            child: Center(
-                              child: SizedBox(
-                                width: 26,
-                                height: 26,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.5,
-                                  color: _primaryNavy,
-                                ),
-                              ),
+                          // Subtitle
+                          const Text(
+                            'Get the latest alerts, community reports, and important updates in your area.',
+                            style: TextStyle(
+                              fontFamily: 'Poppins',
+                              fontSize: 12,
+                              fontWeight: FontWeight.w400,
+                              color: _secondaryGrey,
+                              height: 1.35,
                             ),
-                          )
-                        else if (filtered.isEmpty)
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 28,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(16),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withValues(alpha: 0.03),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 2),
-                                ),
-                              ],
-                            ),
-                            child: const Column(
-                              children: [
-                                Icon(
-                                  Icons.notifications_off_outlined,
-                                  size: 32,
-                                  color: _secondaryGrey,
-                                ),
-                                SizedBox(height: 10),
-                                Text(
-                                  'No alerts in this category',
-                                  style: TextStyle(
-                                    fontFamily: 'Poppins',
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
+                          ),
+
+                          const SizedBox(height: 20),
+
+                          // Filter Chips Row
+                          _buildFilterChipsRow(),
+
+                          const SizedBox(height: 24),
+
+                          if (_isLoading && filtered.isEmpty)
+                            const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 40),
+                              child: Center(
+                                child: SizedBox(
+                                  width: 26,
+                                  height: 26,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2.5,
                                     color: _primaryNavy,
                                   ),
                                 ),
-                                SizedBox(height: 4),
-                                Text(
-                                  'New hazard reports and updates will appear here automatically.',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontFamily: 'Poppins',
-                                    fontSize: 12,
+                              ),
+                            )
+                          else if (filtered.isEmpty)
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 20,
+                                vertical: 28,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(16),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withValues(alpha: 0.03),
+                                    blurRadius: 8,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: const Column(
+                                children: [
+                                  Icon(
+                                    Icons.notifications_off_outlined,
+                                    size: 32,
                                     color: _secondaryGrey,
                                   ),
-                                ),
-                              ],
-                            ),
-                          )
-                        else
-                          for (int i = 0; i < filtered.length; i++) ...[
-                            Builder(
-                              builder: (context) {
-                                final alert = filtered[i];
-                                final style = _styleForAlertType(alert.type);
-                                final originalIndex = _alerts.indexOf(alert);
-                                return Dismissible(
-                                  key: ValueKey('alert_card_${alert.id}'),
-                                  direction: DismissDirection.endToStart,
-                                  onDismissed: (_) => _handleDismissAlert(
-                                    alert,
-                                    originalIndex < 0 ? 0 : originalIndex,
-                                  ),
-                                  background: Container(
-                                    alignment: Alignment.centerRight,
-                                    padding: const EdgeInsets.only(right: 20),
-                                    decoration: BoxDecoration(
-                                      color: _hazardRed.withValues(alpha: 0.9),
-                                      borderRadius: BorderRadius.circular(16),
-                                    ),
-                                    child: const Icon(
-                                      Icons.delete_outline_rounded,
-                                      color: Colors.white,
-                                      size: 22,
+                                  SizedBox(height: 10),
+                                  Text(
+                                    'No alerts in this category',
+                                    style: TextStyle(
+                                      fontFamily: 'Poppins',
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: _primaryNavy,
                                     ),
                                   ),
-                                  child: _buildAlertCard(
-                                    cardBgColor: style.cardBgColor,
-                                    iconBgColor: style.iconBgColor,
-                                    icon: style.icon,
-                                    iconColor: style.iconColor,
-                                    overlineText: style.overlineText,
-                                    overlineColor: style.overlineColor,
-                                    title: alert.title,
-                                    body: alert.body,
-                                    metaIcon: style.metaIcon,
-                                    metaText: alert.locationLabel,
-                                    timeElapsed:
-                                        HazardReportService.formatRelativeTime(
-                                      alert.createdAt,
+                                  SizedBox(height: 4),
+                                  Text(
+                                    'New hazard reports and updates will appear here automatically.',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontFamily: 'Poppins',
+                                      fontSize: 12,
+                                      color: _secondaryGrey,
                                     ),
-                                    isUnread: !alert.isRead,
-                                    onTap: () => _handleAlertTap(alert),
                                   ),
-                                );
-                              },
-                            ),
-                            const SizedBox(height: 16),
-                          ],
+                                ],
+                              ),
+                            )
+                          else
+                            for (int i = 0; i < filtered.length; i++) ...[
+                              Builder(
+                                builder: (context) {
+                                  final alert = filtered[i];
+                                  final style = _styleForAlertType(alert.type);
+                                  final originalIndex = _alerts.indexOf(alert);
+                                  return Dismissible(
+                                    key: ValueKey('alert_card_${alert.id}'),
+                                    direction: DismissDirection.endToStart,
+                                    onDismissed: (_) => _handleDismissAlert(
+                                      alert,
+                                      originalIndex < 0 ? 0 : originalIndex,
+                                    ),
+                                    background: Container(
+                                      alignment: Alignment.centerRight,
+                                      padding: const EdgeInsets.only(right: 20),
+                                      decoration: BoxDecoration(
+                                        color: _hazardRed.withValues(alpha: 0.9),
+                                        borderRadius: BorderRadius.circular(16),
+                                      ),
+                                      child: const Icon(
+                                        Icons.delete_outline_rounded,
+                                        color: Colors.white,
+                                        size: 22,
+                                      ),
+                                    ),
+                                    child: _buildAlertCard(
+                                      cardBgColor: style.cardBgColor,
+                                      iconBgColor: style.iconBgColor,
+                                      icon: style.icon,
+                                      iconColor: style.iconColor,
+                                      overlineText: style.overlineText,
+                                      overlineColor: style.overlineColor,
+                                      title: alert.title,
+                                      body: alert.body,
+                                      metaIcon: style.metaIcon,
+                                      metaText: alert.locationLabel,
+                                      timeElapsed:
+                                          HazardReportService.formatRelativeTime(
+                                        alert.createdAt,
+                                      ),
+                                      isUnread: !alert.isRead,
+                                      onTap: () => _handleAlertTap(alert),
+                                    ),
+                                  );
+                                },
+                              ),
+                              const SizedBox(height: 16),
+                            ],
 
-                        const SizedBox(height: 36),
-                      ],
+                          const SizedBox(height: 36),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        bottomNavigationBar: SafeRouteBottomNav(
+
+                  // 2. Top layer: Fixed SafeRoute wavy header pinned to the top
+                  const Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: IgnorePointer(
+                      child: CustomWavyHeader(),
+                    ),
+                  ),
+                ],
+              ),
+              bottomNavigationBar: SafeRouteBottomNav(
           currentIndex: 2,
           onTap: (index) =>
               AppNavigation.navigateTo(context, index, currentIndex: 2),

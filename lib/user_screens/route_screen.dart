@@ -774,39 +774,50 @@ class _RouteScreenState extends State<RouteScreen> {
       },
       child: Scaffold(
         backgroundColor: _bgWarm,
-        body: RefreshIndicator(
-          color: _primaryNavy,
-          onRefresh: _refreshDataAndReevaluate,
-          child: SingleChildScrollView(
-            physics: const AlwaysScrollableScrollPhysics(
-              parent: BouncingScrollPhysics(),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const CustomWavyHeader(),
-                Transform.translate(
-                  offset: const Offset(0, -36),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _buildHeaderTextSection(),
-                        const SizedBox(height: 18),
-                        _buildRoutePlanningCard(),
-                        const SizedBox(height: 24),
-                        _buildSuggestedRouteSection(),
-                        const SizedBox(height: 24),
-                        _buildSavedRoutesSection(),
-                        const SizedBox(height: 36),
-                      ],
-                    ),
-                  ),
+        body: Stack(
+          children: [
+            // 1. Bottom layer: Scrollable content with RefreshIndicator
+            RefreshIndicator(
+              color: _primaryNavy,
+              displacement: CustomWavyHeader.height(context) + 16.0,
+              edgeOffset: CustomWavyHeader.height(context) - 16.0,
+              onRefresh: _refreshDataAndReevaluate,
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(
+                  parent: BouncingScrollPhysics(),
                 ),
-              ],
+                padding: EdgeInsets.fromLTRB(
+                  20.0,
+                  CustomWavyHeader.height(context) - 16.0,
+                  20.0,
+                  0.0,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildHeaderTextSection(),
+                    const SizedBox(height: 18),
+                    _buildRoutePlanningCard(),
+                    const SizedBox(height: 24),
+                    _buildSuggestedRouteSection(),
+                    const SizedBox(height: 24),
+                    _buildSavedRoutesSection(),
+                    const SizedBox(height: 36),
+                  ],
+                ),
+              ),
             ),
-          ),
+
+            // 2. Top layer: Fixed SafeRoute wavy header pinned to the top
+            const Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: IgnorePointer(
+                child: CustomWavyHeader(),
+              ),
+            ),
+          ],
         ),
         bottomNavigationBar: SafeRouteBottomNav(
           currentIndex: 1,
@@ -854,7 +865,7 @@ class _RouteScreenState extends State<RouteScreen> {
             fontSize: 12,
             fontWeight: FontWeight.w400,
             color: _secondaryGrey,
-            height: 1.4,
+            height: 1.35,
           ),
         ),
       ],
