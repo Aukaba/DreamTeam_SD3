@@ -240,6 +240,7 @@ class _MapScreenState extends State<MapScreen> {
   final List<_HazardItem> _reportedHazards = <_HazardItem>[];
   bool _isLoadingReports = true;
   bool _hasHandledInitialFocus = false;
+  int _savedReportsFetchGeneration = 0;
 
   // Route preview & Turn-by-Turn Navigation state
   PlannedRouteResult? _activeRoute;
@@ -348,8 +349,9 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _loadSavedReports() async {
+    final fetchGen = ++_savedReportsFetchGeneration;
     final savedReports = await _hazardReportService.fetchReports();
-    if (!mounted) return;
+    if (!mounted || fetchGen != _savedReportsFetchGeneration) return;
     _HazardItem? focusedItem;
     setState(() {
       _isLoadingReports = false;
@@ -2917,6 +2919,9 @@ class _MapScreenState extends State<MapScreen> {
                 currentResolutionStatus == HazardReportStatuses.pending ||
                 hazard.resolutionStatus == HazardReportStatuses.pending ||
                 hazard.resolutionCount > 0;
+            final bool isUserPending = hasUserSubmitted &&
+                (currentResolutionStatus == HazardReportStatuses.pending ||
+                    capturedResolutionBytes != null);
 
             return SafeArea(
               child: SingleChildScrollView(
@@ -3071,7 +3076,7 @@ class _MapScreenState extends State<MapScreen> {
                       ],
                     ),
                     const SizedBox(height: 16),
-                    if (hasUserSubmitted)
+                    if (isUserPending)
                       Container(
                         key: const Key('hazard_resolution_pending_banner'),
                         width: double.infinity,

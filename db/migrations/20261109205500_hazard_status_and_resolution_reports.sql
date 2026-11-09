@@ -115,8 +115,13 @@ BEGIN
       NEW.status := 'pending';
     END IF;
   ELSIF tg_op = 'UPDATE' THEN
-    IF NEW.status IS DISTINCT FROM OLD.status AND NOT COALESCE(public.verify_admin_access(), false) THEN
-      RAISE EXCEPTION 'Only administrators can update report status.';
+    IF NEW.status IS DISTINCT FROM OLD.status THEN
+      -- Allow status transition to 'resolved' when triggered internally by the resolution quorum trigger (Comment 2)
+      IF pg_trigger_depth() > 1 AND NEW.status = 'resolved' THEN
+        NULL;
+      ELSIF NOT COALESCE(public.verify_admin_access(), false) THEN
+        RAISE EXCEPTION 'Only administrators can update report status.';
+      END IF;
     END IF;
   END IF;
   RETURN NEW;
@@ -343,15 +348,15 @@ CREATE INDEX IF NOT EXISTS idx_hazard_resolution_reports_reported_by
 CREATE INDEX IF NOT EXISTS idx_hazard_resolution_reports_status_created
   ON public.hazard_resolution_reports (status, created_at DESC);
 
--- Idempotency constraint: allow multiple users to submit resolution reports for the same hazard,
--- while preventing the same user from submitting duplicate pending reports for the same hazard
+-- Idempotency constraint: allow multiple distinct users to submit resolution reports for the same hazard,
+-- while preventing duplicate pending submissions (Comment 1)
 DROP INDEX IF EXISTS public.idx_hazard_resolution_reports_unique_pending;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_hazard_resolution_reports_unique_pending
   ON public.hazard_resolution_reports (
     report_id,
-    reported_by
+    COALESCE(reported_by, '00000000-0000-0000-0000-000000000000'::uuid)
   )
-  WHERE status = 'pending' AND reported_by IS NOT NULL;
+  WHERE status = 'pending';
 
 DROP TRIGGER IF EXISTS on_hazard_resolution_reports_updated ON public.hazard_resolution_reports;
 CREATE TRIGGER on_hazard_resolution_reports_updated
@@ -369,9 +374,11 @@ AS $$
 DECLARE
   v_report_status text;
 BEGIN
+  -- Serialize submissions for the same hazard by locking the parent ReportTable row (Comment 3)
   SELECT status INTO v_report_status
   FROM public."ReportTable"
-  WHERE "reportID" = NEW.report_id;
+  WHERE "reportID" = NEW.report_id
+  FOR UPDATE;
 
   IF v_report_status IS NULL THEN
     RAISE EXCEPTION 'Target hazard report % does not exist.', NEW.report_id;
@@ -496,10 +503,16 @@ BEGIN
   END IF;
 
   IF tg_op = 'INSERT' THEN
-    -- Count pending resolution reports and distinct reporters
+    -- Serialize submissions for the same hazard by locking the parent ReportTable row (Comment 3)
+    PERFORM 1
+    FROM public."ReportTable"
+    WHERE "reportID" = NEW.report_id
+    FOR UPDATE;
+
+    -- Count pending resolution reports and distinct non-null reporters (Comment 1)
     SELECT
       COUNT(*),
-      COUNT(DISTINCT COALESCE(reported_by, id))
+      COUNT(DISTINCT reported_by) FILTER (WHERE reported_by IS NOT NULL)
     INTO
       v_pending_count,
       v_distinct_reporters
@@ -507,9 +520,9 @@ BEGIN
     WHERE report_id = NEW.report_id
       AND status = 'pending';
 
-    -- When multiple people (>= 2) report resolution on the same hazard,
-    -- the system automatically marks the hazard resolved!
-    IF v_distinct_reporters >= 2 OR v_pending_count >= 2 THEN
+    -- When multiple distinct authenticated users (>= 2) report resolution on the same hazard,
+    -- the system automatically marks the hazard resolved! (Comment 1)
+    IF v_distinct_reporters >= 2 THEN
       -- 1. Update parent hazard to resolved in ReportTable
       UPDATE public."ReportTable"
       SET status = 'resolved',
@@ -522,13 +535,17 @@ BEGIN
       WHERE "reportID" = NEW.report_id
         AND status = 'active';
 
-      -- 2. Mark all pending resolution reports for this hazard as approved
-      UPDATE public.hazard_resolution_reports
-      SET status = 'approved',
-          verified_at = timezone('utc'::text, now()),
-          updated_at = timezone('utc'::text, now())
-      WHERE report_id = NEW.report_id
-        AND status = 'pending';
+      -- 2. Only approve child resolution reports if parent was actually active and updated (Comment 6)
+      IF FOUND THEN
+        UPDATE public.hazard_resolution_reports
+        SET status = 'approved',
+            verified_at = timezone('utc'::text, now()),
+            updated_at = timezone('utc'::text, now())
+        WHERE report_id = NEW.report_id
+          AND status = 'pending';
+      ELSE
+        PERFORM public.recompute_report_table_resolution_state(NEW.report_id);
+      END IF;
     ELSE
       PERFORM public.recompute_report_table_resolution_state(NEW.report_id);
     END IF;

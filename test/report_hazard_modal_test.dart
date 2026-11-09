@@ -125,6 +125,17 @@ class FakeHazardReportService extends HazardReportService {
     String? resolutionNote,
   }) async {
     lastResolutionImageBytes = resolutionImageBytes;
+    final existingReportIdx = storedDbReports.indexWhere(
+      (r) => r.reportId == reportId,
+    );
+    final isAutoResolve = (existingReportIdx != -1 &&
+        (storedDbReports[existingReportIdx].resolutionCount >= 1 ||
+            storedDbReports[existingReportIdx].resolutionStatus ==
+                HazardReportStatuses.pending));
+
+    final effectiveStatus =
+        isAutoResolve ? 'approved' : HazardReportStatuses.pending;
+
     final data = HazardResolutionReportData(
       id: 'res-uuid-9999',
       reportId: reportId,
@@ -139,9 +150,16 @@ class FakeHazardReportService extends HazardReportService {
           'https://wupbsnrtrsontoajxkir.supabase.co/storage/v1/object/public/hazard-reports/resolutions/$reportId.jpg',
       resolutionImageBytes: resolutionImageBytes,
       resolutionNote: resolutionNote,
-      status: HazardReportStatuses.pending,
+      status: effectiveStatus,
       createdAt: DateTime.now(),
     );
+    if (isAutoResolve && existingReportIdx != -1) {
+      storedDbReports[existingReportIdx] =
+          storedDbReports[existingReportIdx].copyWith(
+        status: HazardReportStatuses.resolved,
+        resolutionStatus: 'approved',
+      );
+    }
     HazardReportService.recordSubmittedResolutionReport(data);
     lastSubmittedResolution = data;
     return data;
@@ -827,11 +845,21 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
-    // Second resolution submission was registered
+    // Second resolution submission was registered and marked approved (auto-resolved)
     expect(fakeReportService.lastSubmittedResolution, isNotNull);
     expect(
       fakeReportService.lastSubmittedResolution!.reportId,
       'active-multi-hazard-888',
+    );
+    expect(
+      fakeReportService.lastSubmittedResolution!.status,
+      'approved',
+    );
+
+    // Auto-resolve feedback snackbar is displayed
+    expect(
+      find.textContaining('Hazard confirmed resolved by community'),
+      findsOneWidget,
     );
   });
 }

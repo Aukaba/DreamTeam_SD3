@@ -65,13 +65,16 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
     super.dispose();
   }
 
+  int _fetchGeneration = 0;
+
   Future<void> _loadUserReports() async {
+    final fetchGen = ++_fetchGeneration;
     if (mounted && _reports.isEmpty) {
       setState(() => _isLoading = true);
     }
     try {
       final fetched = await _hazardReportService.fetchUserReports();
-      if (!mounted) return;
+      if (!mounted || fetchGen != _fetchGeneration) return;
       setState(() {
         // Only count & show accepted reports ('active' or 'resolved')
         _reports = fetched
@@ -82,7 +85,7 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
         _isLoading = false;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || fetchGen != _fetchGeneration) return;
       setState(() => _isLoading = false);
     }
   }

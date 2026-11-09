@@ -471,21 +471,24 @@ class HazardReportService {
   /// Returns the current signed-in user ID or null.
   String? get currentUserId => _tryGetClient()?.auth.currentUser?.id;
 
-  /// Returns true if this user (or anonymous user session) has already submitted a resolution report for [reportId].
+  /// Returns true if this user has already submitted a resolution report for [reportId] that is still pending.
   static bool hasUserSubmittedResolution(String? reportId, [String? userId]) {
     if (reportId == null || reportId.trim().isEmpty) return false;
     final key = reportId.trim();
     final sessionRes = _sessionResolutionReports[key];
-    if (sessionRes != null) {
-      if (userId == null ||
-          sessionRes.reportedBy == null ||
+    if (sessionRes != null && sessionRes.status == 'pending') {
+      if (userId != null &&
+          sessionRes.reportedBy != null &&
           sessionRes.reportedBy == userId) {
+        return true;
+      }
+      if (userId == null && sessionRes.reportedBy == null) {
         return true;
       }
     }
     for (final r in _sessionReports) {
       if (r.reportId == key && r.resolutionStatus == 'pending') {
-        if (userId == null || r.userId == null || r.userId == userId) {
+        if (userId != null && r.userId != null && r.userId == userId) {
           return true;
         }
       }
