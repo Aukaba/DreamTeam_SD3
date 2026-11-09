@@ -510,7 +510,12 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
               color: _primaryNavy,
               displacement: CustomWavyHeader.height(context) + 16.0,
               edgeOffset: CustomWavyHeader.height(context) - 16.0,
-              onRefresh: () => _loadProfile(silent: true),
+              onRefresh: () async {
+                await Future.wait(<Future<void>>[
+                  _loadProfile(silent: true),
+                  _loadGamificationStats(),
+                ]);
+              },
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(
                   parent: BouncingScrollPhysics(),
@@ -524,8 +529,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                          // Profile Header Section (Avatar, Info, Edit Button)
-                          _buildProfileHeader(),
+                    // Profile Header Section (Avatar, Info, Edit Button)
+                    _buildProfileHeader(),
 
                           const SizedBox(height: 28),
 

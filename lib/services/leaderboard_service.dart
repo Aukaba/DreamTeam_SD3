@@ -261,8 +261,15 @@ class LeaderboardService {
 
         final dynamic rawReports = await client
             .from('ReportTable')
-            .select('user_id, severity_level, points_awarded, created_at')
-            .not('user_id', 'is', null);
+            .select('user_id, severity_level, points_awarded, status, created_at')
+            .not('user_id', 'is', null)
+            .inFilter(
+              'status',
+              const <String>[
+                HazardReportStatuses.active,
+                HazardReportStatuses.resolved,
+              ],
+            );
 
         final Map<String, int> windowReports = <String, int>{};
         final Map<String, int> windowPoints = <String, int>{};
@@ -273,6 +280,11 @@ class LeaderboardService {
           for (final item in rawReports.whereType<Map>()) {
             final uid = item['user_id']?.toString();
             if (uid == null || uid.isEmpty) continue;
+            if (!HazardReportStatuses.isAcceptedForUserReports(
+              item['status']?.toString(),
+            )) {
+              continue;
+            }
             final pts = (item['points_awarded'] as num?)?.toInt() ??
                 HazardReportService.calculateSeverityPoints(
                   item['severity_level']?.toString(),
@@ -320,11 +332,13 @@ class LeaderboardService {
       }
     }
 
-    // Session / offline fallback using any reports submitted during the session
-    final sessionReports = HazardReportService.sessionReports;
-    int myReportCount = sessionReports.length;
+    // Session / offline fallback using only accepted ('active' or 'resolved') reports
+    final acceptedSessionReports = HazardReportService.sessionReports
+        .where((r) => HazardReportStatuses.isAcceptedForUserReports(r.status))
+        .toList();
+    int myReportCount = acceptedSessionReports.length;
     int myPoints = 0;
-    for (final r in sessionReports) {
+    for (final r in acceptedSessionReports) {
       myPoints += r.pointsAwarded;
     }
 
@@ -382,13 +396,17 @@ class LeaderboardService {
 
   /// Fetches the signed-in user's live gamification stats (report count, total points,
   /// saved routes count, days active, and level progression) for the Profile screen.
+  /// Only accepted (`active` or `resolved`) reports are counted.
   Future<UserGamificationStats> fetchCurrentUserGamificationStats() async {
     final userReports = await _hazardReportService.fetchUserReports();
+    final acceptedReports = userReports
+        .where((r) => HazardReportStatuses.isAcceptedForUserReports(r.status))
+        .toList();
     final savedRoutes = await _safeRouteService.fetchSavedRoutes();
 
-    final int reportCount = userReports.length;
+    final int reportCount = acceptedReports.length;
     int totalPoints = 0;
-    for (final r in userReports) {
+    for (final r in acceptedReports) {
       totalPoints += r.pointsAwarded;
     }
     final int savedRoutesCount = savedRoutes.length;

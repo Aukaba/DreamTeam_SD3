@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../map_screen.dart';
 import '../services/hazard_report_service.dart';
 import '../services/leaderboard_service.dart';
@@ -26,6 +27,8 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
 
   late final HazardReportService _hazardReportService;
   StreamSubscription<HazardReportData>? _reportSubscription;
+  StreamSubscription<HazardResolutionReportData>? _resolutionSubscription;
+  RealtimeChannel? _remoteReportsChannel;
 
   List<HazardReportData> _reports = const <HazardReportData>[];
   bool _isLoading = true;
@@ -39,27 +42,50 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
     _reportSubscription = HazardReportService.reportStream.listen((_) {
       _loadUserReports();
     });
+    _resolutionSubscription = HazardReportService.resolutionStream.listen((_) {
+      _loadUserReports();
+    });
+    _remoteReportsChannel = _hazardReportService.subscribeToRemoteReportChanges(
+      onReportChanged: () {
+        if (mounted) {
+          _loadUserReports();
+        }
+      },
+    );
   }
 
   @override
   void dispose() {
     _reportSubscription?.cancel();
+    _resolutionSubscription?.cancel();
+    if (_remoteReportsChannel != null) {
+      _hazardReportService
+          .unsubscribeFromRemoteReportChanges(_remoteReportsChannel);
+    }
     super.dispose();
   }
 
+  int _fetchGeneration = 0;
+
   Future<void> _loadUserReports() async {
+    final fetchGen = ++_fetchGeneration;
     if (mounted && _reports.isEmpty) {
       setState(() => _isLoading = true);
     }
     try {
       final fetched = await _hazardReportService.fetchUserReports();
-      if (!mounted) return;
+      if (!mounted || fetchGen != _fetchGeneration) return;
       setState(() {
-        _reports = fetched;
+        // Only count & show accepted reports ('active' or 'resolved')
+        _reports = fetched
+            .where(
+              (r) => HazardReportStatuses.isAcceptedForUserReports(r.status),
+            )
+            .toList();
         _isLoading = false;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || fetchGen != _fetchGeneration) return;
       setState(() => _isLoading = false);
     }
   }
@@ -69,7 +95,7 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
       case 'Active':
         return _reports.where((r) => r.status == 'active').toList();
       case 'Resolved':
-        return _reports.where((r) => r.status != 'active').toList();
+        return _reports.where((r) => r.status == 'resolved').toList();
       case 'High':
         return _reports
             .where((r) => r.securityLevel.toLowerCase() == 'high')
@@ -467,6 +493,42 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
     );
   }
 
+  ({Color bg, Color text, IconData icon, String label}) _statusBadgeStyle(
+    String rawStatus,
+  ) {
+    final normalized = HazardReportStatuses.normalize(rawStatus);
+    switch (normalized) {
+      case HazardReportStatuses.pending:
+        return (
+          bg: const Color(0xFFFFF8E1),
+          text: const Color(0xFFB45309),
+          icon: Icons.hourglass_top_rounded,
+          label: 'Pending - Needs Verification',
+        );
+      case HazardReportStatuses.active:
+        return (
+          bg: const Color(0xFFE8F5E9),
+          text: const Color(0xFF2E7D32),
+          icon: Icons.visibility_rounded,
+          label: 'Active - Shown on Map',
+        );
+      case HazardReportStatuses.resolved:
+        return (
+          bg: const Color(0xFFF1F5F9),
+          text: const Color(0xFF475569),
+          icon: Icons.check_circle_outline_rounded,
+          label: 'Resolved',
+        );
+      default:
+        return (
+          bg: const Color(0xFFF1F5F9),
+          text: _secondaryGrey,
+          icon: Icons.info_outline_rounded,
+          label: HazardReportStatuses.labelFor(normalized),
+        );
+    }
+  }
+
   Widget _buildEmptyState() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 36),
@@ -540,7 +602,11 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
 
   Widget _buildReportCard(HazardReportData report) {
     final severityStyle = _severityBadgeStyle(report.securityLevel);
+    final statusStyle = _statusBadgeStyle(report.status);
     final isActive = report.status == 'active';
+    final hasPendingResolution = report.resolutionStatus == 'pending' ||
+        (report.reportId != null &&
+            HazardReportService.hasPendingResolution(report.reportId));
     final cleanCategory = HazardReportService.cleanCategory(report.category);
 
     return Container(
@@ -616,23 +682,49 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: isActive
-                      ? const Color(0xFFE8F5E9)
-                      : const Color(0xFFF1F5F9),
+                  color: statusStyle.bg,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Text(
-                  isActive ? 'Active' : 'Resolved',
-                  style: TextStyle(
-                    fontFamily: 'Poppins',
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: isActive
-                        ? const Color(0xFF2E7D32)
-                        : _secondaryGrey,
-                  ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      statusStyle.icon,
+                      size: 11,
+                      color: statusStyle.text,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      statusStyle.label,
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        color: statusStyle.text,
+                      ),
+                    ),
+                  ],
                 ),
               ),
+
+              if (hasPendingResolution && report.status != 'resolved')
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFFBEB),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'Resolution Pending Verification',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFFD97706),
+                    ),
+                  ),
+                ),
 
               Text(
                 HazardReportService.formatRelativeTime(report.timestamp),
@@ -717,7 +809,7 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              if (report.location != null)
+              if (report.location != null && isActive)
                 TextButton.icon(
                   onPressed: () => _openReportOnMap(report),
                   icon: const Icon(

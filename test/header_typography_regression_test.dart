@@ -47,7 +47,7 @@ class _MockSafeRouteService extends SafeRouteService {}
 
 class _MockSavedLocationService extends SavedLocationService {
   @override
-  Future<List<SavedLocation>> fetchSavedLocations() async => <SavedLocation>[];
+  Future<List<SavedLocation>> getSavedLocations() async => <SavedLocation>[];
 }
 
 void main() {

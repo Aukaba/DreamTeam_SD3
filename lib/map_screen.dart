@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart' hide Path;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'services/cebu_landmark_service.dart';
 import 'services/gemini_hazard_service.dart';
 import 'services/hazard_report_service.dart';
@@ -12,6 +15,7 @@ import 'services/location_service.dart';
 import 'services/nominatim_rate_limiter.dart';
 import 'services/safe_route_service.dart';
 import 'services/saved_location_service.dart';
+import 'widgets/camera_capture_screen.dart';
 import 'widgets/report_hazard_modal.dart';
 import 'widgets/route_place_picker_sheet.dart';
 import 'widgets/turn_by_turn_navigation_overlay.dart';
@@ -26,6 +30,8 @@ class MapScreen extends StatefulWidget {
   final PlannedRouteResult? initialRoute;
   final bool autoStartNavigation;
   final TileProvider? tileProvider;
+  final ImagePicker? imagePicker;
+  final Future<XFile?> Function(BuildContext context)? cameraLauncher;
 
   const MapScreen({
     super.key,
@@ -38,6 +44,8 @@ class MapScreen extends StatefulWidget {
     this.initialRoute,
     this.autoStartNavigation = false,
     this.tileProvider,
+    this.imagePicker,
+    this.cameraLauncher,
   });
 
   /// Maps any raw or emoji hazard category explicitly to a map filter index and icon.
@@ -85,6 +93,7 @@ class _HazardItem {
   final String id;
   final String? reportId;
   final String overline;
+  final String category;
   final String title;
   final String subtitle;
   final String description;
@@ -93,6 +102,10 @@ class _HazardItem {
   final int confidence;
   final String distance;
   final String badgeText;
+  final String status;
+  final String? resolutionStatus;
+  final String? resolutionImageUrl;
+  final int resolutionCount;
   final Color themeColor;
   final Color bgColor;
   final Color iconBgColor;
@@ -105,6 +118,7 @@ class _HazardItem {
     required this.id,
     this.reportId,
     required this.overline,
+    this.category = '',
     required this.title,
     required this.subtitle,
     this.description = '',
@@ -113,6 +127,10 @@ class _HazardItem {
     this.confidence = 98,
     required this.distance,
     required this.badgeText,
+    this.status = 'active',
+    this.resolutionStatus,
+    this.resolutionImageUrl,
+    this.resolutionCount = 0,
     required this.themeColor,
     required this.bgColor,
     required this.iconBgColor,
@@ -121,6 +139,40 @@ class _HazardItem {
     required this.location,
     required this.filterCategoryIndex,
   });
+
+  _HazardItem copyWith({
+    String? distance,
+    String? status,
+    String? resolutionStatus,
+    String? resolutionImageUrl,
+    int? resolutionCount,
+  }) {
+    return _HazardItem(
+      id: id,
+      reportId: reportId,
+      overline: overline,
+      category: category,
+      title: title,
+      subtitle: subtitle,
+      description: description,
+      address: address,
+      imageUrl: imageUrl,
+      confidence: confidence,
+      distance: distance ?? this.distance,
+      badgeText: badgeText,
+      status: status ?? this.status,
+      resolutionStatus: resolutionStatus ?? this.resolutionStatus,
+      resolutionImageUrl: resolutionImageUrl ?? this.resolutionImageUrl,
+      resolutionCount: resolutionCount ?? this.resolutionCount,
+      themeColor: themeColor,
+      bgColor: bgColor,
+      iconBgColor: iconBgColor,
+      badgeBgColor: badgeBgColor,
+      icon: icon,
+      location: location,
+      filterCategoryIndex: filterCategoryIndex,
+    );
+  }
 }
 
 class _MapScreenState extends State<MapScreen> {
@@ -183,9 +235,12 @@ class _MapScreenState extends State<MapScreen> {
   late final HazardReportService _hazardReportService;
   late final SafeRouteService _safeRouteService;
   StreamSubscription<HazardReportData>? _reportSubscription;
+  StreamSubscription<HazardResolutionReportData>? _resolutionSubscription;
+  RealtimeChannel? _remoteReportsChannel;
   final List<_HazardItem> _reportedHazards = <_HazardItem>[];
   bool _isLoadingReports = true;
   bool _hasHandledInitialFocus = false;
+  int _savedReportsFetchGeneration = 0;
 
   // Route preview & Turn-by-Turn Navigation state
   PlannedRouteResult? _activeRoute;
@@ -262,25 +317,65 @@ class _MapScreenState extends State<MapScreen> {
     }
     _reportSubscription =
         HazardReportService.reportStream.listen(_onExternalReportSubmitted);
+    _resolutionSubscription =
+        HazardReportService.resolutionStream.listen(_onResolutionSubmitted);
+    _remoteReportsChannel = _hazardReportService.subscribeToRemoteReportChanges(
+      onReportChanged: () {
+        if (mounted) {
+          _loadSavedReports();
+        }
+      },
+    );
     _searchController.addListener(_onSearchChanged);
     _loadSavedReports();
     _initDeviceLocation();
   }
 
-  Future<void> _loadSavedReports() async {
-    final savedReports = await _hazardReportService.fetchReports();
+  void _onResolutionSubmitted(HazardResolutionReportData resolution) {
     if (!mounted) return;
+    setState(() {
+      for (int i = 0; i < _reportedHazards.length; i++) {
+        final item = _reportedHazards[i];
+        if (item.reportId != null && item.reportId == resolution.reportId) {
+          _reportedHazards[i] = item.copyWith(
+            resolutionStatus: resolution.status,
+            resolutionImageUrl: resolution.resolutionImageUrl.isNotEmpty
+                ? resolution.resolutionImageUrl
+                : item.resolutionImageUrl,
+          );
+        }
+      }
+    });
+  }
+
+  Future<void> _loadSavedReports() async {
+    final fetchGen = ++_savedReportsFetchGeneration;
+    final savedReports = await _hazardReportService.fetchReports();
+    if (!mounted || fetchGen != _savedReportsFetchGeneration) return;
     _HazardItem? focusedItem;
     setState(() {
       _isLoadingReports = false;
+      final dbReportIds = savedReports
+          .map((r) => r.reportId)
+          .whereType<String>()
+          .toSet();
       final mergedById = <String, _HazardItem>{};
       for (final report in savedReports) {
-        if (report.location == null) continue;
+        // Only active hazards (verified by admin) are shown on the map.
+        if (report.location == null || report.status != 'active') continue;
         final item = _buildHazardItemFromReport(report);
         mergedById.putIfAbsent(item.id, () => item);
       }
       for (final existing in _reportedHazards) {
-        mergedById.putIfAbsent(existing.id, () => existing);
+        // If it exists in the database, DB status is authoritative.
+        // Don't retain stale active items that DB says are resolved or pending.
+        if (existing.reportId != null &&
+            dbReportIds.contains(existing.reportId)) {
+          continue;
+        }
+        if (existing.status == 'active') {
+          mergedById.putIfAbsent(existing.id, () => existing);
+        }
       }
       _reportedHazards
         ..clear()
@@ -311,14 +406,27 @@ class _MapScreenState extends State<MapScreen> {
 
   void _onExternalReportSubmitted(HazardReportData report) {
     if (!mounted) return;
+    final builtItem = _buildHazardItemFromReport(report);
+    if (report.status != 'active') {
+      // Pending or resolved hazards should not be shown on the live map.
+      setState(() {
+        _reportedHazards.removeWhere(
+          (h) =>
+              h.id == builtItem.id ||
+              (report.reportId != null && h.reportId == report.reportId),
+        );
+      });
+      return;
+    }
+
     setState(() {
       _upsertReportedHazardItem(
-        _buildHazardItemFromReport(report),
+        builtItem,
         insertAtFront: true,
       );
     });
 
-    // Live mid-trip hazard check: if a new hazard was reported on/near our active route
+    // Live mid-trip hazard check: if a new active hazard was reported on/near our active route
     if (_activeRoute != null &&
         report.location != null &&
         report.status == 'active') {
@@ -362,25 +470,8 @@ class _MapScreenState extends State<MapScreen> {
   void _refreshReportedHazardDistances() {
     for (int i = 0; i < _reportedHazards.length; i++) {
       final item = _reportedHazards[i];
-      _reportedHazards[i] = _HazardItem(
-        id: item.id,
-        reportId: item.reportId,
-        overline: item.overline,
-        title: item.title,
-        subtitle: item.subtitle,
-        description: item.description,
-        address: item.address,
-        imageUrl: item.imageUrl,
-        confidence: item.confidence,
+      _reportedHazards[i] = item.copyWith(
         distance: _formatDistanceTo(item.location),
-        badgeText: item.badgeText,
-        themeColor: item.themeColor,
-        bgColor: item.bgColor,
-        iconBgColor: item.iconBgColor,
-        badgeBgColor: item.badgeBgColor,
-        icon: item.icon,
-        location: item.location,
-        filterCategoryIndex: item.filterCategoryIndex,
       );
     }
   }
@@ -1235,6 +1326,11 @@ class _MapScreenState extends State<MapScreen> {
     _simulationTimer?.cancel();
     _gpsPositionSub?.cancel();
     _reportSubscription?.cancel();
+    _resolutionSubscription?.cancel();
+    if (_remoteReportsChannel != null) {
+      _hazardReportService
+          .unsubscribeFromRemoteReportChanges(_remoteReportsChannel);
+    }
     _searchDebounceTimer?.cancel();
     _reverseGeocodeDebounceTimer?.cancel();
     _searchController.removeListener(_onSearchChanged);
@@ -2586,6 +2682,7 @@ class _MapScreenState extends State<MapScreen> {
       id: stableId,
       reportId: report.reportId,
       overline: overline,
+      category: report.category,
       title: report.title,
       subtitle: '${report.address} (${_formatRelativeTime(report.timestamp)})',
       description: report.description,
@@ -2594,6 +2691,10 @@ class _MapScreenState extends State<MapScreen> {
       confidence: report.confidence,
       distance: _formatDistanceTo(resolvedLocation),
       badgeText: report.securityLevel,
+      status: report.status,
+      resolutionStatus: report.resolutionStatus,
+      resolutionImageUrl: report.resolutionImageUrl,
+      resolutionCount: report.resolutionCount,
       themeColor: themeColor,
       bgColor: bgColor,
       iconBgColor: iconBgColor,
@@ -2606,6 +2707,12 @@ class _MapScreenState extends State<MapScreen> {
 
   void _addReportedHazard(HazardReportData report) {
     final newHazard = _buildHazardItemFromReport(report);
+    if (report.status != 'active') {
+      // Newly submitted reports are 'pending' admin verification, so do not
+      // add them as live markers on the map until verified as 'active'.
+      _mapController.move(newHazard.location, 17.0);
+      return;
+    }
 
     setState(() {
       _upsertReportedHazardItem(newHazard, insertAtFront: true);
@@ -2636,7 +2743,163 @@ class _MapScreenState extends State<MapScreen> {
     _showHazardDetailSheet(hazard);
   }
 
+  Future<void> _captureAndSubmitHazardResolution(
+    _HazardItem hazard, {
+    required BuildContext sheetContext,
+    required void Function(void Function()) setSheetState,
+    required ValueChanged<bool> onSubmittingChanged,
+    required ValueChanged<String?> onResolutionSubmitted,
+    required ValueChanged<Uint8List?> onCapturedPreviewChanged,
+  }) async {
+    try {
+      XFile? capturedFile;
+      if (widget.cameraLauncher != null) {
+        capturedFile = await widget.cameraLauncher!(context);
+      } else if (widget.imagePicker != null) {
+        capturedFile = await widget.imagePicker!.pickImage(
+          source: ImageSource.camera,
+          maxWidth: 1600,
+          maxHeight: 1600,
+          imageQuality: 85,
+        );
+      } else {
+        final result = await Navigator.of(context).push<CameraCaptureResult>(
+          MaterialPageRoute(
+            builder: (ctx) => const CameraCaptureScreen(
+              maxWidth: 1600,
+              maxHeight: 1600,
+            ),
+            fullscreenDialog: true,
+          ),
+        );
+        if (!mounted || result == null) return;
+        if (result.openGallery) {
+          capturedFile = await ImagePicker().pickImage(
+            source: ImageSource.gallery,
+            maxWidth: 1600,
+            maxHeight: 1600,
+            imageQuality: 85,
+          );
+        } else {
+          capturedFile = result.file;
+        }
+      }
+
+      if (capturedFile == null || !mounted) return;
+
+      if (sheetContext.mounted) {
+        setSheetState(() {
+          onSubmittingChanged(true);
+        });
+      }
+
+      final normalizedFile = await CameraCaptureScreen.normalizeImageFile(
+        capturedFile,
+        maxWidth: 1600,
+        maxHeight: 1600,
+      );
+      final imageBytes = await normalizedFile.readAsBytes();
+
+      if (!mounted) return;
+
+      final resolutionData =
+          await _hazardReportService.submitHazardResolutionReport(
+        reportId: (hazard.reportId != null && hazard.reportId!.trim().isNotEmpty)
+            ? hazard.reportId!.trim()
+            : hazard.id,
+        category:
+            hazard.category.isNotEmpty ? hazard.category : hazard.overline,
+        title: hazard.title,
+        description: hazard.description,
+        securityLevel: hazard.badgeText,
+        locationAddress:
+            hazard.address.isNotEmpty ? hazard.address : hazard.subtitle,
+        location: hazard.location,
+        originalImageUrl: hazard.imageUrl,
+        resolutionImageBytes: imageBytes,
+        mimeType: normalizedFile.mimeType,
+        resolutionNote:
+            'User reported hazard as resolved via live camera capture.',
+      );
+
+      if (!mounted) return;
+
+      final isAutoResolved = resolutionData.status == 'approved';
+
+      setState(() {
+        if (isAutoResolved) {
+          _reportedHazards.removeWhere(
+            (h) =>
+                h.id == hazard.id ||
+                (hazard.reportId != null && h.reportId == hazard.reportId),
+          );
+        } else {
+          for (int i = 0; i < _reportedHazards.length; i++) {
+            if (_reportedHazards[i].id == hazard.id) {
+              _reportedHazards[i] = _reportedHazards[i].copyWith(
+                resolutionStatus: resolutionData.status,
+                resolutionImageUrl: resolutionData.resolutionImageUrl,
+                resolutionCount: _reportedHazards[i].resolutionCount + 1,
+              );
+            }
+          }
+        }
+      });
+
+      if (sheetContext.mounted) {
+        setSheetState(() {
+          onSubmittingChanged(false);
+          onCapturedPreviewChanged(imageBytes);
+          onResolutionSubmitted(resolutionData.status);
+        });
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              isAutoResolved
+                  ? 'Hazard confirmed resolved by community! Automatically resolved and removed from map.'
+                  : 'Resolution report submitted! When multiple people request resolution, it will automatically resolve.',
+            ),
+            backgroundColor: _safeGreen,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+
+      if (isAutoResolved && sheetContext.mounted) {
+        Navigator.of(sheetContext).pop();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      if (sheetContext.mounted) {
+        setSheetState(() {
+          onSubmittingChanged(false);
+        });
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not submit resolution report: $e'),
+            backgroundColor: const Color(0xFFDC2626),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
   void _showHazardDetailSheet(_HazardItem hazard) {
+    final effectiveReportId =
+        (hazard.reportId != null && hazard.reportId!.trim().isNotEmpty)
+            ? hazard.reportId!.trim()
+            : hazard.id;
+    final currentUserId = _hazardReportService.currentUserId;
+    String? currentResolutionStatus = hazard.resolutionStatus;
+    bool isSubmittingResolution = false;
+    Uint8List? capturedResolutionBytes;
+
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.white,
@@ -2645,160 +2908,364 @@ class _MapScreenState extends State<MapScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (sheetCtx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Center(
-                  child: Container(
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFD1D5DB),
-                      borderRadius: BorderRadius.circular(2),
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            final hasUserSubmitted = (capturedResolutionBytes != null) ||
+                HazardReportService.hasUserSubmittedResolution(
+                  effectiveReportId,
+                  currentUserId,
+                );
+            final bool isPendingVerification =
+                currentResolutionStatus == HazardReportStatuses.pending ||
+                hazard.resolutionStatus == HazardReportStatuses.pending ||
+                hazard.resolutionCount > 0;
+            final bool isUserPending = hasUserSubmitted &&
+                (currentResolutionStatus == HazardReportStatuses.pending ||
+                    capturedResolutionBytes != null);
+
+            return SafeArea(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFD1D5DB),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
                     ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                if (hazard.imageUrl != null &&
-                    hazard.imageUrl!.trim().isNotEmpty) ...[
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(16),
-                    child: SizedBox(
-                      height: 180,
-                      width: double.infinity,
-                      child: Image.network(
-                        hazard.imageUrl!,
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, error, stackTrace) => Container(
-                          color: hazard.bgColor,
-                          alignment: Alignment.center,
-                          child: Icon(
-                            hazard.icon,
-                            size: 42,
-                            color: hazard.themeColor,
+                    const SizedBox(height: 16),
+                    if (hazard.imageUrl != null &&
+                        hazard.imageUrl!.trim().isNotEmpty) ...[
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: SizedBox(
+                          height: 180,
+                          width: double.infinity,
+                          child: Image.network(
+                            hazard.imageUrl!,
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stackTrace) =>
+                                Container(
+                              color: hazard.bgColor,
+                              alignment: Alignment.center,
+                              child: Icon(
+                                hazard.icon,
+                                size: 42,
+                                color: hazard.themeColor,
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                ],
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: hazard.badgeBgColor,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        '${hazard.overline} • ${hazard.badgeText.toUpperCase()}',
-                        style: TextStyle(
-                          fontFamily: 'Poppins',
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w700,
-                          color: hazard.themeColor,
-                          letterSpacing: 0.5,
+                      const SizedBox(height: 14),
+                    ],
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: hazard.badgeBgColor,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            '${hazard.overline} • ${hazard.badgeText.toUpperCase()}',
+                            style: TextStyle(
+                              fontFamily: 'Poppins',
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w700,
+                              color: hazard.themeColor,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFEEF2FF),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        '✨ AI ${hazard.confidence}%',
-                        style: const TextStyle(
-                          fontFamily: 'Poppins',
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w600,
-                          color: Color(0xFF4338CA),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEEF2FF),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            '✨ AI ${hazard.confidence}%',
+                            style: const TextStyle(
+                              fontFamily: 'Poppins',
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF4338CA),
+                            ),
+                          ),
                         ),
-                      ),
+                      ],
                     ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  hazard.title,
-                  style: const TextStyle(
-                    fontFamily: 'Poppins',
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    color: _primaryNavy,
-                  ),
-                ),
-                if (hazard.description.trim().isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    hazard.description.trim(),
-                    style: const TextStyle(
-                      fontFamily: 'Poppins',
-                      fontSize: 13,
-                      fontWeight: FontWeight.w400,
-                      color: Color(0xFF4B5563),
-                      height: 1.4,
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    const Icon(
-                      Icons.location_on_outlined,
-                      size: 16,
-                      color: _secondaryGrey,
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        hazard.subtitle,
-                        style: const TextStyle(
-                          fontFamily: 'Poppins',
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                          color: _secondaryGrey,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Row(
-                  children: [
-                    const Icon(
-                      Icons.near_me_outlined,
-                      size: 15,
-                      color: _secondaryGrey,
-                    ),
-                    const SizedBox(width: 6),
+                    const SizedBox(height: 10),
                     Text(
-                      hazard.distance,
+                      hazard.title,
                       style: const TextStyle(
                         fontFamily: 'Poppins',
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
                         color: _primaryNavy,
                       ),
                     ),
+                    if (hazard.description.trim().isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        hazard.description.trim(),
+                        style: const TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 13,
+                          fontWeight: FontWeight.w400,
+                          color: Color(0xFF4B5563),
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.location_on_outlined,
+                          size: 16,
+                          color: _secondaryGrey,
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            hazard.subtitle,
+                            style: const TextStyle(
+                              fontFamily: 'Poppins',
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: _secondaryGrey,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.near_me_outlined,
+                          size: 15,
+                          color: _secondaryGrey,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          hazard.distance,
+                          style: const TextStyle(
+                            fontFamily: 'Poppins',
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: _primaryNavy,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    if (isUserPending)
+                      Container(
+                        key: const Key('hazard_resolution_pending_banner'),
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFFBEB),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: const Color(0xFFFDE68A)),
+                        ),
+                        child: Row(
+                          children: [
+                            if (capturedResolutionBytes != null) ...[
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.memory(
+                                  capturedResolutionBytes!,
+                                  width: 44,
+                                  height: 44,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (context, error, stackTrace) =>
+                                      Container(
+                                    width: 44,
+                                    height: 44,
+                                    color: const Color(0xFFFEF3C7),
+                                    child: const Icon(
+                                      Icons.camera_alt_rounded,
+                                      size: 20,
+                                      color: Color(0xFFD97706),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                            ] else ...[
+                              Container(
+                                width: 36,
+                                height: 36,
+                                decoration: const BoxDecoration(
+                                  color: Color(0xFFFEF3C7),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  Icons.hourglass_top_rounded,
+                                  size: 18,
+                                  color: Color(0xFFD97706),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                            ],
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Resolution Reported • Pending Verification',
+                                    style: TextStyle(
+                                      fontFamily: 'Poppins',
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFF92400E),
+                                    ),
+                                  ),
+                                  SizedBox(height: 2),
+                                  Text(
+                                    'You submitted camera proof. When multiple people report resolution, this hazard will automatically resolve.',
+                                    style: TextStyle(
+                                      fontFamily: 'Poppins',
+                                      fontSize: 11,
+                                      color: Color(0xFFB45309),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    else ...[
+                      if (isPendingVerification)
+                        Container(
+                          key: const Key('hazard_community_verification_card'),
+                          width: double.infinity,
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEFF6FF),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: const Color(0xFFBFDBFE)),
+                          ),
+                          child: const Row(
+                            children: [
+                              Icon(
+                                Icons.group_work_rounded,
+                                size: 22,
+                                color: Color(0xFF1D4ED8),
+                              ),
+                              SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Reported Resolved by Community',
+                                      style: TextStyle(
+                                        fontFamily: 'Poppins',
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w700,
+                                        color: Color(0xFF1E40AF),
+                                      ),
+                                    ),
+                                    SizedBox(height: 2),
+                                    Text(
+                                      'Confirm with a photo below. Multiple reports will automatically resolve this hazard for everyone.',
+                                      style: TextStyle(
+                                        fontFamily: 'Poppins',
+                                        fontSize: 11,
+                                        color: Color(0xFF1E3A8A),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 48,
+                        child: ElevatedButton.icon(
+                          key: const Key('report_hazard_resolved_button'),
+                          onPressed: isSubmittingResolution
+                              ? null
+                              : () => _captureAndSubmitHazardResolution(
+                                    hazard,
+                                    sheetContext: sheetContext,
+                                    setSheetState: setSheetState,
+                                    onSubmittingChanged: (submitting) {
+                                      isSubmittingResolution = submitting;
+                                    },
+                                    onResolutionSubmitted: (status) {
+                                      currentResolutionStatus = status;
+                                    },
+                                    onCapturedPreviewChanged: (bytes) {
+                                      capturedResolutionBytes = bytes;
+                                    },
+                                  ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: _safeGreen,
+                            foregroundColor: Colors.white,
+                            disabledBackgroundColor:
+                                _safeGreen.withValues(alpha: 0.6),
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          icon: isSubmittingResolution
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Icon(
+                                  Icons.camera_alt_rounded,
+                                  size: 18,
+                                ),
+                          label: Text(
+                            isSubmittingResolution
+                                ? 'Submitting Proof...'
+                                : (isPendingVerification
+                                    ? 'Confirm Hazard is Resolved'
+                                    : 'Report Hazard as Resolved'),
+                            style: const TextStyle(
+                              fontFamily: 'Poppins',
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         );
       },
     );
