@@ -2,12 +2,313 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'admin_reports_screen.dart';
 import 'admin_profile_screen.dart';
 import 'admin_settings_screens.dart';
+import 'admin_report_detail_modal.dart';
 
-class AdminDashboardScreen extends StatelessWidget {
+class AdminDashboardScreen extends StatefulWidget {
   const AdminDashboardScreen({super.key});
+
+  @override
+  State<AdminDashboardScreen> createState() => _AdminDashboardScreenState();
+}
+
+class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
+  int? _activeUsersCount;
+  bool _isLoadingUsers = true;
+  int? _overallReportsCount;
+  bool _isLoadingOverallReports = true;
+  int? _reportsTodayCount;
+  bool _isLoadingReportsToday = true;
+  int? _verifiedThisWeekCount;
+  bool _isLoadingVerifiedThisWeek = true;
+  int? _reportsVerifiedPercent;
+  int? _reportsWithin1HrPercent;
+  bool _isLoadingAreasCovered = true;
+  List<AdminReportItem> _latestReports = <AdminReportItem>[];
+  bool _isLoadingReports = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchDashboardData();
+  }
+
+  Future<void> _fetchDashboardData() async {
+    await Future.wait([
+      _fetchActiveUsersCount(),
+      _fetchLatestReports(),
+      _fetchOverallReportsCount(),
+      _fetchReportsTodayCount(),
+      _fetchVerifiedThisWeekCount(),
+      _fetchAreasCoveredAnalytics(),
+    ]);
+  }
+
+  Future<void> _fetchActiveUsersCount() async {
+    try {
+      final client = Supabase.instance.client;
+      final count = await client
+          .from('profiles')
+          .count(CountOption.exact)
+          .eq('role', 'user');
+
+      if (!mounted) return;
+      setState(() {
+        _activeUsersCount = count;
+        _isLoadingUsers = false;
+      });
+    } catch (e) {
+      debugPrint('Error fetching active users count: $e');
+      if (!mounted) return;
+      setState(() {
+        _isLoadingUsers = false;
+      });
+    }
+  }
+
+  Future<void> _fetchLatestReports() async {
+    try {
+      final client = Supabase.instance.client;
+      final dynamic rawReports = await client
+          .from('ReportTable')
+          .select()
+          .order('created_at', ascending: false)
+          .limit(3);
+
+      final List<Map<String, dynamic>> reportRows = [];
+      final Set<String> userIds = <String>{};
+
+      if (rawReports is List) {
+        for (final item in rawReports) {
+          if (item is Map<String, dynamic>) {
+            reportRows.add(item);
+            final uid = item['user_id']?.toString().trim();
+            if (uid != null && uid.isNotEmpty) {
+              userIds.add(uid);
+            }
+          }
+        }
+      }
+
+      final Map<String, Map<String, dynamic>> profilesMap = {};
+      if (userIds.isNotEmpty) {
+        try {
+          final dynamic profilesData = await client
+              .from('profiles')
+              .select('id, full_name, username, email, avatar_url')
+              .inFilter('id', userIds.toList());
+
+          if (profilesData is List) {
+            for (final p in profilesData) {
+              if (p is Map<String, dynamic> && p['id'] != null) {
+                profilesMap[p['id'].toString()] = p;
+              }
+            }
+          }
+        } catch (pe) {
+          debugPrint('Dashboard profiles fetch skipped: $pe');
+        }
+      }
+
+      final parsed = reportRows.map((r) {
+        final uid = r['user_id']?.toString().trim();
+        final profile = uid != null ? profilesMap[uid] : null;
+        return AdminReportItem.fromRow(r, profile: profile);
+      }).toList();
+
+      if (!mounted) return;
+      setState(() {
+        _latestReports = parsed;
+        _isLoadingReports = false;
+      });
+    } catch (e) {
+      debugPrint('Error fetching latest reports: $e');
+      if (!mounted) return;
+      setState(() {
+        _isLoadingReports = false;
+      });
+    }
+  }
+
+  Future<void> _fetchOverallReportsCount() async {
+    try {
+      final client = Supabase.instance.client;
+      final count = await client
+          .from('ReportTable')
+          .count(CountOption.exact)
+          .inFilter('status', ['active', 'resolved', 'archived']);
+      if (!mounted) return;
+      setState(() {
+        _overallReportsCount = count;
+        _isLoadingOverallReports = false;
+      });
+    } catch (e) {
+      debugPrint('Error fetching overall reports count: $e');
+      if (!mounted) return;
+      setState(() => _isLoadingOverallReports = false);
+    }
+  }
+
+  String get _overallReportsDisplay {
+    if (_isLoadingOverallReports) return '...';
+    return (_overallReportsCount ?? 0).toString();
+  }
+
+  Future<void> _fetchReportsTodayCount() async {
+    try {
+      final client = Supabase.instance.client;
+      final now = DateTime.now();
+      final startOfToday = DateTime(now.year, now.month, now.day);
+      final startOfTomorrow = startOfToday.add(const Duration(days: 1));
+
+      final count = await client
+          .from('ReportTable')
+          .count(CountOption.exact)
+          .eq('status', 'pending')
+          .gte('created_at', startOfToday.toUtc().toIso8601String())
+          .lt('created_at', startOfTomorrow.toUtc().toIso8601String());
+
+      if (!mounted) return;
+      setState(() {
+        _reportsTodayCount = count;
+        _isLoadingReportsToday = false;
+      });
+    } catch (e) {
+      debugPrint('Error fetching reports today count: $e');
+      if (!mounted) return;
+      setState(() => _isLoadingReportsToday = false);
+    }
+  }
+
+  String get _reportsTodayDisplay {
+    if (_isLoadingReportsToday) return '...';
+    return (_reportsTodayCount ?? 0).toString();
+  }
+
+  Future<void> _fetchVerifiedThisWeekCount() async {
+    try {
+      final client = Supabase.instance.client;
+      final now = DateTime.now();
+      final oneWeekAgo = now.subtract(const Duration(days: 7));
+
+      final count = await client
+          .from('ReportTable')
+          .count(CountOption.exact)
+          .eq('status', 'active')
+          .gte('created_at', oneWeekAgo.toUtc().toIso8601String());
+
+      if (!mounted) return;
+      setState(() {
+        _verifiedThisWeekCount = count;
+        _isLoadingVerifiedThisWeek = false;
+      });
+    } catch (e) {
+      debugPrint('Error fetching verified this week count: $e');
+      if (!mounted) return;
+      setState(() => _isLoadingVerifiedThisWeek = false);
+    }
+  }
+
+  String get _verifiedThisWeekDisplay {
+    if (_isLoadingVerifiedThisWeek) return '...';
+    return (_verifiedThisWeekCount ?? 0).toString();
+  }
+
+  Future<void> _fetchAreasCoveredAnalytics() async {
+    try {
+      final client = Supabase.instance.client;
+      final dynamic rawData = await client
+          .from('ReportTable')
+          .select('created_at, verified_at, status');
+
+      if (rawData is List) {
+        final total = rawData.length;
+        int verified = 0;
+        int within1Hr = 0;
+
+        for (final item in rawData) {
+          if (item is Map<String, dynamic>) {
+            final status = item['status']?.toString().toLowerCase().trim();
+            final rawVerifiedAt = item['verified_at']?.toString().trim();
+            final rawCreatedAt = item['created_at']?.toString().trim();
+
+            final isVerified = status == 'active' ||
+                status == 'resolved' ||
+                status == 'archived' ||
+                (rawVerifiedAt != null && rawVerifiedAt.isNotEmpty);
+
+            if (isVerified) {
+              verified++;
+              if (rawCreatedAt != null &&
+                  rawCreatedAt.isNotEmpty &&
+                  rawVerifiedAt != null &&
+                  rawVerifiedAt.isNotEmpty) {
+                final created = DateTime.tryParse(rawCreatedAt);
+                final verifiedAt = DateTime.tryParse(rawVerifiedAt);
+                if (created != null && verifiedAt != null) {
+                  final diff = verifiedAt.difference(created);
+                  if (!diff.isNegative && diff.inMinutes <= 60) {
+                    within1Hr++;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        final verifiedPct = total > 0 ? ((verified / total) * 100).round() : 0;
+        final within1HrPct =
+            verified > 0 ? ((within1Hr / verified) * 100).round() : 0;
+
+        if (!mounted) return;
+        setState(() {
+          _reportsVerifiedPercent = verifiedPct;
+          _reportsWithin1HrPercent = within1HrPct;
+          _isLoadingAreasCovered = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error fetching areas covered analytics: $e');
+      if (!mounted) return;
+      setState(() => _isLoadingAreasCovered = false);
+    }
+  }
+
+  String get _reportsVerifiedDisplay {
+    if (_isLoadingAreasCovered) return '...';
+    return '${_reportsVerifiedPercent ?? 0}%';
+  }
+
+  String get _reportsWithin1HrDisplay {
+    if (_isLoadingAreasCovered) return '...';
+    return '${_reportsWithin1HrPercent ?? 0}%';
+  }
+
+  double get _reportsVerifiedProgress {
+    if (_isLoadingAreasCovered) return 0.0;
+    return ((_reportsVerifiedPercent ?? 0) / 100.0).clamp(0.0, 1.0);
+  }
+
+  double get _reportsWithin1HrProgress {
+    if (_isLoadingAreasCovered) return 0.0;
+    return ((_reportsWithin1HrPercent ?? 0) / 100.0).clamp(0.0, 1.0);
+  }
+
+  String get _activeUsersDisplay {
+    if (_isLoadingUsers) {
+      return '...';
+    }
+    if (_activeUsersCount == null) {
+      return '0';
+    }
+    return _activeUsersCount!.toString().replaceAllMapped(
+          RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+          (Match m) => '${m[1]},',
+        );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -34,11 +335,13 @@ class AdminDashboardScreen extends StatelessWidget {
               final verticalSpacing =
                   isDesktop ? 32.0 : (isTablet ? 24.0 : 16.0);
 
-              return SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                child: Padding(
-                  padding: EdgeInsets.all(padding),
-                  child: Column(
+              return RefreshIndicator(
+                onRefresh: _fetchDashboardData,
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  child: Padding(
+                    padding: EdgeInsets.all(padding),
+                    child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
@@ -89,7 +392,8 @@ class AdminDashboardScreen extends StatelessWidget {
                     ],
                   ),
                 ),
-              );
+              ),
+            );
             },
           ),
         ),
@@ -213,7 +517,7 @@ class AdminDashboardScreen extends StatelessWidget {
         Navigator.push(
           context,
           MaterialPageRoute(builder: (context) => const AdminReportsScreen()),
-        );
+        ).then((_) => _fetchDashboardData());
       },
       borderRadius: BorderRadius.circular(14),
       child: Container(
@@ -239,7 +543,7 @@ class AdminDashboardScreen extends StatelessWidget {
             ),
             SizedBox(width: isSmallScreen ? 8 : 12),
             Text(
-              'Review reports',
+              'Manage reports',
               style: GoogleFonts.inter(
                 color: const Color(0xFF1F3A5F),
                 fontSize: fontSize,
@@ -270,10 +574,10 @@ class AdminDashboardScreen extends StatelessWidget {
       // Single column layout for very small screens
       return Column(
         children: [
-          const _StatCard(
-            iconColor: Color(0xFFE8F7F0),
+          _StatCard(
+            iconColor: const Color(0xFFE8F7F0),
             label: 'Overall Reports',
-            value: '28',
+            value: _overallReportsDisplay,
             change: '+12%',
             isSmallScreen: true,
             isTablet: false,
@@ -283,10 +587,10 @@ class AdminDashboardScreen extends StatelessWidget {
             secondaryIcon: Icons.arrow_upward,
           ),
           SizedBox(height: spacing),
-          const _StatCard(
-            iconColor: Color(0xFFFFF1E6),
+          _StatCard(
+            iconColor: const Color(0xFFFFF1E6),
             label: 'Report today',
-            value: '3',
+            value: _reportsTodayDisplay,
             change: 'Needs Attention',
             isSmallScreen: true,
             isTablet: false,
@@ -295,10 +599,10 @@ class AdminDashboardScreen extends StatelessWidget {
             hasSecondaryIcon: true,
           ),
           SizedBox(height: spacing),
-          const _StatCard(
-            iconColor: Color(0xFFE8F7F0),
+          _StatCard(
+            iconColor: const Color(0xFFE8F7F0),
             label: 'Verified this week',
-            value: '142',
+            value: _verifiedThisWeekDisplay,
             change: '+18%',
             isSmallScreen: true,
             isTablet: false,
@@ -308,10 +612,10 @@ class AdminDashboardScreen extends StatelessWidget {
             secondaryIcon: Icons.arrow_upward,
           ),
           SizedBox(height: spacing),
-          const _StatCard(
-            iconColor: Color(0xFFFCE8F3),
+          _StatCard(
+            iconColor: const Color(0xFFFCE8F3),
             label: 'Active users',
-            value: '2,481',
+            value: _activeUsersDisplay,
             change: '+9%',
             isSmallScreen: true,
             isTablet: false,
@@ -333,7 +637,7 @@ class AdminDashboardScreen extends StatelessWidget {
               child: _StatCard(
                 iconColor: const Color(0xFFE8F7F0),
                 label: 'Overall Reports',
-                value: '28',
+                value: _overallReportsDisplay,
                 change: '+12%',
                 isSmallScreen: false,
                 isTablet: isTablet,
@@ -348,7 +652,7 @@ class AdminDashboardScreen extends StatelessWidget {
               child: _StatCard(
                 iconColor: const Color(0xFFFFF1E6),
                 label: 'Report today',
-                value: '3',
+                value: _reportsTodayDisplay,
                 change: 'Needs Attention',
                 isSmallScreen: false,
                 isTablet: isTablet,
@@ -363,7 +667,7 @@ class AdminDashboardScreen extends StatelessWidget {
                 child: _StatCard(
                   iconColor: const Color(0xFFE8F7F0),
                   label: 'Verified this week',
-                  value: '142',
+                  value: _verifiedThisWeekDisplay,
                   change: '+18%',
                   isSmallScreen: false,
                   isTablet: isTablet,
@@ -379,7 +683,7 @@ class AdminDashboardScreen extends StatelessWidget {
                 child: _StatCard(
                   iconColor: const Color(0xFFFCE8F3),
                   label: 'Active users',
-                  value: '2,481',
+                  value: _activeUsersDisplay,
                   change: '+9%',
                   isSmallScreen: false,
                   isTablet: isTablet,
@@ -399,7 +703,7 @@ class AdminDashboardScreen extends StatelessWidget {
                 child: _StatCard(
                   iconColor: const Color(0xFFE8F7F0),
                   label: 'Verified this week',
-                  value: '142',
+                  value: _verifiedThisWeekDisplay,
                   change: '+18%',
                   isSmallScreen: false,
                   isTablet: isTablet,
@@ -414,7 +718,7 @@ class AdminDashboardScreen extends StatelessWidget {
                 child: _StatCard(
                   iconColor: const Color(0xFFFCE8F3),
                   label: 'Active users',
-                  value: '2,481',
+                  value: _activeUsersDisplay,
                   change: '+9%',
                   isSmallScreen: false,
                   isTablet: isTablet,
@@ -444,7 +748,18 @@ class AdminDashboardScreen extends StatelessWidget {
       Navigator.push(
         context,
         MaterialPageRoute(builder: (context) => const AdminReportsScreen()),
+      ).then((_) => _fetchDashboardData());
+    }
+
+    void openReportModal(AdminReportItem report) async {
+      final updated = await showAdminReportDetailModal(
+        context: context,
+        report: report,
+        onReportUpdated: _fetchDashboardData,
       );
+      if (updated == true) {
+        _fetchDashboardData();
+      }
     }
 
     return Container(
@@ -492,41 +807,64 @@ class AdminDashboardScreen extends StatelessWidget {
             ),
           ),
           SizedBox(height: spacing),
-          _ReportItem(
-            title: 'Flooded road',
-            location: 'Near University Avenue',
-            time: '8 min ago',
-            status: 'Pending',
-            statusColor: const Color(0xFFFFF1E6),
-            isSmallScreen: isSmallScreen,
-            isTablet: isTablet,
-            isDesktop: isDesktop,
-            onTap: openReports,
-          ),
-          SizedBox(height: spacing),
-          _ReportItem(
-            title: 'Road damage',
-            location: 'Near Capitol Site',
-            time: '9 min ago',
-            status: 'Pending',
-            statusColor: const Color(0xFFFFF1E6),
-            isSmallScreen: isSmallScreen,
-            isTablet: isTablet,
-            isDesktop: isDesktop,
-            onTap: openReports,
-          ),
-          SizedBox(height: spacing),
-          _ReportItem(
-            title: 'Minor accident',
-            location: 'Near Fuente Osmeña Circle',
-            time: '12 min ago',
-            status: 'Verified',
-            statusColor: const Color(0xFFE8F7F0),
-            isSmallScreen: isSmallScreen,
-            isTablet: isTablet,
-            isDesktop: isDesktop,
-            onTap: openReports,
-          ),
+          if (_isLoadingReports)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: Color(0xFF1F3A5F),
+                ),
+              ),
+            )
+          else if (_latestReports.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 20),
+              child: Center(
+                child: Text(
+                  'No reports pending review at this time.',
+                  style: GoogleFonts.inter(
+                    color: const Color(0xFF7B9BAD),
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            )
+          else
+            ..._latestReports.asMap().entries.map((entry) {
+              final index = entry.key;
+              final report = entry.value;
+              final isPending = report.status.toLowerCase() == 'pending';
+              final isActive = report.status.toLowerCase() == 'active';
+
+              Color statusBg;
+              if (isActive) {
+                statusBg = const Color(0xFFE8F7F0);
+              } else if (isPending) {
+                statusBg = const Color(0xFFFFF1E6);
+              } else {
+                statusBg = const Color(0xFFF0F4F8);
+              }
+
+              return Column(
+                children: [
+                  if (index > 0) SizedBox(height: spacing),
+                  _ReportItem(
+                    title: report.detectedHazard,
+                    location: report.locationAddress,
+                    reporterName: report.reporterName,
+                    imageUrl: report.imageUrl,
+                    time: formatRelativeTime(report.createdAt),
+                    status: report.status.toUpperCase(),
+                    statusColor: statusBg,
+                    isSmallScreen: isSmallScreen,
+                    isTablet: isTablet,
+                    isDesktop: isDesktop,
+                    onTap: () => openReportModal(report),
+                  ),
+                ],
+              );
+            }),
         ],
       ),
     );
@@ -602,9 +940,10 @@ class AdminDashboardScreen extends StatelessWidget {
           if (isSmallScreen)
             Column(
               children: [
-                const _CircularProgress(
-                  percentage: '92%',
-                  progress: 0.92,
+                _DualCircularProgress(
+                  percentage: _reportsVerifiedDisplay,
+                  verifiedProgress: _reportsVerifiedProgress,
+                  within1HrProgress: _reportsWithin1HrProgress,
                   isSmallScreen: true,
                   isTablet: false,
                   isDesktop: false,
@@ -622,19 +961,19 @@ class AdminDashboardScreen extends StatelessWidget {
                       ),
                     ),
                     SizedBox(height: innerSpacing),
-                    const _LegendItem(
+                    _LegendItem(
                       color: navy,
                       label: 'Reports verified',
-                      value: '84%',
+                      value: _reportsVerifiedDisplay,
                       isSmallScreen: true,
                       isTablet: false,
                       isDesktop: false,
                     ),
                     SizedBox(height: innerSpacing),
-                    const _LegendItem(
+                    _LegendItem(
                       color: teal,
-                      label: 'Reports within 1hr',
-                      value: '36%',
+                      label: 'Reports within 1 hr',
+                      value: _reportsWithin1HrDisplay,
                       isSmallScreen: true,
                       isTablet: false,
                       isDesktop: false,
@@ -649,9 +988,10 @@ class AdminDashboardScreen extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.start,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                _CircularProgress(
-                  percentage: '92%',
-                  progress: 0.92,
+                _DualCircularProgress(
+                  percentage: _reportsVerifiedDisplay,
+                  verifiedProgress: _reportsVerifiedProgress,
+                  within1HrProgress: _reportsWithin1HrProgress,
                   isSmallScreen: false,
                   isTablet: isTablet,
                   isDesktop: isDesktop,
@@ -675,7 +1015,7 @@ class AdminDashboardScreen extends StatelessWidget {
                       _LegendItem(
                         color: navy,
                         label: 'Reports verified',
-                        value: '84%',
+                        value: _reportsVerifiedDisplay,
                         isSmallScreen: false,
                         isTablet: isTablet,
                         isDesktop: isDesktop,
@@ -683,8 +1023,8 @@ class AdminDashboardScreen extends StatelessWidget {
                       SizedBox(height: innerSpacing),
                       _LegendItem(
                         color: teal,
-                        label: 'Reports within 1hr',
-                        value: '36%',
+                        label: 'Reports within 1 hr',
+                        value: _reportsWithin1HrDisplay,
                         isSmallScreen: false,
                         isTablet: isTablet,
                         isDesktop: isDesktop,
@@ -979,6 +1319,8 @@ class _StatCard extends StatelessWidget {
 class _ReportItem extends StatelessWidget {
   final String title;
   final String location;
+  final String? reporterName;
+  final String? imageUrl;
   final String time;
   final String status;
   final Color statusColor;
@@ -990,6 +1332,8 @@ class _ReportItem extends StatelessWidget {
   const _ReportItem({
     required this.title,
     required this.location,
+    this.reporterName,
+    this.imageUrl,
     required this.time,
     required this.status,
     required this.statusColor,
@@ -1004,6 +1348,8 @@ class _ReportItem extends StatelessWidget {
     final imageSize = isDesktop ? 120.0 : (isTablet ? 96.0 : (isSmallScreen ? 60.0 : 72.0));
     final spacing = isDesktop ? 24.0 : (isTablet ? 20.0 : (isSmallScreen ? 12.0 : 16.0));
     final padding = isDesktop ? 20.0 : (isTablet ? 16.0 : (isSmallScreen ? 10.0 : 12.0));
+
+    final hasImage = imageUrl != null && imageUrl!.trim().isNotEmpty;
 
     return InkWell(
       onTap: onTap,
@@ -1031,11 +1377,26 @@ class _ReportItem extends StatelessWidget {
               color: const Color(0xFFE8F4FB),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: const Icon(
-              Icons.report_problem,
-              size: 32,
-              color: Color(0xFF1F3A5F),
-            ),
+            clipBehavior: Clip.antiAlias,
+            child: hasImage
+                ? Image.network(
+                    imageUrl!.trim(),
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) => const Center(
+                      child: Icon(
+                        Icons.report_problem,
+                        size: 32,
+                        color: Color(0xFF1F3A5F),
+                      ),
+                    ),
+                  )
+                : const Center(
+                    child: Icon(
+                      Icons.report_problem,
+                      size: 32,
+                      color: Color(0xFF1F3A5F),
+                    ),
+                  ),
           ),
           SizedBox(width: spacing),
           Expanded(
@@ -1098,7 +1459,7 @@ class _ReportItem extends StatelessWidget {
                     ),
                   ],
                 ),
-                SizedBox(height: spacing),
+                SizedBox(height: spacing * 0.5),
                 Text(
                   location,
                   style: GoogleFonts.inter(
@@ -1109,12 +1470,36 @@ class _ReportItem extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   maxLines: 1,
                 ),
-                SizedBox(height: spacing),
+                if (reporterName != null && reporterName!.isNotEmpty) ...[
+                  SizedBox(height: spacing * 0.3),
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.person_outline,
+                        size: 13,
+                        color: Color(0xFF7B9BAD),
+                      ),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          'Reported by: $reporterName',
+                          style: GoogleFonts.inter(
+                            color: const Color(0xFF7B9BAD),
+                            fontSize: isDesktop ? 14 : (isTablet ? 13 : 11),
+                            fontWeight: FontWeight.w500,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                SizedBox(height: spacing * 0.3),
                 Text(
                   time,
                   style: GoogleFonts.inter(
                     color: const Color(0xFF7B8794),
-                    fontSize: isDesktop ? 16 : (isTablet ? 14 : (isSmallScreen ? 11 : 12)),
+                    fontSize: isDesktop ? 15 : (isTablet ? 13 : (isSmallScreen ? 10 : 11)),
                     fontWeight: FontWeight.w400,
                   ),
                 ),
@@ -1130,8 +1515,8 @@ class _ReportItem extends StatelessWidget {
   }
 }
 
-/// Donut chart: [progress] of the ring is navy (starting at 12 o'clock,
-/// clockwise) and the remaining part is teal.
+/// Kept with its exact original fields for Flutter hot reload compatibility:
+// ignore: unused_element
 class _CircularProgress extends StatelessWidget {
   final String percentage;
   final double progress; // 0.0 - 1.0
@@ -1141,6 +1526,7 @@ class _CircularProgress extends StatelessWidget {
 
   const _CircularProgress({
     required this.percentage,
+    // ignore: unused_element_parameter
     this.progress = 0.92,
     required this.isSmallScreen,
     required this.isTablet,
@@ -1149,9 +1535,46 @@ class _CircularProgress extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final size = isDesktop ? 180.0 : (isTablet ? 160.0 : (isSmallScreen ? 120.0 : 140.0));
-    final fontSize = isDesktop ? 36.0 : (isTablet ? 32.0 : (isSmallScreen ? 24.0 : 28.0));
-    final strokeWidth = isDesktop ? 18.0 : (isTablet ? 16.0 : (isSmallScreen ? 10.0 : 14.0));
+    return _DualCircularProgress(
+      percentage: percentage,
+      verifiedProgress: progress,
+      within1HrProgress: 0.18,
+      isSmallScreen: isSmallScreen,
+      isTablet: isTablet,
+      isDesktop: isDesktop,
+    );
+  }
+}
+
+/// Dual-ring chart reflecting real Supabase data:
+/// - Outer ring: [verifiedProgress] (Dark Blue / Navy) for Reports Verified.
+/// - Inner ring: [within1HrProgress] (Green / Teal) for Reports within 1 hr.
+/// - Center text: [percentage] (overall verified percentage).
+class _DualCircularProgress extends StatelessWidget {
+  final String percentage;
+  final double verifiedProgress; // 0.0 - 1.0 (Dark Blue)
+  final double within1HrProgress; // 0.0 - 1.0 (Green)
+  final bool isSmallScreen;
+  final bool isTablet;
+  final bool isDesktop;
+
+  const _DualCircularProgress({
+    required this.percentage,
+    required this.verifiedProgress,
+    required this.within1HrProgress,
+    required this.isSmallScreen,
+    required this.isTablet,
+    required this.isDesktop,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final size = isDesktop
+        ? 180.0
+        : (isTablet ? 160.0 : (isSmallScreen ? 120.0 : 140.0));
+    final fontSize = isDesktop
+        ? 34.0
+        : (isTablet ? 30.0 : (isSmallScreen ? 22.0 : 26.0));
 
     return SizedBox(
       width: size,
@@ -1161,21 +1584,37 @@ class _CircularProgress extends StatelessWidget {
         children: [
           CustomPaint(
             size: Size(size, size),
-            painter: _RingPainter(
-              progress: progress,
-              strokeWidth: strokeWidth,
-              progressColor: const Color(0xFF1F3A5F), // navy = the 92%
-              trackColor: const Color(0xFF61B5AB), // teal = the remaining 8%
+            painter: _DualRingPainter(
+              verifiedProgress: verifiedProgress,
+              within1HrProgress: within1HrProgress,
+              verifiedColor: const Color(0xFF1F3A5F), // Dark Blue
+              within1HrColor: const Color(0xFF61B5AB), // Green / Teal
+              trackColor: const Color(0xFFE8EEF2), // Light neutral track
             ),
           ),
-          Text(
-            percentage,
-            textAlign: TextAlign.center,
-            style: GoogleFonts.inter(
-              color: const Color(0xFF1F3A5F),
-              fontSize: fontSize,
-              fontWeight: FontWeight.w700,
-            ),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                percentage,
+                textAlign: TextAlign.center,
+                style: GoogleFonts.inter(
+                  color: const Color(0xFF1F3A5F),
+                  fontSize: fontSize,
+                  fontWeight: FontWeight.w800,
+                  height: 1.0,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                'verified',
+                style: GoogleFonts.inter(
+                  color: const Color(0xFF7B9BAD),
+                  fontSize: isSmallScreen ? 9.5 : 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -1183,56 +1622,91 @@ class _CircularProgress extends StatelessWidget {
   }
 }
 
-class _RingPainter extends CustomPainter {
-  final double progress;
-  final double strokeWidth;
-  final Color progressColor;
+class _DualRingPainter extends CustomPainter {
+  final double verifiedProgress;
+  final double within1HrProgress;
+  final Color verifiedColor;
+  final Color within1HrColor;
   final Color trackColor;
 
-  _RingPainter({
-    required this.progress,
-    required this.strokeWidth,
-    required this.progressColor,
+  _DualRingPainter({
+    required this.verifiedProgress,
+    required this.within1HrProgress,
+    required this.verifiedColor,
+    required this.within1HrColor,
     required this.trackColor,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = size.center(Offset.zero);
-    final radius = (size.width - strokeWidth) / 2;
-    final rect = Rect.fromCircle(center: center, radius: radius);
+    final strokeWidth = size.width * 0.088;
+    final ringGap = strokeWidth * 0.35;
 
     final trackPaint = Paint()
       ..color = trackColor
       ..style = PaintingStyle.stroke
       ..strokeWidth = strokeWidth;
 
-    final progressPaint = Paint()
-      ..color = progressColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = strokeWidth
-      ..strokeCap = StrokeCap.butt;
+    // 1. Outer Ring: Reports Verified (Dark Blue)
+    final outerRadius = (size.width - strokeWidth) / 2;
+    final outerRect = Rect.fromCircle(center: center, radius: outerRadius);
 
-    // Full ring (the part not covered by progress shows as the track color)
-    canvas.drawCircle(center, radius, trackPaint);
+    // Draw outer background track
+    canvas.drawCircle(center, outerRadius, trackPaint);
 
-    // Progress arc: starts at 12 o'clock and sweeps clockwise
-    final double sweepAngle =
-        (2 * math.pi * progress.clamp(0.0, 1.0)).toDouble();
-    canvas.drawArc(
-      rect,
-      -math.pi / 2,
-      sweepAngle,
-      false,
-      progressPaint,
-    );
+    if (verifiedProgress > 0) {
+      final verifiedPaint = Paint()
+        ..color = verifiedColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = strokeWidth
+        ..strokeCap = StrokeCap.round;
+
+      final double outerSweep =
+          (2 * math.pi * verifiedProgress.clamp(0.0, 1.0)).toDouble();
+      canvas.drawArc(
+        outerRect,
+        -math.pi / 2,
+        outerSweep,
+        false,
+        verifiedPaint,
+      );
+    }
+
+    // 2. Inner Ring: Reports within 1 hr (Green)
+    final innerRadius = outerRadius - strokeWidth - ringGap;
+    if (innerRadius > 0) {
+      final innerRect = Rect.fromCircle(center: center, radius: innerRadius);
+
+      // Draw inner background track
+      canvas.drawCircle(center, innerRadius, trackPaint);
+
+      if (within1HrProgress > 0) {
+        final within1HrPaint = Paint()
+          ..color = within1HrColor
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = strokeWidth
+          ..strokeCap = StrokeCap.round;
+
+        final double innerSweep =
+            (2 * math.pi * within1HrProgress.clamp(0.0, 1.0)).toDouble();
+        canvas.drawArc(
+          innerRect,
+          -math.pi / 2,
+          innerSweep,
+          false,
+          within1HrPaint,
+        );
+      }
+    }
   }
 
   @override
-  bool shouldRepaint(covariant _RingPainter old) =>
-      old.progress != progress ||
-      old.strokeWidth != strokeWidth ||
-      old.progressColor != progressColor ||
+  bool shouldRepaint(covariant _DualRingPainter old) =>
+      old.verifiedProgress != verifiedProgress ||
+      old.within1HrProgress != within1HrProgress ||
+      old.verifiedColor != verifiedColor ||
+      old.within1HrColor != within1HrColor ||
       old.trackColor != trackColor;
 }
 
