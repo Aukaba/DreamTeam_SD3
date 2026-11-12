@@ -144,7 +144,7 @@ BEGIN
   END IF;
 
   -- Prevent single-user point farming: do not auto-promote a newly inserted duplicate
-  -- if that same user already has an active or resolved report here.
+  -- if that same user already has an active report OR a report resolved within the last 6 hours.
   IF tg_op = 'INSERT'
      AND NEW.status = 'pending'
      AND NEW.user_id IS NOT NULL
@@ -153,7 +153,14 @@ BEGIN
        FROM public."ReportTable" existing
        WHERE existing."reportID" <> NEW."reportID"
          AND existing.user_id = NEW.user_id
-         AND COALESCE(existing.status, 'pending') IN ('active', 'resolved')
+         AND (
+           COALESCE(existing.status, 'pending') = 'active'
+           OR (
+             existing.status = 'resolved'
+             AND COALESCE(existing.resolved_at, existing.verified_at, existing.created_at, now())
+                 >= (now() - interval '6 hours')
+           )
+         )
          AND existing.latitude IS NOT NULL
          AND existing.longitude IS NOT NULL
          AND lower(trim(existing.hazard_category)) = v_category
@@ -175,8 +182,8 @@ BEGIN
     AND ROUND(r.longitude::numeric, 4) = v_lng;
 
   -- Promote at most one pending report per distinct user (who does not already have
-  -- an active/resolved report here) once >= 2 distinct users report this hazard,
-  -- or when an admin activates one report.
+  -- an active report or one resolved within the last 6 hours) once >= 2 distinct users
+  -- report this hazard, or when an admin activates one report.
   IF COALESCE(NEW.status, 'pending') = 'active'
      OR (NEW.user_id IS NOT NULL AND COALESCE(v_distinct_users, 0) >= 2) THEN
     PERFORM set_config('saferoute.syncing_hazard_siblings', '1', true);
@@ -197,7 +204,14 @@ BEGIN
           SELECT 1
           FROM public."ReportTable" existing
           WHERE existing.user_id = r.user_id
-            AND COALESCE(existing.status, 'pending') IN ('active', 'resolved')
+            AND (
+              COALESCE(existing.status, 'pending') = 'active'
+              OR (
+                existing.status = 'resolved'
+                AND COALESCE(existing.resolved_at, existing.verified_at, existing.created_at, now())
+                    >= (now() - interval '6 hours')
+              )
+            )
             AND existing.latitude IS NOT NULL
             AND existing.longitude IS NOT NULL
             AND lower(trim(existing.hazard_category)) = v_category

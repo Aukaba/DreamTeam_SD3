@@ -313,7 +313,8 @@ class LeaderboardService {
                 'reported_by, status, points_awarded, verified_at, updated_at, created_at',
               )
               .not('reported_by', 'is', null)
-              .inFilter('status', const <String>['approved', 'resolved']);
+              .inFilter('status', const <String>['approved', 'resolved'])
+              .limit(1000);
 
           if (rawResolutions is List) {
             for (final item in rawResolutions.whereType<Map>()) {
