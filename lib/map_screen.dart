@@ -405,9 +405,16 @@ class _MapScreenState extends State<MapScreen> {
           .whereType<String>()
           .toSet();
       final mergedById = <String, _HazardItem>{};
+      final seenSpotKeys = <String>{};
       for (final report in savedReports) {
-        // Only active hazards (verified by admin) are shown on the map.
+        // Only active hazards (verified by admin or community quorum) are shown.
         if (report.location == null || report.status != 'active') continue;
+        final spotKey = HazardReportService.duplicateLocationKey(
+          category: report.category,
+          latitude: report.location!.latitude,
+          longitude: report.location!.longitude,
+        );
+        if (!seenSpotKeys.add(spotKey)) continue;
         final item = _buildHazardItemFromReport(report);
         mergedById.putIfAbsent(item.id, () => item);
       }
@@ -419,6 +426,12 @@ class _MapScreenState extends State<MapScreen> {
           continue;
         }
         if (existing.status == 'active') {
+          final spotKey = HazardReportService.duplicateLocationKey(
+            category: existing.category,
+            latitude: existing.location.latitude,
+            longitude: existing.location.longitude,
+          );
+          if (!seenSpotKeys.add(spotKey)) continue;
           mergedById.putIfAbsent(existing.id, () => existing);
         }
       }
@@ -501,10 +514,34 @@ class _MapScreenState extends State<MapScreen> {
     _HazardItem hazard, {
     bool insertAtFront = false,
   }) {
-    final existingIdx = _reportedHazards.indexWhere((h) => h.id == hazard.id);
+    final targetSpotKey = HazardReportService.duplicateLocationKey(
+      category: hazard.category,
+      latitude: hazard.location.latitude,
+      longitude: hazard.location.longitude,
+    );
+    final existingIdx = _reportedHazards.indexWhere(
+      (h) =>
+          h.id == hazard.id ||
+          HazardReportService.duplicateLocationKey(
+                category: h.category,
+                latitude: h.location.latitude,
+                longitude: h.location.longitude,
+              ) ==
+              targetSpotKey,
+    );
     if (existingIdx != -1) {
-      _reportedHazards.removeAt(existingIdx);
-      _reportedHazards.insert(insertAtFront ? 0 : existingIdx, hazard);
+      _reportedHazards.removeWhere(
+        (h) =>
+            h.id == hazard.id ||
+            HazardReportService.duplicateLocationKey(
+                  category: h.category,
+                  latitude: h.location.latitude,
+                  longitude: h.location.longitude,
+                ) ==
+                targetSpotKey,
+      );
+      final safeIdx = existingIdx.clamp(0, _reportedHazards.length);
+      _reportedHazards.insert(insertAtFront ? 0 : safeIdx, hazard);
     } else if (insertAtFront) {
       _reportedHazards.insert(0, hazard);
     } else {
@@ -2941,10 +2978,21 @@ class _MapScreenState extends State<MapScreen> {
 
       setState(() {
         if (isAutoResolved) {
+          final resolvedSpotKey = HazardReportService.duplicateLocationKey(
+            category: hazard.category,
+            latitude: hazard.location.latitude,
+            longitude: hazard.location.longitude,
+          );
           _reportedHazards.removeWhere(
             (h) =>
                 h.id == hazard.id ||
-                (hazard.reportId != null && h.reportId == hazard.reportId),
+                (hazard.reportId != null && h.reportId == hazard.reportId) ||
+                HazardReportService.duplicateLocationKey(
+                      category: h.category,
+                      latitude: h.location.latitude,
+                      longitude: h.location.longitude,
+                    ) ==
+                    resolvedSpotKey,
           );
         } else {
           for (int i = 0; i < _reportedHazards.length; i++) {

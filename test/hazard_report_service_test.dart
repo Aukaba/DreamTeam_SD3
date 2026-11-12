@@ -276,5 +276,60 @@ void main() {
         isTrue,
       );
     });
+
+    test('deduplicates active reports within same category and 4-decimal grid', () {
+      final now = DateTime.now();
+      final deduped = HazardReportService.deduplicateActiveByLocation([
+        HazardReportData(
+          reportId: 'dup-a',
+          category: 'Flood',
+          securityLevel: 'High',
+          title: 'Flood Report A',
+          description: '',
+          address: 'Cebu',
+          location: const LatLng(10.315712, 123.885412),
+          status: 'active',
+          timestamp: now,
+        ),
+        HazardReportData(
+          reportId: 'dup-b',
+          category: ' flood ',
+          securityLevel: 'Medium',
+          title: 'Flood Report B (GPS drift ~4m)',
+          description: '',
+          address: 'Cebu',
+          location: const LatLng(10.315741, 123.885441),
+          status: 'active',
+          timestamp: now.subtract(const Duration(minutes: 1)),
+        ),
+        HazardReportData(
+          reportId: 'diff-cat',
+          category: 'Fire',
+          securityLevel: 'High',
+          title: 'Fire at same spot',
+          description: '',
+          address: 'Cebu',
+          location: const LatLng(10.315712, 123.885412),
+          status: 'active',
+          timestamp: now,
+        ),
+        HazardReportData(
+          reportId: 'diff-loc',
+          category: 'Flood',
+          securityLevel: 'Low',
+          title: 'Flood 200m away',
+          description: '',
+          address: 'Cebu',
+          location: const LatLng(10.317500, 123.885412),
+          status: 'active',
+          timestamp: now,
+        ),
+      ]);
+
+      expect(
+        deduped.map((r) => r.reportId).toList(),
+        <String?>['dup-a', 'diff-cat', 'diff-loc'],
+      );
+    });
   });
 }

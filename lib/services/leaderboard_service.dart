@@ -450,13 +450,18 @@ class LeaderboardService {
   /// saved routes count, days active, and level progression) for the Profile screen.
   /// Only accepted (`active` or `resolved`) reports are counted.
   Future<UserGamificationStats> fetchCurrentUserGamificationStats() async {
-    final userReports = await _hazardReportService.fetchUserReports();
+    final results = await Future.wait<dynamic>(<Future<dynamic>>[
+      _hazardReportService.fetchUserReports(),
+      _hazardReportService.fetchUserResolutionPoints(),
+      _safeRouteService.fetchSavedRoutes(),
+    ]);
+    final userReports = results[0] as List<HazardReportData>;
+    final resolutionPoints = results[1] as int;
+    final savedRoutes = results[2] as List<SavedRouteRecord>;
+
     final acceptedReports = userReports
         .where((r) => HazardReportStatuses.isAcceptedForUserReports(r.status))
         .toList();
-    final resolutionPoints =
-        await _hazardReportService.fetchUserResolutionPoints();
-    final savedRoutes = await _safeRouteService.fetchSavedRoutes();
 
     final int reportCount = acceptedReports.length;
     int totalPoints = resolutionPoints;

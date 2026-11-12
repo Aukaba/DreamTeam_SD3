@@ -74,8 +74,12 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
       setState(() => _isLoading = true);
     }
     try {
-      final fetched = await _hazardReportService.fetchUserReports();
-      final resPts = await _hazardReportService.fetchUserResolutionPoints();
+      final results = await Future.wait<dynamic>(<Future<dynamic>>[
+        _hazardReportService.fetchUserReports(),
+        _hazardReportService.fetchUserResolutionPoints(),
+      ]);
+      final fetched = results[0] as List<HazardReportData>;
+      final resPts = results[1] as int;
       if (!mounted || fetchGen != _fetchGeneration) return;
       setState(() {
         // Only count & show accepted reports ('active' or 'resolved')

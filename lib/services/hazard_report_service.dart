@@ -1038,10 +1038,12 @@ class HazardReportService {
       ...unkeyed,
     ];
     combined.sort((a, b) => b.timestamp.compareTo(a.timestamp));
-    if (combined.length > limit) {
-      return combined.sublist(0, limit);
+    final deduplicated =
+        activeOnly ? deduplicateActiveByLocation(combined) : combined;
+    if (deduplicated.length > limit) {
+      return deduplicated.sublist(0, limit);
     }
-    return combined;
+    return deduplicated;
   }
 
   /// Fetches recent active hazard reports for the Home screen.
@@ -1163,6 +1165,42 @@ class HazardReportService {
 
   /// Points awarded for an approved hazard resolution report.
   static const int resolutionRewardPoints = 1;
+
+  /// Canonical spot key (`category|lat4|lng4`) using 4 decimal places (~11m grid)
+  /// to deduplicate overlapping active hazard reports on the map.
+  static String duplicateLocationKey({
+    required String category,
+    required double latitude,
+    required double longitude,
+  }) {
+    final normCat = HazardCategories.normalize(category).trim().toLowerCase();
+    return '$normCat|${latitude.toStringAsFixed(4)}|${longitude.toStringAsFixed(4)}';
+  }
+
+  /// Returns one representative report per `(category, lat4, lng4)` cell so
+  /// auto-accepted multi-user reports do not stack duplicate map markers.
+  static List<HazardReportData> deduplicateActiveByLocation(
+    List<HazardReportData> reports,
+  ) {
+    final seenKeys = <String>{};
+    final result = <HazardReportData>[];
+    for (final report in reports) {
+      final loc = report.location;
+      if (loc == null) {
+        result.add(report);
+        continue;
+      }
+      final key = duplicateLocationKey(
+        category: report.category,
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+      );
+      if (seenKeys.add(key)) {
+        result.add(report);
+      }
+    }
+    return result;
+  }
 
   /// Fetches accepted (`approved` or `resolved`) resolution reports submitted by
   /// [userId] (or the current authenticated user).

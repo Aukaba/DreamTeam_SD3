@@ -36,14 +36,16 @@ CREATE INDEX IF NOT EXISTS idx_hazard_resolution_reports_approved_user
 
 -- =====================================================================
 -- 2. Partial expression index for fast duplicate hazard location lookup
+--    (~11m grid using 4 decimal places)
 -- =====================================================================
-CREATE INDEX IF NOT EXISTS "idx_ReportTable_duplicate_lookup"
+DROP INDEX IF EXISTS public."idx_ReportTable_duplicate_lookup";
+CREATE INDEX "idx_ReportTable_duplicate_lookup"
   ON public."ReportTable" (
     lower(trim(hazard_category)),
-    ROUND(latitude::numeric, 6),
-    ROUND(longitude::numeric, 6)
+    ROUND(latitude::numeric, 4),
+    ROUND(longitude::numeric, 4)
   )
-  WHERE COALESCE(status, 'pending') IN ('pending', 'active')
+  WHERE COALESCE(status, 'pending') IN ('pending', 'active', 'resolved')
     AND user_id IS NOT NULL
     AND latitude IS NOT NULL
     AND longitude IS NOT NULL;
@@ -100,11 +102,11 @@ DECLARE
   v_lng numeric;
   v_distinct_users integer;
 BEGIN
-  IF pg_trigger_depth() > 1 THEN
+  IF current_setting('saferoute.syncing_hazard_siblings', true) = '1' THEN
     RETURN NEW;
   END IF;
 
-  IF COALESCE(NEW.status, 'pending') NOT IN ('pending', 'active')
+  IF COALESCE(NEW.status, 'pending') NOT IN ('pending', 'active', 'resolved')
      OR NEW.latitude IS NULL
      OR NEW.longitude IS NULL
      OR NULLIF(TRIM(NEW.hazard_category), '') IS NULL THEN
@@ -112,13 +114,54 @@ BEGIN
   END IF;
 
   v_category := lower(trim(NEW.hazard_category));
-  v_lat := ROUND(NEW.latitude::numeric, 6);
-  v_lng := ROUND(NEW.longitude::numeric, 6);
+  v_lat := ROUND(NEW.latitude::numeric, 4);
+  v_lng := ROUND(NEW.longitude::numeric, 4);
 
-  -- Serialize concurrent reports for the same hazard + exact coordinates
+  -- Serialize concurrent reports for the same hazard + ~11m (4-decimal) grid cell
   PERFORM pg_advisory_xact_lock(
     hashtext(v_category || ':' || v_lat::text || ':' || v_lng::text)
   );
+
+  -- When any hazard report is resolved (via quorum or admin), mark matching active
+  -- duplicate reports at the same category & 4-decimal location as resolved too.
+  IF NEW.status = 'resolved' THEN
+    IF tg_op = 'UPDATE' AND OLD.status IS DISTINCT FROM 'resolved' THEN
+      PERFORM set_config('saferoute.syncing_hazard_siblings', '1', true);
+      UPDATE public."ReportTable"
+      SET status = 'resolved',
+          resolution_status = COALESCE(resolution_status, 'approved'),
+          resolved_at = COALESCE(resolved_at, NEW.resolved_at, timezone('utc'::text, now()))
+      WHERE "reportID" <> NEW."reportID"
+        AND COALESCE(status, 'pending') = 'active'
+        AND latitude IS NOT NULL
+        AND longitude IS NOT NULL
+        AND lower(trim(hazard_category)) = v_category
+        AND ROUND(latitude::numeric, 4) = v_lat
+        AND ROUND(longitude::numeric, 4) = v_lng;
+      PERFORM set_config('saferoute.syncing_hazard_siblings', '0', true);
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  -- Prevent single-user point farming: do not auto-promote a newly inserted duplicate
+  -- if that same user already has an active or resolved report here.
+  IF tg_op = 'INSERT'
+     AND NEW.status = 'pending'
+     AND NEW.user_id IS NOT NULL
+     AND EXISTS (
+       SELECT 1
+       FROM public."ReportTable" existing
+       WHERE existing."reportID" <> NEW."reportID"
+         AND existing.user_id = NEW.user_id
+         AND COALESCE(existing.status, 'pending') IN ('active', 'resolved')
+         AND existing.latitude IS NOT NULL
+         AND existing.longitude IS NOT NULL
+         AND lower(trim(existing.hazard_category)) = v_category
+         AND ROUND(existing.latitude::numeric, 4) = v_lat
+         AND ROUND(existing.longitude::numeric, 4) = v_lng
+     ) THEN
+    RETURN NEW;
+  END IF;
 
   SELECT COUNT(DISTINCT r.user_id) FILTER (WHERE r.user_id IS NOT NULL)
   INTO v_distinct_users
@@ -128,23 +171,42 @@ BEGIN
     AND r.latitude IS NOT NULL
     AND r.longitude IS NOT NULL
     AND lower(trim(r.hazard_category)) = v_category
-    AND ROUND(r.latitude::numeric, 6) = v_lat
-    AND ROUND(r.longitude::numeric, 6) = v_lng;
+    AND ROUND(r.latitude::numeric, 4) = v_lat
+    AND ROUND(r.longitude::numeric, 4) = v_lng;
 
-  -- Promote all matching pending reports (including NEW) once >= 2 distinct users
-  -- report the same hazard at the exact location (or if an admin set status = 'active').
+  -- Promote at most one pending report per distinct user (who does not already have
+  -- an active/resolved report here) once >= 2 distinct users report this hazard,
+  -- or when an admin activates one report.
   IF COALESCE(NEW.status, 'pending') = 'active'
      OR (NEW.user_id IS NOT NULL AND COALESCE(v_distinct_users, 0) >= 2) THEN
-    UPDATE public."ReportTable"
+    PERFORM set_config('saferoute.syncing_hazard_siblings', '1', true);
+    UPDATE public."ReportTable" target
     SET status = 'active',
-        verified_at = COALESCE(verified_at, timezone('utc'::text, now()))
-    WHERE COALESCE(status, 'pending') = 'pending'
-      AND user_id IS NOT NULL
-      AND latitude IS NOT NULL
-      AND longitude IS NOT NULL
-      AND lower(trim(hazard_category)) = v_category
-      AND ROUND(latitude::numeric, 6) = v_lat
-      AND ROUND(longitude::numeric, 6) = v_lng;
+        verified_at = COALESCE(target.verified_at, timezone('utc'::text, now()))
+    WHERE target."reportID" IN (
+      SELECT DISTINCT ON (r.user_id) r."reportID"
+      FROM public."ReportTable" r
+      WHERE COALESCE(r.status, 'pending') = 'pending'
+        AND r.user_id IS NOT NULL
+        AND r.latitude IS NOT NULL
+        AND r.longitude IS NOT NULL
+        AND lower(trim(r.hazard_category)) = v_category
+        AND ROUND(r.latitude::numeric, 4) = v_lat
+        AND ROUND(r.longitude::numeric, 4) = v_lng
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public."ReportTable" existing
+          WHERE existing.user_id = r.user_id
+            AND COALESCE(existing.status, 'pending') IN ('active', 'resolved')
+            AND existing.latitude IS NOT NULL
+            AND existing.longitude IS NOT NULL
+            AND lower(trim(existing.hazard_category)) = v_category
+            AND ROUND(existing.latitude::numeric, 4) = v_lat
+            AND ROUND(existing.longitude::numeric, 4) = v_lng
+        )
+      ORDER BY r.user_id, r.created_at ASC, r."reportID" ASC
+    );
+    PERFORM set_config('saferoute.syncing_hazard_siblings', '0', true);
   END IF;
 
   RETURN NEW;
