@@ -595,16 +595,19 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
                           : const Color(0xFF7B9BAD),
                     ),
                     const SizedBox(width: 6),
-                    Text(
-                      'Hazard Reports (${_allReports.length})',
-                      style: GoogleFonts.inter(
-                        fontSize: isSmallScreen ? 11 : 12.5,
-                        fontWeight: _selectedSection == 0
-                            ? FontWeight.w700
-                            : FontWeight.w500,
-                        color: _selectedSection == 0
-                            ? const Color(0xFF1F3A5F)
-                            : const Color(0xFF7B9BAD),
+                    Flexible(
+                      child: Text(
+                        'Hazard Reports (${_allReports.length})',
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.inter(
+                          fontSize: isSmallScreen ? 11 : 12.5,
+                          fontWeight: _selectedSection == 0
+                              ? FontWeight.w700
+                              : FontWeight.w500,
+                          color: _selectedSection == 0
+                              ? const Color(0xFF1F3A5F)
+                              : const Color(0xFF7B9BAD),
+                        ),
                       ),
                     ),
                   ],
@@ -647,16 +650,19 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
                           : const Color(0xFF7B9BAD),
                     ),
                     const SizedBox(width: 6),
-                    Text(
-                      'Mark to Resolve',
-                      style: GoogleFonts.inter(
-                        fontSize: isSmallScreen ? 11 : 12.5,
-                        fontWeight: _selectedSection == 1
-                            ? FontWeight.w700
-                            : FontWeight.w500,
-                        color: _selectedSection == 1
-                            ? const Color(0xFF1A2B4A)
-                            : const Color(0xFF7B9BAD),
+                    Flexible(
+                      child: Text(
+                        'Mark to Resolve',
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.inter(
+                          fontSize: isSmallScreen ? 11 : 12.5,
+                          fontWeight: _selectedSection == 1
+                              ? FontWeight.w700
+                              : FontWeight.w500,
+                          color: _selectedSection == 1
+                              ? const Color(0xFF1A2B4A)
+                              : const Color(0xFF7B9BAD),
+                        ),
                       ),
                     ),
                     if (pendingResolutionsCount > 0) ...[
