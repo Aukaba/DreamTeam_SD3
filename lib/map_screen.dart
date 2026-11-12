@@ -2936,7 +2936,8 @@ class _MapScreenState extends State<MapScreen> {
 
       if (!mounted) return;
 
-      final isAutoResolved = resolutionData.status == 'approved';
+      final isAutoResolved =
+          HazardResolutionReportData.isAcceptedStatus(resolutionData.status);
 
       setState(() {
         if (isAutoResolved) {
@@ -2971,8 +2972,8 @@ class _MapScreenState extends State<MapScreen> {
           SnackBar(
             content: Text(
               isAutoResolved
-                  ? 'Hazard confirmed resolved by community! Automatically resolved and removed from map.'
-                  : 'Resolution report submitted! When multiple people request resolution, it will automatically resolve.',
+                  ? 'Hazard confirmed resolved by community! Automatically resolved (+1 safety point earned).'
+                  : 'Resolution report submitted! When multiple people request resolution, it will automatically resolve (+1 safety pt on approval).',
             ),
             backgroundColor: _safeGreen,
             behavior: SnackBarBehavior.floating,

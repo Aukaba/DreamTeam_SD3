@@ -804,6 +804,11 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
       });
       widget.onReportSubmitted?.call(report);
 
+      final bool isAutoActive = report.status == HazardReportStatuses.active;
+      final String snackMessage = isAutoActive
+          ? '${report.category} reported and auto-verified as active! +${report.pointsAwarded} safety ${report.pointsAwarded == 1 ? 'pt' : 'pts'} earned.'
+          : '${report.category} reported! Pending admin verification.';
+
       // Show success feedback
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -813,7 +818,7 @@ class _ReportHazardContentWidgetState extends State<ReportHazardContentWidget> {
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  '${report.category} reported! Pending admin verification.',
+                  snackMessage,
                   style: const TextStyle(fontFamily: 'Poppins', fontSize: 13),
                 ),
               ),

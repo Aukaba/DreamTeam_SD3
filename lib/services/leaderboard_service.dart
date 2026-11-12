@@ -275,6 +275,7 @@ class LeaderboardService {
         final Map<String, int> windowPoints = <String, int>{};
         final Map<String, int> allReports = <String, int>{};
         final Map<String, int> allPoints = <String, int>{};
+        final Set<String> participantIds = <String>{};
 
         if (rawReports is List) {
           for (final item in rawReports.whereType<Map>()) {
@@ -294,6 +295,7 @@ class LeaderboardService {
                 ) ??
                 DateTime.now();
 
+            participantIds.add(uid);
             allReports[uid] = (allReports[uid] ?? 0) + 1;
             allPoints[uid] = (allPoints[uid] ?? 0) + pts;
 
@@ -304,8 +306,51 @@ class LeaderboardService {
           }
         }
 
+        try {
+          final dynamic rawResolutions = await client
+              .from('hazard_resolution_reports')
+              .select(
+                'reported_by, status, points_awarded, verified_at, updated_at, created_at',
+              )
+              .not('reported_by', 'is', null)
+              .inFilter('status', const <String>['approved', 'resolved']);
+
+          if (rawResolutions is List) {
+            for (final item in rawResolutions.whereType<Map>()) {
+              final uid = item['reported_by']?.toString();
+              if (uid == null || uid.isEmpty) continue;
+              if (!HazardResolutionReportData.isAcceptedStatus(
+                item['status']?.toString(),
+              )) {
+                continue;
+              }
+              final int rawPts = (item['points_awarded'] as num?)?.toInt() ??
+                  HazardReportService.resolutionRewardPoints;
+              final int pts = rawPts > 0
+                  ? rawPts
+                  : HazardReportService.resolutionRewardPoints;
+              final eventTime = DateTime.tryParse(
+                    (item['verified_at'] ??
+                            item['updated_at'] ??
+                            item['created_at'])
+                        ?.toString() ??
+                        '',
+                  ) ??
+                  DateTime.now();
+
+              participantIds.add(uid);
+              allPoints[uid] = (allPoints[uid] ?? 0) + pts;
+              if (!eventTime.isBefore(cutoff)) {
+                windowPoints[uid] = (windowPoints[uid] ?? 0) + pts;
+              }
+            }
+          }
+        } catch (e) {
+          debugPrint('Warning: Resolution points fallback fetch error: $e');
+        }
+
         final entries = <LeaderboardUserEntry>[];
-        for (final uid in allReports.keys) {
+        for (final uid in participantIds) {
           final totalPts = allPoints[uid] ?? 0;
           final isMe = currentUserId != null && uid == currentUserId;
           entries.add(
@@ -332,7 +377,7 @@ class LeaderboardService {
       }
     }
 
-    // Session / offline fallback using only accepted ('active' or 'resolved') reports
+    // Session / offline fallback using accepted reports + approved resolutions
     final acceptedSessionReports = HazardReportService.sessionReports
         .where((r) => HazardReportStatuses.isAcceptedForUserReports(r.status))
         .toList();
@@ -340,6 +385,13 @@ class LeaderboardService {
     int myPoints = 0;
     for (final r in acceptedSessionReports) {
       myPoints += r.pointsAwarded;
+    }
+    for (final res in HazardReportService.sessionResolutionReports.values) {
+      if (HazardResolutionReportData.isAcceptedStatus(res.status)) {
+        myPoints += res.pointsAwarded > 0
+            ? res.pointsAwarded
+            : HazardReportService.resolutionRewardPoints;
+      }
     }
 
     return <LeaderboardUserEntry>[
@@ -402,10 +454,12 @@ class LeaderboardService {
     final acceptedReports = userReports
         .where((r) => HazardReportStatuses.isAcceptedForUserReports(r.status))
         .toList();
+    final resolutionPoints =
+        await _hazardReportService.fetchUserResolutionPoints();
     final savedRoutes = await _safeRouteService.fetchSavedRoutes();
 
     final int reportCount = acceptedReports.length;
-    int totalPoints = 0;
+    int totalPoints = resolutionPoints;
     for (final r in acceptedReports) {
       totalPoints += r.pointsAwarded;
     }

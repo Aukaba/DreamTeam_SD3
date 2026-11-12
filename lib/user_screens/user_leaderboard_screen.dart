@@ -1267,6 +1267,16 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
           const SizedBox(height: 12),
 
           _buildPointGuideItem(
+            icon: Icons.verified_outlined,
+            iconColor: const Color(0xFF00897B),
+            iconBgColor: const Color(0xFFE0F2F1),
+            title: 'Resolve an active hazard',
+            pointsText: '+1 pt · Awarded when resolution is approved',
+          ),
+
+          const SizedBox(height: 12),
+
+          _buildPointGuideItem(
             icon: Icons.trending_up_rounded,
             iconColor: const Color(0xFF1E6FD9),
             iconBgColor: const Color(0xFFEBF3FC),
