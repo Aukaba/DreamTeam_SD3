@@ -55,11 +55,27 @@ class AuthService {
     required String email,
     required String token,
   }) async {
-    return await _supabase.auth.verifyOTP(
-      email: email,
-      token: token,
-      type: OtpType.recovery,
-    );
+    try {
+      return await _supabase.auth.verifyOTP(
+        email: email,
+        token: token,
+        type: OtpType.recovery,
+      );
+    } on AuthException catch (e) {
+      final msg = e.message.toLowerCase();
+      if (e.code == 'otp_expired' || msg.contains('expired') || msg.contains('invalid')) {
+        try {
+          return await _supabase.auth.verifyOTP(
+            email: email,
+            token: token,
+            type: OtpType.email,
+          );
+        } catch (_) {
+          rethrow;
+        }
+      }
+      rethrow;
+    }
   }
 
   // Update password for authenticated user (including recovery session)

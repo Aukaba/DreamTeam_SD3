@@ -171,14 +171,14 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
 
     if (otp.isEmpty) {
       setState(() {
-        _errorMessage = 'Please enter the 6-digit verification code.';
+        _errorMessage = 'Please enter the verification code.';
       });
       return;
     }
 
     if (otp.length < 6) {
       setState(() {
-        _errorMessage = 'Verification code must be 6 digits.';
+        _errorMessage = 'Verification code must be at least 6 digits.';
       });
       return;
     }
@@ -322,10 +322,10 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
   String _getSubtitleText() {
     switch (_currentStep) {
       case ResetPasswordStep.email:
-        return 'Enter your email address and we\'ll send you a 6-digit verification code to reset your password.';
+        return 'Enter your email address and we\'ll send you a verification code to reset your password.';
       case ResetPasswordStep.otp:
         final email = _emailController.text.trim();
-        return 'We sent a 6-digit code to $email. Enter the code below to verify your account.';
+        return 'We sent a verification code to $email. Enter the code below to verify your account.';
       case ResetPasswordStep.newPassword:
         return 'Your verification code was accepted. Please choose a strong new password with at least 6 characters.';
     }
@@ -528,11 +528,11 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                 ],
 
                 // ==============================================================
-                // STEP 2: 6-DIGIT OTP INPUT
+                // STEP 2: OTP INPUT
                 // ==============================================================
                 if (_currentStep == ResetPasswordStep.otp) ...[
                   Text(
-                    '6-digit verification code',
+                    'Verification code',
                     style: GoogleFonts.poppins(
                       color: const Color(0xFF344673),
                       fontSize: 14,
@@ -547,21 +547,21 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                     keyboardType: TextInputType.number,
                     inputFormatters: [
                       FilteringTextInputFormatter.digitsOnly,
-                      LengthLimitingTextInputFormatter(6),
+                      LengthLimitingTextInputFormatter(8),
                     ],
                     textAlign: TextAlign.center,
                     style: GoogleFonts.poppins(
                       fontSize: 22,
                       fontWeight: FontWeight.w600,
-                      letterSpacing: 8,
+                      letterSpacing: 6,
                       color: const Color(0xFF263354),
                     ),
                     decoration: InputDecoration(
-                      hintText: '000000',
+                      hintText: '00000000',
                       hintStyle: GoogleFonts.poppins(
                         fontSize: 22,
                         fontWeight: FontWeight.w400,
-                        letterSpacing: 8,
+                        letterSpacing: 6,
                         color: const Color(0xFF9AA3BC),
                       ),
                       filled: true,

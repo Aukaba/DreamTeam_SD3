@@ -147,7 +147,7 @@ void main() {
         // Try submitting empty OTP
         await tester.tap(find.byKey(const Key('reset_password_primary_button')));
         await tester.pumpAndSettle();
-        expect(find.text('Please enter the 6-digit verification code.'), findsOneWidget);
+        expect(find.text('Please enter the verification code.'), findsOneWidget);
 
         // Try submitting short OTP (< 6 digits)
         await tester.enterText(
@@ -156,30 +156,30 @@ void main() {
         );
         await tester.tap(find.byKey(const Key('reset_password_primary_button')));
         await tester.pumpAndSettle();
-        expect(find.text('Verification code must be 6 digits.'), findsOneWidget);
+        expect(find.text('Verification code must be at least 6 digits.'), findsOneWidget);
 
         // Try submitting invalid OTP with service rejection
         fakeAuthService.shouldFailVerifyOtp = true;
         await tester.enterText(
           find.byKey(const Key('reset_password_otp_field')),
-          '000000',
+          '00000000',
         );
         await tester.tap(find.byKey(const Key('reset_password_primary_button')));
         await tester.pumpAndSettle();
         expect(find.textContaining('expired or is invalid'), findsOneWidget);
 
-        // Submit valid OTP
+        // Submit valid 8-digit OTP
         fakeAuthService.shouldFailVerifyOtp = false;
         await tester.enterText(
           find.byKey(const Key('reset_password_otp_field')),
-          '654321',
+          '87654321',
         );
         await tester.tap(find.byKey(const Key('reset_password_primary_button')));
         await tester.pumpAndSettle();
 
         // Verify service was called with email & token
         expect(fakeAuthService.lastVerifiedEmail, 'driver@test.com');
-        expect(fakeAuthService.lastVerifiedToken, '654321');
+        expect(fakeAuthService.lastVerifiedToken, '87654321');
 
         // Verify transitioned to Step 3: New password screen
         expect(find.text('NEW PASSWORD'), findsOneWidget);

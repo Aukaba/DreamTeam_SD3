@@ -121,7 +121,7 @@ class AuthErrorHandler {
         message.contains('email link is invalid or has expired') ||
         message.contains('token is invalid') ||
         message.contains('otp_expired')) {
-      return 'This verification or reset link has expired or is invalid. Please request a new one.';
+      return 'The verification code has expired or is invalid. Please request a new one.';
     }
 
     // Disabled signups
