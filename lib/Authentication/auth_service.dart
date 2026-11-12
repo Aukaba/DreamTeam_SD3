@@ -49,4 +49,39 @@ class AuthService {
   Future<void> resetPassword({required String email}) async {
     await _supabase.auth.resetPasswordForEmail(email);
   }
+
+  // Verify OTP for password recovery
+  Future<AuthResponse> verifyPasswordResetOtp({
+    required String email,
+    required String token,
+  }) async {
+    try {
+      return await _supabase.auth.verifyOTP(
+        email: email,
+        token: token,
+        type: OtpType.recovery,
+      );
+    } on AuthException catch (e) {
+      final msg = e.message.toLowerCase();
+      if (e.code == 'otp_expired' || msg.contains('expired') || msg.contains('invalid')) {
+        try {
+          return await _supabase.auth.verifyOTP(
+            email: email,
+            token: token,
+            type: OtpType.email,
+          );
+        } catch (_) {
+          rethrow;
+        }
+      }
+      rethrow;
+    }
+  }
+
+  // Update password for authenticated user (including recovery session)
+  Future<UserResponse> updatePassword({required String newPassword}) async {
+    return await _supabase.auth.updateUser(
+      UserAttributes(password: newPassword),
+    );
+  }
 }

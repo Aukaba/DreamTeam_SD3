@@ -3,7 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'auth_service.dart';
 import 'auth_error_handler.dart';
 import 'sign_up_screen.dart';
-import 'forgot_password_screen.dart';
+import 'reset_password_page.dart';
 
 class SignInScreen extends StatefulWidget {
   const SignInScreen({super.key});
@@ -125,7 +125,7 @@ class _SignInScreenState extends State<SignInScreen> {
                 const SizedBox(height: 16),
                 TextButton(
                   onPressed: () {
-                    Navigator.push(context, MaterialPageRoute(builder: (_) => const ForgotPasswordScreen()));
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => const ResetPasswordPage()));
                   },
                   child: const Text('Forgot Password?'),
                 ),

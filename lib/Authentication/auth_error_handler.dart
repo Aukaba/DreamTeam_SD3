@@ -121,7 +121,7 @@ class AuthErrorHandler {
         message.contains('email link is invalid or has expired') ||
         message.contains('token is invalid') ||
         message.contains('otp_expired')) {
-      return 'This verification or reset link has expired or is invalid. Please request a new one.';
+      return 'The verification code has expired or is invalid. Please request a new one.';
     }
 
     // Disabled signups
@@ -153,6 +153,19 @@ class AuthErrorHandler {
         message.contains('connection reset') ||
         message.contains('handshakeexception')) {
       return 'Unable to connect to the server. Please check your internet connection.';
+    }
+
+    // Email delivery / SMTP / Template errors
+    if (message.contains('error sending recovery email') ||
+        message.contains('error sending') ||
+        message.contains('error sending email') ||
+        message.contains('error sending confirmation email') ||
+        message.contains('smtp') ||
+        message.contains('mailer') ||
+        message.contains('template') ||
+        message.contains('parse_error') ||
+        message.contains('template_body')) {
+      return 'Unable to send verification code right now. Please wait a moment and try again.';
     }
 
     // Fallback: If message contains technical jargon, give a clean friendly message
