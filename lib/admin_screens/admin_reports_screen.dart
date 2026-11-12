@@ -598,6 +598,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
                     Flexible(
                       child: Text(
                         'Hazard Reports (${_allReports.length})',
+                        maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: GoogleFonts.inter(
                           fontSize: isSmallScreen ? 11 : 12.5,
@@ -653,6 +654,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
                     Flexible(
                       child: Text(
                         'Mark to Resolve',
+                        maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: GoogleFonts.inter(
                           fontSize: isSmallScreen ? 11 : 12.5,

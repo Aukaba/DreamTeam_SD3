@@ -10,6 +10,8 @@ import 'package:dreamteam_sd3/services/hazard_report_service.dart';
 import 'package:dreamteam_sd3/services/safe_route_service.dart';
 import 'package:dreamteam_sd3/widgets/turn_by_turn_navigation_overlay.dart';
 
+class _FakeTileImage extends Fake implements TileImage {}
+
 class _FakeHazardReportService extends HazardReportService {
   @override
   Future<List<HazardReportData>> fetchReports({
@@ -128,6 +130,12 @@ void main() {
         // Feedback snackbar is shown
         expect(find.text('Traffic layer enabled (TomTom)'), findsOneWidget);
 
+        // Attribution displays TomTom provider attribution
+        expect(
+          find.text('© OpenStreetMap contributors | © TomTom Traffic'),
+          findsOneWidget,
+        );
+
         // 3. Toggle Traffic OFF
         await tester.tap(trafficButtonFinder);
         await tester.pump();
@@ -137,6 +145,7 @@ void main() {
         expect(find.byKey(const Key('tomtom_traffic_flow_layer')), findsNothing);
         expect(find.byKey(const Key('traffic_legend_chip')), findsNothing);
         expect(find.text('Traffic layer disabled'), findsOneWidget);
+        expect(find.text('© OpenStreetMap contributors'), findsOneWidget);
       },
     );
 
@@ -225,23 +234,23 @@ void main() {
     );
 
     test('RouteCandidate incorporates traffic delay in safetyWeightedCost and labels', () {
-      final candNoTraffic = RouteCandidate(
+      const candNoTraffic = RouteCandidate(
         id: 'no_traffic',
         provider: 'tomtom',
         summary: 'Via Clear Highway',
-        polyline: const [LatLng(10.0, 123.0), LatLng(10.1, 123.1)],
-        steps: const [],
+        polyline: [LatLng(10.0, 123.0), LatLng(10.1, 123.1)],
+        steps: [],
         distanceMeters: 5000,
         durationSeconds: 600,
         trafficDelaySeconds: 0,
       );
 
-      final candWithTraffic = RouteCandidate(
+      const candWithTraffic = RouteCandidate(
         id: 'with_traffic',
         provider: 'tomtom',
         summary: 'Via Congested Ave',
-        polyline: const [LatLng(10.0, 123.0), LatLng(10.1, 123.1)],
-        steps: const [],
+        polyline: [LatLng(10.0, 123.0), LatLng(10.1, 123.1)],
+        steps: [],
         distanceMeters: 4800,
         durationSeconds: 960,
         trafficDelaySeconds: 360, // 6 mins traffic delay
@@ -334,5 +343,72 @@ void main() {
       expect(result.primaryRoute.summary, contains('Via N. Bacalso Ave'));
       expect(result.primaryRoute.steps.length, 2);
     });
+
+    testWidgets(
+      'Missing or placeholder TomTom API key does not enable traffic and shows notice',
+      (tester) async {
+        final fakeService = _FakeHazardReportService();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: MapScreen(
+              initialLocation: const LatLng(10.3157, 123.8854),
+              hazardReportService: fakeService,
+              tomtomApiKey: 'YOUR_TOMTOM_API_KEY_HERE',
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        final trafficButtonFinder = find.byKey(const Key('toggle_traffic_layer_button'));
+        await tester.tap(trafficButtonFinder);
+        await tester.pump();
+
+        expect(
+          find.text('TomTom API key not configured. Real-time traffic unavailable.'),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('tomtom_traffic_flow_layer')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'Traffic tile load error surfaces error snackbar and changes legend chip',
+      (tester) async {
+        final fakeService = _FakeHazardReportService();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: MapScreen(
+              initialLocation: const LatLng(10.3157, 123.8854),
+              hazardReportService: fakeService,
+              initialShowTraffic: true,
+              tomtomApiKey: 'VALID_KEY',
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        final trafficTileLayer = tester.widget<TileLayer>(
+          find.byKey(const Key('tomtom_traffic_flow_layer')),
+        );
+        trafficTileLayer.errorTileCallback?.call(
+          _FakeTileImage(),
+          Exception('401 Unauthorized'),
+          StackTrace.empty,
+        );
+
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(
+          find.text('Failed to load traffic tiles. Check network connection or API quota.'),
+          findsOneWidget,
+        );
+        expect(find.text('Traffic tiles unavailable'), findsOneWidget);
+      },
+    );
   });
 }

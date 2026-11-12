@@ -269,18 +269,39 @@ class _MapScreenState extends State<MapScreen> {
   double _simulationProgressMeters = 0.0;
 
   bool _showTraffic = false;
+  bool _hasTrafficTileError = false;
 
   String get _tomTomApiKey {
     if (widget.tomtomApiKey != null && widget.tomtomApiKey!.trim().isNotEmpty) {
-      return widget.tomtomApiKey!.trim();
+      final key = widget.tomtomApiKey!.trim().replaceAll('"', '').replaceAll("'", '');
+      if (key != 'YOUR_TOMTOM_API_KEY_HERE') return key;
     }
     try {
       final key = dotenv.env['TOMTOM_API_KEY'];
       if (key != null && key.trim().isNotEmpty) {
-        return key.trim();
+        final clean = key.trim().replaceAll('"', '').replaceAll("'", '');
+        if (clean != 'YOUR_TOMTOM_API_KEY_HERE') return clean;
       }
     } catch (_) {}
-    return 'YOUR_TOMTOM_API_KEY_HERE';
+    return '';
+  }
+
+  String get _tomTomTrafficUrlTemplate {
+    try {
+      final proxy = dotenv.env['TOMTOM_TRAFFIC_PROXY_URL'];
+      if (proxy != null && proxy.trim().isNotEmpty) {
+        return proxy.trim();
+      }
+    } catch (_) {}
+    return 'https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?key=$_tomTomApiKey&tileSize=256';
+  }
+
+  bool get _canLoadTraffic {
+    try {
+      final proxy = dotenv.env['TOMTOM_TRAFFIC_PROXY_URL'];
+      if (proxy != null && proxy.trim().isNotEmpty) return true;
+    } catch (_) {}
+    return _tomTomApiKey.isNotEmpty;
   }
 
   List<_HazardItem> get _allHazards =>
@@ -298,7 +319,7 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
-    _showTraffic = widget.initialShowTraffic;
+    _showTraffic = widget.initialShowTraffic && _canLoadTraffic;
     _selectedFilterIndex = widget.initialFilterIndex.clamp(0, 4);
     _currentLocation =
         widget.initialLocation ??
@@ -1481,18 +1502,33 @@ class _MapScreenState extends State<MapScreen> {
                     }
                   },
                 ),
-                if (_showTraffic && _tomTomApiKey.isNotEmpty)
+                if (_showTraffic && _canLoadTraffic)
                   TileLayer(
                     key: const Key('tomtom_traffic_flow_layer'),
                     tileProvider: widget.tileProvider ??
                         NetworkTileProvider(silenceExceptions: true),
-                    urlTemplate:
-                        'https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?key=$_tomTomApiKey&tileSize=256',
+                    urlTemplate: _tomTomTrafficUrlTemplate,
                     userAgentPackageName: 'com.dreamteam.sd3',
                     maxZoom: 19.0,
                     evictErrorTileStrategy: EvictErrorTileStrategy.dispose,
                     errorTileCallback: (tile, error, stackTrace) {
-                      // Silently catch network or authorization errors when rendering traffic tiles
+                      if (!_hasTrafficTileError && mounted) {
+                        setState(() {
+                          _hasTrafficTileError = true;
+                        });
+                        ScaffoldMessenger.of(context).removeCurrentSnackBar();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Failed to load traffic tiles. Check network connection or API quota.',
+                              style: TextStyle(fontFamily: 'Poppins', fontSize: 12),
+                            ),
+                            duration: Duration(seconds: 4),
+                            behavior: SnackBarBehavior.floating,
+                            backgroundColor: Color(0xFFDC2626),
+                          ),
+                        );
+                      }
                     },
                   ),
                 if (_activeRoute != null)
@@ -1503,11 +1539,13 @@ class _MapScreenState extends State<MapScreen> {
                   PolylineLayer(
                     polylines: _buildRoutePolylines(),
                   ),
-                const SimpleAttributionWidget(
+                SimpleAttributionWidget(
                   alignment: Alignment.bottomRight,
                   source: Text(
-                    '© OpenStreetMap contributors',
-                    style: TextStyle(fontSize: 9, color: Color(0xFF4B5563)),
+                    _showTraffic
+                        ? '© OpenStreetMap contributors | © TomTom Traffic'
+                        : '© OpenStreetMap contributors',
+                    style: const TextStyle(fontSize: 9, color: Color(0xFF4B5563)),
                   ),
                 ),
                 MarkerLayer(
@@ -3585,9 +3623,31 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _toggleTraffic() {
+    if (!_canLoadTraffic) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).removeCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'TomTom API key not configured. Real-time traffic unavailable.',
+              style: TextStyle(fontFamily: 'Poppins', fontSize: 12),
+            ),
+            duration: Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: Color(0xFFDC2626),
+          ),
+        );
+      }
+      return;
+    }
+
     setState(() {
       _showTraffic = !_showTraffic;
+      if (_showTraffic) {
+        _hasTrafficTileError = false;
+      }
     });
+
     if (mounted) {
       ScaffoldMessenger.of(context).removeCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(
@@ -3605,6 +3665,45 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Widget _buildTrafficLegendChip() {
+    if (_hasTrafficTileError) {
+      return Container(
+        key: const Key('traffic_legend_chip'),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFEF2F2),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFFFCA5A5)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.08),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.warning_amber_rounded,
+              size: 13,
+              color: Color(0xFFDC2626),
+            ),
+            SizedBox(width: 6),
+            Text(
+              'Traffic tiles unavailable',
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF991B1B),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Container(
       key: const Key('traffic_legend_chip'),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),

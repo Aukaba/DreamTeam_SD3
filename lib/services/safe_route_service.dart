@@ -755,12 +755,14 @@ class SafeRouteService {
   String get tomtomApiKey {
     final directKey = _tomTomApiKey;
     if (directKey != null && directKey.trim().isNotEmpty) {
-      return directKey.trim().replaceAll('"', '').replaceAll("'", '');
+      final clean = directKey.trim().replaceAll('"', '').replaceAll("'", '');
+      if (clean != 'YOUR_TOMTOM_API_KEY_HERE') return clean;
     }
     try {
       final key = dotenv.env['TOMTOM_API_KEY'];
       if (key != null && key.trim().isNotEmpty) {
-        return key.trim().replaceAll('"', '').replaceAll("'", '');
+        final clean = key.trim().replaceAll('"', '').replaceAll("'", '');
+        if (clean != 'YOUR_TOMTOM_API_KEY_HERE') return clean;
       }
     } catch (_) {}
     return '';
