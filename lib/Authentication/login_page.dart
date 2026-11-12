@@ -465,16 +465,6 @@ class _LoginPageState extends State<LoginPage> {
                               fontWeight: FontWeight.w700,
                             ),
                           ),
-                        if (!_isLoading) const SizedBox(width: 8),
-                        if (!_isLoading)
-                          Text(
-                            '→',
-                            style: GoogleFonts.poppins(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
                       ],
                     ),
                   ),

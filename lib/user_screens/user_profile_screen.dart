@@ -898,11 +898,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
             'Safe Routes',
             'Saved',
           ),
-          _buildStatItem(
-            '${_gamificationStats.daysActive}',
-            'Days Active',
-            'Keep it up!',
-          ),
         ],
       ),
     );
