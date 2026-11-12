@@ -657,29 +657,14 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                 // Open Map button
                 GestureDetector(
                   onTap: () => _openMapScreen(),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        'Open Map',
-                        style: TextStyle(
-                          fontFamily: 'Poppins',
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: _primaryNavy,
-                        ),
-                      ),
-                      SizedBox(width: 4),
-                      Text(
-                        '→',
-                        style: TextStyle(
-                          fontFamily: 'Poppins',
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: _primaryNavy,
-                        ),
-                      ),
-                    ],
+                  child: const Text(
+                    'Open Map',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: _primaryNavy,
+                    ),
                   ),
                 ),
               ],

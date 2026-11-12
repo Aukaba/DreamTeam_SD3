@@ -366,62 +366,80 @@ class _UserLeaderboardScreenState extends State<UserLeaderboardScreen> {
 
     return Scaffold(
       backgroundColor: _bgBeige,
-      body: RefreshIndicator(
-        color: _navyHeader,
-        onRefresh: _loadLeaderboard,
-        child: SingleChildScrollView(
-          physics: const AlwaysScrollableScrollPhysics(
-            parent: BouncingScrollPhysics(),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+      body: Stack(
+        children: [
+          // Background layer: top is consistent navy header, bottom is beige
+          Column(
             children: [
-              // 1. Top Navy Header Section with Podium
-              _buildNavyHeader(currentData.podium),
-
-              // 2. Main Body Content (Rank Card, List, Points Guide)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const SizedBox(height: 16),
-
-                    // Current User Rank Card (dynamically reflects selected tab)
-                    _buildCurrentUserRankCard(currentData.currentUser),
-
-                    const SizedBox(height: 20),
-
-                    if (_isLoading && _entries.isEmpty)
-                      Container(
-                        padding: const EdgeInsets.symmetric(vertical: 36),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: const Center(
-                          child: CircularProgressIndicator(color: _navyHeader),
-                        ),
-                      )
-                    else
-                      // Leaderboard List Table Card (dynamically reflects selected tab)
-                      _buildLeaderboardListCard(
-                        scoreHeader: currentData.scoreColumnHeader,
-                        users: currentData.list,
-                      ),
-
-                    const SizedBox(height: 20),
-
-                    // "How to Earn Points" Card
-                    _buildHowToEarnPointsCard(),
-
-                    const SizedBox(height: 36),
-                  ],
-                ),
+              Expanded(
+                child: Container(color: _navyHeader),
+              ),
+              Expanded(
+                child: Container(color: _bgBeige),
               ),
             ],
           ),
-        ),
+          RefreshIndicator(
+            color: _navyHeader,
+            onRefresh: _loadLeaderboard,
+            child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(
+                parent: BouncingScrollPhysics(),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // 1. Top Navy Header Section with Podium
+                  _buildNavyHeader(currentData.podium),
+
+                  // 2. Main Body Content (Rank Card, List, Points Guide)
+                  Container(
+                    color: _bgBeige,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const SizedBox(height: 16),
+
+                          // Current User Rank Card (dynamically reflects selected tab)
+                          _buildCurrentUserRankCard(currentData.currentUser),
+
+                          const SizedBox(height: 20),
+
+                          if (_isLoading && _entries.isEmpty)
+                            Container(
+                              padding: const EdgeInsets.symmetric(vertical: 36),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: const Center(
+                                child: CircularProgressIndicator(color: _navyHeader),
+                              ),
+                            )
+                          else
+                            // Leaderboard List Table Card (dynamically reflects selected tab)
+                            _buildLeaderboardListCard(
+                              scoreHeader: currentData.scoreColumnHeader,
+                              users: currentData.list,
+                            ),
+
+                          const SizedBox(height: 20),
+
+                          // "How to Earn Points" Card
+                          _buildHowToEarnPointsCard(),
+
+                          const SizedBox(height: 36),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
       bottomNavigationBar: SafeRouteBottomNav(
         currentIndex: 3,
