@@ -191,6 +191,8 @@ class RoutePreviewOverlay extends StatelessWidget {
   final PlannedRouteResult routeResult;
   final bool isRecalculating;
   final bool isRouteSaved;
+  final bool showTraffic;
+  final VoidCallback? onToggleTraffic;
   final VoidCallback onExitRoute;
   final VoidCallback onTapOrigin;
   final VoidCallback onTapDestination;
@@ -207,6 +209,8 @@ class RoutePreviewOverlay extends StatelessWidget {
     required this.routeResult,
     required this.isRecalculating,
     required this.isRouteSaved,
+    this.showTraffic = false,
+    this.onToggleTraffic,
     required this.onExitRoute,
     required this.onTapOrigin,
     required this.onTapDestination,
@@ -356,6 +360,33 @@ class RoutePreviewOverlay extends StatelessWidget {
                           side: BorderSide.none,
                           visualDensity: VisualDensity.compact,
                         ),
+                        if (onToggleTraffic != null) ...[
+                          const SizedBox(width: 6),
+                          FilterChip(
+                            key: const Key('route_preview_traffic_toggle_button'),
+                            selected: showTraffic,
+                            onSelected: (_) => onToggleTraffic?.call(),
+                            showCheckmark: false,
+                            avatar: Icon(
+                              Icons.traffic_rounded,
+                              size: 15,
+                              color: showTraffic ? Colors.white : _primaryNavy,
+                            ),
+                            label: Text(
+                              'Traffic',
+                              style: TextStyle(
+                                fontFamily: 'Poppins',
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: showTraffic ? Colors.white : _primaryNavy,
+                              ),
+                            ),
+                            selectedColor: _accentBlue,
+                            backgroundColor: const Color(0xFFF1F5F9),
+                            side: BorderSide.none,
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -435,14 +466,47 @@ class RoutePreviewOverlay extends StatelessWidget {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                primary.distanceAndTimeLabel,
-                                style: const TextStyle(
-                                  fontFamily: 'Poppins',
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w700,
-                                  color: _primaryNavy,
-                                ),
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      primary.distanceAndTimeLabel,
+                                      style: const TextStyle(
+                                        fontFamily: 'Poppins',
+                                        fontSize: 20,
+                                        fontWeight: FontWeight.w700,
+                                        color: _primaryNavy,
+                                      ),
+                                    ),
+                                  ),
+                                  if (primary.trafficDelaySeconds > 0) ...[
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 7,
+                                        vertical: 2.5,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: primary.trafficDelaySeconds >= 180
+                                            ? const Color(0xFFFEE2E2)
+                                            : const Color(0xFFFEF3C7),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Text(
+                                        primary.trafficDelayLabel,
+                                        style: TextStyle(
+                                          fontFamily: 'Poppins',
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w600,
+                                          color: primary.trafficDelaySeconds >= 180
+                                              ? const Color(0xFFDC2626)
+                                              : const Color(0xFFB45309),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
                               ),
                               const SizedBox(height: 2),
                               Text(
@@ -509,6 +573,9 @@ class RoutePreviewOverlay extends StatelessWidget {
                                 ? 'Safest'
                                 : 'Option ${idx + 1}';
 
+                            final trafficPart = cand.trafficDelaySeconds > 0
+                                ? ' · ${cand.trafficDelayLabel}'
+                                : '';
                             return ChoiceChip(
                               selected: selected,
                               onSelected: (_) => onCandidateSelected(cand),
@@ -516,7 +583,7 @@ class RoutePreviewOverlay extends StatelessWidget {
                               selectedColor: _primaryNavy,
                               backgroundColor: const Color(0xFFF4F6F9),
                               label: Text(
-                                '$tag · ${cand.formattedDuration} (${hCount == 0 ? '0 hazards' : '$hCount hazard${hCount == 1 ? '' : 's'}'})',
+                                '$tag · ${cand.formattedDuration}$trafficPart (${hCount == 0 ? '0 hazards' : '$hCount hazard${hCount == 1 ? '' : 's'}'})',
                                 style: TextStyle(
                                   fontFamily: 'Poppins',
                                   fontSize: 11,

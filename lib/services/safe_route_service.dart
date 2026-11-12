@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -289,6 +290,7 @@ class RouteCandidate {
   final List<RouteStep> steps;
   final double distanceMeters;
   final int durationSeconds;
+  final int trafficDelaySeconds;
   final List<RouteHazardExposure> hazardsOnRoute;
   final List<RouteHazardExposure> hazardsNearCorridor;
   final double hazardPenaltyScore;
@@ -303,6 +305,7 @@ class RouteCandidate {
     required this.steps,
     required this.distanceMeters,
     required this.durationSeconds,
+    this.trafficDelaySeconds = 0,
     this.hazardsOnRoute = const <RouteHazardExposure>[],
     this.hazardsNearCorridor = const <RouteHazardExposure>[],
     this.hazardPenaltyScore = 0.0,
@@ -316,7 +319,21 @@ class RouteCandidate {
       SafeRouteService.formatDuration(durationSeconds);
   String get distanceAndTimeLabel => '$formattedDistance · $formattedDuration';
 
-  double get safetyWeightedCost => hazardPenaltyScore + distanceMeters;
+  /// Human-readable traffic delay label (e.g. "+3 min delay", "+<1m delay").
+  String get trafficDelayLabel {
+    if (trafficDelaySeconds <= 0) return '';
+    final mins = (trafficDelaySeconds / 60).round();
+    if (mins <= 0) return '+<1m delay';
+    return '+$mins min delay';
+  }
+
+  /// Whether this candidate experiences noticeable traffic congestion (>= 60s).
+  bool get hasTrafficDelay => trafficDelaySeconds >= 60;
+
+  /// Combined safety-weighted cost: prioritizes hazard avoidance, shorter distance,
+  /// and penalizes real-time traffic congestion.
+  double get safetyWeightedCost =>
+      hazardPenaltyScore + distanceMeters + (trafficDelaySeconds * 1.5);
 
   RouteCandidate copyWith({
     String? id,
@@ -326,6 +343,7 @@ class RouteCandidate {
     List<RouteStep>? steps,
     double? distanceMeters,
     int? durationSeconds,
+    int? trafficDelaySeconds,
     List<RouteHazardExposure>? hazardsOnRoute,
     List<RouteHazardExposure>? hazardsNearCorridor,
     double? hazardPenaltyScore,
@@ -340,6 +358,7 @@ class RouteCandidate {
       steps: steps ?? this.steps,
       distanceMeters: distanceMeters ?? this.distanceMeters,
       durationSeconds: durationSeconds ?? this.durationSeconds,
+      trafficDelaySeconds: trafficDelaySeconds ?? this.trafficDelaySeconds,
       hazardsOnRoute: hazardsOnRoute ?? this.hazardsOnRoute,
       hazardsNearCorridor: hazardsNearCorridor ?? this.hazardsNearCorridor,
       hazardPenaltyScore: hazardPenaltyScore ?? this.hazardPenaltyScore,
@@ -720,15 +739,32 @@ class SafeRouteService {
   final http.Client _httpClient;
   final SupabaseClient? _explicitSupabase;
   final HazardReportService _hazardReportService;
+  final String? _tomTomApiKey;
 
   SafeRouteService({
     http.Client? httpClient,
     SupabaseClient? supabaseClient,
     HazardReportService? hazardReportService,
+    String? tomtomApiKey,
   })  : _httpClient = httpClient ?? http.Client(),
         _explicitSupabase = supabaseClient,
         _hazardReportService = hazardReportService ??
-            HazardReportService(client: supabaseClient);
+            HazardReportService(client: supabaseClient),
+        _tomTomApiKey = tomtomApiKey;
+
+  String get tomtomApiKey {
+    final directKey = _tomTomApiKey;
+    if (directKey != null && directKey.trim().isNotEmpty) {
+      return directKey.trim().replaceAll('"', '').replaceAll("'", '');
+    }
+    try {
+      final key = dotenv.env['TOMTOM_API_KEY'];
+      if (key != null && key.trim().isNotEmpty) {
+        return key.trim().replaceAll('"', '').replaceAll("'", '');
+      }
+    } catch (_) {}
+    return '';
+  }
 
   SupabaseClient? _tryGetSupabase() {
     if (_explicitSupabase != null) return _explicitSupabase;
@@ -1236,8 +1272,8 @@ class SafeRouteService {
     final corridorHazards = await fetchCorridorHazards(origin, destination);
     final rawCandidates = <RouteCandidate>[];
 
-    // 1. Fetch baseline road candidates (Valhalla + FOSSGIS OSRM in parallel)
-    final baselineFutures = await Future.wait<List<RouteCandidate>>(<Future<List<RouteCandidate>>>[
+    // 1. Fetch baseline road candidates (Valhalla + FOSSGIS OSRM + TomTom in parallel)
+    final baselineTasks = <Future<List<RouteCandidate>>>[
       _fetchValhallaCandidates(
         origin: origin,
         destination: destination,
@@ -1248,7 +1284,19 @@ class SafeRouteService {
         destination: destination,
         travelMode: travelMode,
       ),
-    ]);
+    ];
+
+    if (tomtomApiKey.isNotEmpty) {
+      baselineTasks.add(
+        _fetchTomTomCandidates(
+          origin: origin,
+          destination: destination,
+          travelMode: travelMode,
+        ),
+      );
+    }
+
+    final baselineFutures = await Future.wait<List<RouteCandidate>>(baselineTasks);
 
     for (final list in baselineFutures) {
       rawCandidates.addAll(list);
@@ -1391,6 +1439,8 @@ class SafeRouteService {
       sorted.sort((a, b) {
         final cmpDur = a.durationSeconds.compareTo(b.durationSeconds);
         if (cmpDur != 0) return cmpDur;
+        final cmpCost = a.safetyWeightedCost.compareTo(b.safetyWeightedCost);
+        if (cmpCost != 0) return cmpCost;
         return a.distanceMeters.compareTo(b.distanceMeters);
       });
       return sorted;
@@ -1408,7 +1458,7 @@ class SafeRouteService {
         return 1;
       }
 
-      // Otherwise compare safety-weighted cost (hazard penalty + road distance)
+      // Otherwise compare safety-weighted cost (hazard penalty + road distance + traffic delay)
       final cmpCost = a.safetyWeightedCost.compareTo(b.safetyWeightedCost);
       if (cmpCost != 0) return cmpCost;
       return a.durationSeconds.compareTo(b.durationSeconds);
@@ -1496,7 +1546,7 @@ class SafeRouteService {
     final unique = <RouteCandidate>[];
     for (final c in list) {
       if (c.polyline.length < 2) continue;
-      final isDup = unique.any((existing) {
+      final dupIdx = unique.indexWhere((existing) {
         final sameDist = (existing.distanceMeters - c.distanceMeters).abs() < 25.0;
         final sameHazards =
             existing.hazardsOnRoute.length == c.hazardsOnRoute.length;
@@ -1505,7 +1555,12 @@ class SafeRouteService {
         final midB = c.polyline[c.polyline.length ~/ 2];
         return const Distance().distance(midA, midB) < 35.0;
       });
-      if (!isDup) unique.add(c);
+      if (dupIdx == -1) {
+        unique.add(c);
+      } else if (c.trafficDelaySeconds > 0 || c.provider.contains('tomtom')) {
+        // Upgrade duplicate with live traffic telemetry
+        unique[dupIdx] = c;
+      }
     }
     return unique;
   }
@@ -1958,6 +2013,209 @@ class SafeRouteService {
           : 'Turn $m$target';
     }
     return street.isNotEmpty ? 'Continue onto $street' : 'Continue straight';
+  }
+
+  // ---------------------------------------------------------------------------
+  // TOMTOM ROUTING CLIENT (REAL-TIME TRAFFIC DELAY & CONGESTION AWARE)
+  // ---------------------------------------------------------------------------
+
+  Future<List<RouteCandidate>> _fetchTomTomCandidates({
+    required LatLng origin,
+    required LatLng destination,
+    required RouteTravelMode travelMode,
+    String providerTag = 'tomtom-live-traffic',
+  }) async {
+    final key = tomtomApiKey;
+    if (key.isEmpty) return const <RouteCandidate>[];
+
+    String modeParam;
+    switch (travelMode) {
+      case RouteTravelMode.driving:
+        modeParam = 'car';
+        break;
+      case RouteTravelMode.cycling:
+        modeParam = 'bicycle';
+        break;
+      case RouteTravelMode.walking:
+        modeParam = 'pedestrian';
+        break;
+    }
+
+    final uri = Uri.parse(
+      'https://api.tomtom.com/routing/1/calculateRoute/'
+      '${origin.latitude},${origin.longitude}:${destination.latitude},${destination.longitude}/json'
+      '?key=$key&traffic=true&travelMode=$modeParam&maxAlternatives=2&instructionsType=text',
+    );
+
+    try {
+      final response = await _httpClient
+          .get(
+            uri,
+            headers: const {'User-Agent': 'SafeRoute-App/1.0 (Flutter)'},
+          )
+          .timeout(const Duration(seconds: 7));
+
+      if (response.statusCode != 200) {
+        return const <RouteCandidate>[];
+      }
+
+      final dynamic decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) {
+        return const <RouteCandidate>[];
+      }
+
+      final routes = decoded['routes'] as List<dynamic>?;
+      if (routes == null || routes.isEmpty) {
+        return const <RouteCandidate>[];
+      }
+
+      final results = <RouteCandidate>[];
+      for (var i = 0; i < routes.length; i++) {
+        final r = routes[i];
+        if (r is! Map<String, dynamic>) continue;
+        final cand = _parseTomTomRoute(
+          r,
+          index: i,
+          travelMode: travelMode,
+          providerTag: providerTag,
+        );
+        if (cand != null) {
+          results.add(cand);
+        }
+      }
+      return results;
+    } catch (_) {
+      return const <RouteCandidate>[];
+    }
+  }
+
+  RouteCandidate? _parseTomTomRoute(
+    Map<String, dynamic> routeJson, {
+    required int index,
+    required RouteTravelMode travelMode,
+    required String providerTag,
+  }) {
+    final summary = routeJson['summary'] as Map<String, dynamic>? ?? {};
+    final lengthMeters = (summary['lengthInMeters'] as num?)?.toDouble() ?? 0.0;
+    final travelTimeSeconds =
+        (summary['travelTimeInSeconds'] as num?)?.toInt() ?? 0;
+    final trafficDelaySeconds =
+        (summary['trafficDelayInSeconds'] as num?)?.toInt() ?? 0;
+
+    final legs = routeJson['legs'] as List<dynamic>?;
+    if (legs == null || legs.isEmpty) return null;
+    final firstLeg = legs[0] as Map<String, dynamic>? ?? {};
+    final rawPoints = firstLeg['points'] as List<dynamic>?;
+    if (rawPoints == null || rawPoints.length < 2) return null;
+
+    final polyline = <LatLng>[];
+    for (final pt in rawPoints) {
+      if (pt is Map<String, dynamic>) {
+        final lat = (pt['latitude'] as num?)?.toDouble();
+        final lng = (pt['longitude'] as num?)?.toDouble();
+        if (lat != null && lng != null) {
+          polyline.add(LatLng(lat, lng));
+        }
+      }
+    }
+    if (polyline.length < 2) return null;
+
+    final guidance = routeJson['guidance'] as Map<String, dynamic>? ?? {};
+    final rawInstructions = guidance['instructions'] as List<dynamic>? ?? [];
+
+    final steps = <RouteStep>[];
+    final streetNames = <String>{};
+
+    for (var i = 0; i < rawInstructions.length; i++) {
+      final item = rawInstructions[i] as Map<String, dynamic>?;
+      if (item == null) continue;
+
+      final instructionMsg = item['message']?.toString() ?? 'Continue';
+      final street = item['street']?.toString() ?? '';
+      if (street.isNotEmpty) streetNames.add(street);
+
+      final ptMap = item['point'] as Map<String, dynamic>?;
+      final stepLat = (ptMap?['latitude'] as num?)?.toDouble() ??
+          polyline.first.latitude;
+      final stepLng = (ptMap?['longitude'] as num?)?.toDouble() ??
+          polyline.first.longitude;
+
+      final maneuverStr = item['maneuver']?.toString() ?? '';
+      final maneuverType = _parseTomTomManeuver(maneuverStr);
+
+      final pointIdx = (item['pointIndex'] as num?)?.toInt() ?? 0;
+      final clampedIdx = pointIdx.clamp(0, polyline.length - 1);
+
+      final stepDuration = (item['travelTimeInSeconds'] as num?)?.toInt() ?? 0;
+      final nextInstruction = (i + 1 < rawInstructions.length)
+          ? rawInstructions[i + 1] as Map<String, dynamic>?
+          : null;
+      final nextOffset =
+          (nextInstruction?['routeOffsetInMeters'] as num?)?.toDouble();
+      final currOffset =
+          (item['routeOffsetInMeters'] as num?)?.toDouble() ?? 0.0;
+      final stepDist = (nextOffset != null && nextOffset >= currOffset)
+          ? (nextOffset - currOffset)
+          : 0.0;
+
+      final nextPointIdx =
+          (nextInstruction?['pointIndex'] as num?)?.toInt() ?? polyline.length - 1;
+
+      steps.add(
+        RouteStep(
+          index: i,
+          instruction: instructionMsg,
+          streetName: street,
+          distanceMeters: stepDist,
+          durationSeconds: stepDuration,
+          maneuverType: maneuverType,
+          location: LatLng(stepLat, stepLng),
+          startPolylineIndex: clampedIdx,
+          endPolylineIndex: nextPointIdx.clamp(clampedIdx, polyline.length - 1),
+        ),
+      );
+    }
+
+    String routeSummary;
+    if (streetNames.isNotEmpty) {
+      final names = streetNames.take(2).toList();
+      routeSummary = 'Via ${names.join(", ")}';
+    } else {
+      routeSummary = index == 0
+          ? 'Main road (live traffic)'
+          : 'Alternative route ${index + 1}';
+    }
+
+    return RouteCandidate(
+      id: 'tomtom_${DateTime.now().microsecondsSinceEpoch}_$index',
+      provider: providerTag,
+      summary: routeSummary,
+      polyline: polyline,
+      steps: steps,
+      distanceMeters: lengthMeters,
+      durationSeconds: travelTimeSeconds,
+      trafficDelaySeconds: trafficDelaySeconds,
+    );
+  }
+
+  static ManeuverType _parseTomTomManeuver(String maneuver) {
+    final m = maneuver.toUpperCase();
+    if (m.contains('DEPART')) return ManeuverType.depart;
+    if (m.contains('ARRIVE')) return ManeuverType.arrive;
+    if (m.contains('SHARP_LEFT')) return ManeuverType.sharpLeft;
+    if (m.contains('BEAR_LEFT') || m.contains('SLIGHT_LEFT')) {
+      return ManeuverType.slightLeft;
+    }
+    if (m.contains('LEFT')) return ManeuverType.left;
+    if (m.contains('SHARP_RIGHT')) return ManeuverType.sharpRight;
+    if (m.contains('BEAR_RIGHT') || m.contains('SLIGHT_RIGHT')) {
+      return ManeuverType.slightRight;
+    }
+    if (m.contains('RIGHT')) return ManeuverType.right;
+    if (m.contains('UTURN') || m.contains('U_TURN')) return ManeuverType.uTurn;
+    if (m.contains('ROUNDABOUT')) return ManeuverType.roundabout;
+    if (m.contains('MERGE') || m.contains('MOTORWAY')) return ManeuverType.merge;
+    return ManeuverType.straight;
   }
 
   RouteCandidate _buildOfflineFallbackRoute({
