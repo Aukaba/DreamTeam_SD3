@@ -315,7 +315,10 @@ class _MapScreenState extends State<MapScreen> {
     _hazardReportService = widget.hazardReportService ?? HazardReportService();
     _safeRouteService =
         widget.safeRouteService ??
-        SafeRouteService(hazardReportService: _hazardReportService);
+        SafeRouteService(
+          hazardReportService: _hazardReportService,
+          tomtomApiKey: _tomTomApiKey,
+        );
 
     if (widget.initialRoute != null) {
       _activeRoute = widget.initialRoute;
@@ -1454,7 +1457,8 @@ class _MapScreenState extends State<MapScreen> {
               ),
               children: [
                 TileLayer(
-                  tileProvider: widget.tileProvider,
+                  tileProvider: widget.tileProvider ??
+                      NetworkTileProvider(silenceExceptions: true),
                   urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                   fallbackUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
                   userAgentPackageName: 'com.dreamteam.sd3',
@@ -1480,7 +1484,8 @@ class _MapScreenState extends State<MapScreen> {
                 if (_showTraffic && _tomTomApiKey.isNotEmpty)
                   TileLayer(
                     key: const Key('tomtom_traffic_flow_layer'),
-                    tileProvider: widget.tileProvider,
+                    tileProvider: widget.tileProvider ??
+                        NetworkTileProvider(silenceExceptions: true),
                     urlTemplate:
                         'https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?key=$_tomTomApiKey&tileSize=256',
                     userAgentPackageName: 'com.dreamteam.sd3',
@@ -1515,7 +1520,7 @@ class _MapScreenState extends State<MapScreen> {
           // -------------------------------------------------------------------
           // LAYER 2-4: ROUTE PREVIEW / TURN-BY-TURN HUD OR STANDARD MAP UI
           // -------------------------------------------------------------------
-          if (_activeRoute != null && _isNavigating)
+          if (_activeRoute != null && _isNavigating) ...[
             Positioned.fill(
               child: TurnByTurnNavigationHud(
                 routeResult: _activeRoute!,
@@ -1551,13 +1556,21 @@ class _MapScreenState extends State<MapScreen> {
                 },
                 onFocusStep: (step) => _jumpToStep(step.index),
               ),
-            )
-          else if (_activeRoute != null)
+            ),
+            Positioned(
+              right: 16,
+              top: MediaQuery.of(context).padding.top + 120,
+              child: _buildTrafficToggleFab(),
+            ),
+          ]
+          else if (_activeRoute != null) ...[
             Positioned.fill(
               child: RoutePreviewOverlay(
                 routeResult: _activeRoute!,
                 isRecalculating: _isRecalculatingRoute,
                 isRouteSaved: _isRouteSaved,
+                showTraffic: _showTraffic,
+                onToggleTraffic: _toggleTraffic,
                 onExitRoute: _exitRouteMode,
                 onTapOrigin: () => _pickRouteEndpoint(isOrigin: true),
                 onTapDestination: () => _pickRouteEndpoint(isOrigin: false),
@@ -1577,7 +1590,25 @@ class _MapScreenState extends State<MapScreen> {
                 onStartTurnByTurn: _startTurnByTurnNavigation,
                 onFocusStep: (step) => _mapController.move(step.location, 17.2),
               ),
-            )
+            ),
+            Positioned(
+              right: 20,
+              top: MediaQuery.of(context).padding.top + 155,
+              child: Column(
+                children: [
+                  _buildTrafficToggleFab(),
+                  const SizedBox(height: 10),
+                  _buildNorthCompassFab(),
+                ],
+              ),
+            ),
+            if (_showTraffic)
+              Positioned(
+                left: 20,
+                top: MediaQuery.of(context).padding.top + 155,
+                child: _buildTrafficLegendChip(),
+              ),
+          ]
           else ...[
             _buildTopControls(),
             if (_hasTileError)
