@@ -727,7 +727,22 @@ class HazardReportService {
           .insert(payload)
           .select()
           .maybeSingle();
-      final savedRow = response ?? payload;
+      var savedRow = response ?? payload;
+      final insertedId = savedRow['reportID']?.toString();
+      if (insertedId != null && insertedId.isNotEmpty) {
+        try {
+          // Re-read row so AFTER INSERT triggers (duplicate auto-activation)
+          // are reflected in savedRow['status'].
+          final refreshed = await _client
+              .from('ReportTable')
+              .select()
+              .eq('reportID', insertedId)
+              .maybeSingle();
+          if (refreshed != null) {
+            savedRow = refreshed;
+          }
+        } catch (_) {}
+      }
       final persistedStatus = HazardReportStatuses.normalize(
         savedRow['status']?.toString(),
         defaultStatus: HazardReportStatuses.pending,

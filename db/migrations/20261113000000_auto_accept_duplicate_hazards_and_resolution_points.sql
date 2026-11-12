@@ -83,7 +83,12 @@ REVOKE ALL ON FUNCTION public.enforce_report_table_status_authorization() FROM P
 -- =====================================================================
 -- 4. Auto-accept duplicate reports from multiple users at exact location
 -- =====================================================================
-CREATE OR REPLACE FUNCTION public.auto_accept_duplicate_hazard_report_before()
+-- Drop legacy BEFORE trigger if previously applied (RLS INSERT requires status='pending';
+-- promotion happens cleanly in SECURITY DEFINER AFTER INSERT trigger below).
+DROP TRIGGER IF EXISTS on_report_table_z_auto_accept_duplicate_before ON public."ReportTable";
+DROP FUNCTION IF EXISTS public.auto_accept_duplicate_hazard_report_before();
+
+CREATE OR REPLACE FUNCTION public.promote_matching_pending_hazard_reports_after()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -93,12 +98,16 @@ DECLARE
   v_category text;
   v_lat numeric;
   v_lng numeric;
+  v_distinct_users integer;
 BEGIN
-  IF NEW.user_id IS NULL
+  IF pg_trigger_depth() > 1 THEN
+    RETURN NEW;
+  END IF;
+
+  IF COALESCE(NEW.status, 'pending') NOT IN ('pending', 'active')
      OR NEW.latitude IS NULL
      OR NEW.longitude IS NULL
-     OR NULLIF(TRIM(NEW.hazard_category), '') IS NULL
-     OR COALESCE(NEW.status, 'pending') NOT IN ('pending', 'active') THEN
+     OR NULLIF(TRIM(NEW.hazard_category), '') IS NULL THEN
     RETURN NEW;
   END IF;
 
@@ -111,71 +120,32 @@ BEGIN
     hashtext(v_category || ':' || v_lat::text || ':' || v_lng::text)
   );
 
-  IF EXISTS (
-    SELECT 1
-    FROM public."ReportTable" r
-    WHERE r.user_id IS NOT NULL
-      AND r.user_id <> NEW.user_id
-      AND COALESCE(r.status, 'pending') IN ('pending', 'active')
-      AND r.latitude IS NOT NULL
-      AND r.longitude IS NOT NULL
-      AND lower(trim(r.hazard_category)) = v_category
-      AND ROUND(r.latitude::numeric, 6) = v_lat
-      AND ROUND(r.longitude::numeric, 6) = v_lng
-  ) THEN
-    NEW.status := 'active';
-    NEW.verified_at := COALESCE(NEW.verified_at, timezone('utc'::text, now()));
+  SELECT COUNT(DISTINCT r.user_id) FILTER (WHERE r.user_id IS NOT NULL)
+  INTO v_distinct_users
+  FROM public."ReportTable" r
+  WHERE r.user_id IS NOT NULL
+    AND COALESCE(r.status, 'pending') IN ('pending', 'active')
+    AND r.latitude IS NOT NULL
+    AND r.longitude IS NOT NULL
+    AND lower(trim(r.hazard_category)) = v_category
+    AND ROUND(r.latitude::numeric, 6) = v_lat
+    AND ROUND(r.longitude::numeric, 6) = v_lng;
+
+  -- Promote all matching pending reports (including NEW) once >= 2 distinct users
+  -- report the same hazard at the exact location (or if an admin set status = 'active').
+  IF COALESCE(NEW.status, 'pending') = 'active'
+     OR (NEW.user_id IS NOT NULL AND COALESCE(v_distinct_users, 0) >= 2) THEN
+    UPDATE public."ReportTable"
+    SET status = 'active',
+        verified_at = COALESCE(verified_at, timezone('utc'::text, now()))
+    WHERE COALESCE(status, 'pending') = 'pending'
+      AND user_id IS NOT NULL
+      AND latitude IS NOT NULL
+      AND longitude IS NOT NULL
+      AND lower(trim(hazard_category)) = v_category
+      AND ROUND(latitude::numeric, 6) = v_lat
+      AND ROUND(longitude::numeric, 6) = v_lng;
   END IF;
-
-  RETURN NEW;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.auto_accept_duplicate_hazard_report_before() FROM PUBLIC, anon, authenticated;
-
-DROP TRIGGER IF EXISTS on_report_table_z_auto_accept_duplicate_before ON public."ReportTable";
-CREATE TRIGGER on_report_table_z_auto_accept_duplicate_before
-BEFORE INSERT ON public."ReportTable"
-FOR EACH ROW
-EXECUTE FUNCTION public.auto_accept_duplicate_hazard_report_before();
-
-CREATE OR REPLACE FUNCTION public.promote_matching_pending_hazard_reports_after()
-RETURNS trigger
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-  v_category text;
-  v_lat numeric;
-  v_lng numeric;
-BEGIN
-  IF pg_trigger_depth() > 1 THEN
-    RETURN NEW;
-  END IF;
-
-  IF COALESCE(NEW.status, 'pending') <> 'active'
-     OR NEW.latitude IS NULL
-     OR NEW.longitude IS NULL
-     OR NULLIF(TRIM(NEW.hazard_category), '') IS NULL THEN
-    RETURN NEW;
-  END IF;
-
-  v_category := lower(trim(NEW.hazard_category));
-  v_lat := ROUND(NEW.latitude::numeric, 6);
-  v_lng := ROUND(NEW.longitude::numeric, 6);
-
-  UPDATE public."ReportTable"
-  SET status = 'active',
-      verified_at = COALESCE(verified_at, timezone('utc'::text, now()))
-  WHERE "reportID" <> NEW."reportID"
-    AND COALESCE(status, 'pending') = 'pending'
-    AND user_id IS NOT NULL
-    AND latitude IS NOT NULL
-    AND longitude IS NOT NULL
-    AND lower(trim(hazard_category)) = v_category
-    AND ROUND(latitude::numeric, 6) = v_lat
-    AND ROUND(longitude::numeric, 6) = v_lng;
 
   RETURN NEW;
 END;
