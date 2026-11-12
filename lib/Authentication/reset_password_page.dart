@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -8,70 +10,114 @@ import 'auth_error_handler.dart';
 import '../services/security_service.dart';
 import '../user_screens/help_support_screen.dart';
 
+/// The 3 distinct stages of the OTP-based password recovery flow.
+enum ResetPasswordStep {
+  email,
+  otp,
+  newPassword,
+}
+
 class ResetPasswordPage extends StatefulWidget {
-  const ResetPasswordPage({super.key});
+  final AuthService? authService;
+  final SupabaseClient? supabaseClient;
+  final SecurityService? securityService;
+
+  const ResetPasswordPage({
+    super.key,
+    this.authService,
+    this.supabaseClient,
+    this.securityService,
+  });
 
   @override
   State<ResetPasswordPage> createState() => _ResetPasswordPageState();
 }
 
 class _ResetPasswordPageState extends State<ResetPasswordPage> {
+  ResetPasswordStep _currentStep = ResetPasswordStep.email;
+
   final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _otpController = TextEditingController();
   final TextEditingController _newPasswordController = TextEditingController();
   final TextEditingController _confirmPasswordController = TextEditingController();
+
   final FocusNode _emailFocusNode = FocusNode();
+  final FocusNode _otpFocusNode = FocusNode();
   final FocusNode _newPasswordFocusNode = FocusNode();
   final FocusNode _confirmPasswordFocusNode = FocusNode();
-  final AuthService _authService = AuthService();
-  final SecurityService _securityService = SecurityService();
-  SupabaseClient get _supabase => Supabase.instance.client;
+
+  late final AuthService _authService;
+  late final SecurityService _securityService;
+  SupabaseClient get _supabase => widget.supabaseClient ?? Supabase.instance.client;
+
   bool _isLoading = false;
-  bool _emailSent = false;
   bool _obscureNewPassword = true;
   bool _obscureConfirmPassword = true;
   String? _errorMessage;
   String? _successMessage;
 
+  int _resendCountdown = 0;
+  Timer? _resendTimer;
+
   @override
   void initState() {
     super.initState();
-    _emailFocusNode.addListener(() {
-      setState(() {});
-    });
-    _newPasswordFocusNode.addListener(() {
-      setState(() {});
-    });
-    _confirmPasswordFocusNode.addListener(() {
-      setState(() {});
-    });
+    _authService = widget.authService ?? AuthService(client: widget.supabaseClient);
+    _securityService = widget.securityService ?? SecurityService(client: widget.supabaseClient);
+
+    _emailFocusNode.addListener(() => setState(() {}));
+    _otpFocusNode.addListener(() => setState(() {}));
+    _newPasswordFocusNode.addListener(() => setState(() {}));
+    _confirmPasswordFocusNode.addListener(() => setState(() {}));
+
     _checkForRecoveryToken();
   }
 
   @override
   void dispose() {
+    _resendTimer?.cancel();
     _emailController.dispose();
+    _otpController.dispose();
     _newPasswordController.dispose();
     _confirmPasswordController.dispose();
     _emailFocusNode.dispose();
+    _otpFocusNode.dispose();
     _newPasswordFocusNode.dispose();
     _confirmPasswordFocusNode.dispose();
     super.dispose();
   }
 
   void _checkForRecoveryToken() {
-    // Check if Supabase has a recovery session from deep link
+    // If the app was launched directly from an email recovery link
     try {
       final session = _supabase.auth.currentSession;
       if (session != null) {
         setState(() {
-          _emailSent = true; // Skip email step, show password fields
+          _currentStep = ResetPasswordStep.newPassword;
         });
       }
     } catch (_) {}
   }
 
-  Future<void> _sendResetEmail() async {
-    final email = _emailController.text.trim();
+  void _startResendCooldown() {
+    _resendCountdown = 60;
+    _resendTimer?.cancel();
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_resendCountdown <= 1) {
+        timer.cancel();
+        setState(() => _resendCountdown = 0);
+      } else {
+        setState(() => _resendCountdown--);
+      }
+    });
+  }
+
+  Future<void> _sendResetOtp({bool isResend = false}) async {
+    final email = _emailController.text.trim().toLowerCase();
     if (email.isEmpty) {
       setState(() {
         _errorMessage = 'Please enter your email address.';
@@ -96,12 +142,67 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
       await _authService.resetPassword(email: email);
       if (mounted) {
         setState(() {
-          _successMessage =
-              'Password reset email sent! Please check your inbox and click the link to reset your password.';
-          _emailSent = true;
+          _currentStep = ResetPasswordStep.otp;
+          _successMessage = isResend
+              ? 'A new verification code was sent to $email.'
+              : 'Verification code sent! Please check your email inbox.';
+          _startResendCooldown();
         });
       }
     } catch (e) {
+      debugPrint('[ResetPasswordPage] _sendResetOtp error: $e');
+      if (mounted) {
+        setState(() {
+          _errorMessage = AuthErrorHandler.getErrorMessage(e);
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _verifyOtp() async {
+    final email = _emailController.text.trim().toLowerCase();
+    final otp = _otpController.text.trim();
+
+    if (otp.isEmpty) {
+      setState(() {
+        _errorMessage = 'Please enter the 6-digit verification code.';
+      });
+      return;
+    }
+
+    if (otp.length < 6) {
+      setState(() {
+        _errorMessage = 'Verification code must be 6 digits.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+      _successMessage = null;
+    });
+
+    try {
+      await _authService.verifyPasswordResetOtp(
+        email: email,
+        token: otp,
+      );
+      if (mounted) {
+        _resendTimer?.cancel();
+        setState(() {
+          _currentStep = ResetPasswordStep.newPassword;
+          _successMessage = 'Code verified! Now enter your new password.';
+        });
+      }
+    } catch (e) {
+      debugPrint('[ResetPasswordPage] _verifyOtp error: $e');
       if (mounted) {
         setState(() {
           _errorMessage = AuthErrorHandler.getErrorMessage(e);
@@ -155,17 +256,33 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
     });
 
     try {
-      await _supabase.auth.updateUser(
-        UserAttributes(password: newPassword),
-      );
+      await _authService.updatePassword(newPassword: newPassword);
       await _securityService.recordPasswordRecoveryCompletion();
+      await _authService.signOut();
+
       if (mounted) {
-        setState(() {
-          _successMessage =
-              'Password updated successfully! You can now log in with your new password.';
-        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.check_circle_outline, color: Colors.white),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text('Password updated successfully! Please log in.'),
+                ),
+              ],
+            ),
+            backgroundColor: Color(0xFF16A34A),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const LoginPage()),
+          (route) => false,
+        );
       }
     } catch (e) {
+      debugPrint('[ResetPasswordPage] _sendResetOtp error: $e');
       if (mounted) {
         setState(() {
           _errorMessage = AuthErrorHandler.getErrorMessage(e);
@@ -180,6 +297,63 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
     }
   }
 
+  String _getSubheaderText() {
+    switch (_currentStep) {
+      case ResetPasswordStep.email:
+        return 'RESET PASSWORD';
+      case ResetPasswordStep.otp:
+        return 'VERIFY OTP';
+      case ResetPasswordStep.newPassword:
+        return 'NEW PASSWORD';
+    }
+  }
+
+  String _getTitleText() {
+    switch (_currentStep) {
+      case ResetPasswordStep.email:
+        return 'Reset your password.';
+      case ResetPasswordStep.otp:
+        return 'Enter verification code.';
+      case ResetPasswordStep.newPassword:
+        return 'Create new password.';
+    }
+  }
+
+  String _getSubtitleText() {
+    switch (_currentStep) {
+      case ResetPasswordStep.email:
+        return 'Enter your email address and we\'ll send you a 6-digit verification code to reset your password.';
+      case ResetPasswordStep.otp:
+        final email = _emailController.text.trim();
+        return 'We sent a 6-digit code to $email. Enter the code below to verify your account.';
+      case ResetPasswordStep.newPassword:
+        return 'Your verification code was accepted. Please choose a strong new password with at least 6 characters.';
+    }
+  }
+
+  String _getButtonLabel() {
+    switch (_currentStep) {
+      case ResetPasswordStep.email:
+        return 'Send verification code';
+      case ResetPasswordStep.otp:
+        return 'Verify code';
+      case ResetPasswordStep.newPassword:
+        return 'Update password';
+    }
+  }
+
+  VoidCallback? _getButtonAction() {
+    if (_isLoading) return null;
+    switch (_currentStep) {
+      case ResetPasswordStep.email:
+        return _sendResetOtp;
+      case ResetPasswordStep.otp:
+        return _verifyOtp;
+      case ResetPasswordStep.newPassword:
+        return _updatePassword;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -191,11 +365,11 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const SizedBox(height: 40),
-                // Logo section
+                const SizedBox(height: 35),
+                // Logo & Header section
                 Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    // Logo placeholder
                     Container(
                       width: 59,
                       height: 65,
@@ -208,7 +382,6 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    // SafeRoute text
                     Text.rich(
                       TextSpan(
                         children: [
@@ -232,7 +405,6 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                       ),
                     ),
                     const Spacer(),
-                    // Need Help
                     InkWell(
                       onTap: () {
                         Navigator.of(context).push(
@@ -259,37 +431,47 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 15),
-                // Welcome text
+                const SizedBox(height: 20),
+
+                // Step Subheader
                 Text(
-                  'RESET PASSWORD',
+                  _getSubheaderText(),
                   style: GoogleFonts.poppins(
                     color: const Color(0xFF63729A),
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
+                    letterSpacing: 0.8,
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
+
+                // Step Title
                 Text(
-                  'Reset your password.',
+                  _getTitleText(),
                   style: GoogleFonts.poppins(
                     color: const Color(0xFF263354),
                     fontSize: 24,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                const SizedBox(height: 15),
+                const SizedBox(height: 10),
+
+                // Step Subtitle
                 Text(
-                  'Enter your email address and we\'ll send you a link to reset your password.',
+                  _getSubtitleText(),
                   style: GoogleFonts.poppins(
                     color: const Color(0xFF63739A),
                     fontSize: 13,
                     fontWeight: FontWeight.w400,
+                    height: 1.4,
                   ),
                 ),
-                const SizedBox(height: 25),
-                // Step 1: Email field
-                if (!_emailSent) ...[
+                const SizedBox(height: 24),
+
+                // ==============================================================
+                // STEP 1: EMAIL INPUT
+                // ==============================================================
+                if (_currentStep == ResetPasswordStep.email) ...[
                   Text(
                     'Email address',
                     style: GoogleFonts.poppins(
@@ -300,8 +482,10 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                   ),
                   const SizedBox(height: 8),
                   TextField(
+                    key: const Key('reset_password_email_field'),
                     controller: _emailController,
                     focusNode: _emailFocusNode,
+                    keyboardType: TextInputType.emailAddress,
                     decoration: InputDecoration(
                       hintText: 'Enter your email',
                       hintStyle: GoogleFonts.poppins(
@@ -311,7 +495,10 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                       ),
                       filled: true,
                       fillColor: const Color(0xFFEDEEF2),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 20,
+                      ),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(16),
                         borderSide: BorderSide.none,
@@ -339,8 +526,127 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                   ),
                   const SizedBox(height: 24),
                 ],
-                // Step 2: Password fields (shown after email is sent or via deep link)
-                if (_emailSent) ...[
+
+                // ==============================================================
+                // STEP 2: 6-DIGIT OTP INPUT
+                // ==============================================================
+                if (_currentStep == ResetPasswordStep.otp) ...[
+                  Text(
+                    '6-digit verification code',
+                    style: GoogleFonts.poppins(
+                      color: const Color(0xFF344673),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    key: const Key('reset_password_otp_field'),
+                    controller: _otpController,
+                    focusNode: _otpFocusNode,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                      LengthLimitingTextInputFormatter(6),
+                    ],
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.poppins(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 8,
+                      color: const Color(0xFF263354),
+                    ),
+                    decoration: InputDecoration(
+                      hintText: '000000',
+                      hintStyle: GoogleFonts.poppins(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w400,
+                        letterSpacing: 8,
+                        color: const Color(0xFF9AA3BC),
+                      ),
+                      filled: true,
+                      fillColor: const Color(0xFFEDEEF2),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 18,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        borderSide: BorderSide.none,
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        borderSide: BorderSide.none,
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        borderSide: const BorderSide(
+                          width: 1.5,
+                          color: Color(0xFF344673),
+                        ),
+                      ),
+                      prefixIcon: const Padding(
+                        padding: EdgeInsets.only(left: 16, right: 10),
+                        child: Icon(
+                          Icons.pin_outlined,
+                          color: Color(0xFF344673),
+                          size: 22,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _currentStep = ResetPasswordStep.email;
+                            _errorMessage = null;
+                            _successMessage = null;
+                          });
+                        },
+                        child: Text(
+                          'Change email',
+                          style: GoogleFonts.poppins(
+                            color: const Color(0xFF2563EB),
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      if (_resendCountdown > 0)
+                        Text(
+                          'Resend in ${_resendCountdown}s',
+                          style: GoogleFonts.poppins(
+                            color: const Color(0xFF8A94A6),
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        )
+                      else
+                        GestureDetector(
+                          key: const Key('reset_password_resend_button'),
+                          onTap: _isLoading ? null : () => _sendResetOtp(isResend: true),
+                          child: Text(
+                            'Resend code',
+                            style: GoogleFonts.poppins(
+                              color: const Color(0xFF2563EB),
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                ],
+
+                // ==============================================================
+                // STEP 3: NEW PASSWORD INPUTS
+                // ==============================================================
+                if (_currentStep == ResetPasswordStep.newPassword) ...[
                   Text(
                     'New password',
                     style: GoogleFonts.poppins(
@@ -351,6 +657,7 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                   ),
                   const SizedBox(height: 8),
                   TextField(
+                    key: const Key('reset_password_new_field'),
                     controller: _newPasswordController,
                     focusNode: _newPasswordFocusNode,
                     obscureText: _obscureNewPassword,
@@ -363,7 +670,10 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                       ),
                       filled: true,
                       fillColor: const Color(0xFFEDEEF2),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 20,
+                      ),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(16),
                         borderSide: BorderSide.none,
@@ -389,7 +699,9 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                       ),
                       suffixIcon: IconButton(
                         icon: Icon(
-                          _obscureNewPassword ? Icons.visibility_off : Icons.visibility,
+                          _obscureNewPassword
+                              ? Icons.visibility_off
+                              : Icons.visibility,
                           color: const Color(0xFF344673),
                         ),
                         onPressed: () {
@@ -411,6 +723,7 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                   ),
                   const SizedBox(height: 8),
                   TextField(
+                    key: const Key('reset_password_confirm_field'),
                     controller: _confirmPasswordController,
                     focusNode: _confirmPasswordFocusNode,
                     obscureText: _obscureConfirmPassword,
@@ -423,7 +736,10 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                       ),
                       filled: true,
                       fillColor: const Color(0xFFEDEEF2),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 20,
+                      ),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(16),
                         borderSide: BorderSide.none,
@@ -449,7 +765,9 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                       ),
                       suffixIcon: IconButton(
                         icon: Icon(
-                          _obscureConfirmPassword ? Icons.visibility_off : Icons.visibility,
+                          _obscureConfirmPassword
+                              ? Icons.visibility_off
+                              : Icons.visibility,
                           color: const Color(0xFF344673),
                         ),
                         onPressed: () {
@@ -462,56 +780,61 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                   ),
                   const SizedBox(height: 24),
                 ],
-                // Reset password button
-                GestureDetector(
-                  onTap: _isLoading ? null : (_emailSent ? _updatePassword : _sendResetEmail),
+
+                // ==============================================================
+                // PRIMARY ACTION BUTTON (Clean, no trailing arrow)
+                // ==============================================================
+                InkWell(
+                  key: const Key('reset_password_primary_button'),
+                  onTap: _getButtonAction(),
+                  borderRadius: BorderRadius.circular(28),
                   child: Container(
                     width: double.infinity,
                     height: 56,
                     decoration: BoxDecoration(
                       color: const Color(0xFF263354),
                       borderRadius: BorderRadius.circular(28),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        if (_isLoading)
-                          const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
-                            ),
-                          )
-                        else
-                          Text(
-                            _emailSent ? 'Update password' : 'Send reset email',
-                            style: GoogleFonts.poppins(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        if (!_isLoading) const SizedBox(width: 8),
-                        if (!_isLoading)
-                          Text(
-                            '→',
-                            style: GoogleFonts.poppins(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF263354).withValues(alpha: 0.25),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
                       ],
+                    ),
+                    child: Center(
+                      child: _isLoading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : Text(
+                              _getButtonLabel(),
+                              style: GoogleFonts.poppins(
+                                color: Colors.white,
+                                fontSize: 15.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
                     ),
                   ),
                 ),
+
+                // ==============================================================
+                // ALERTS & NOTIFICATIONS
+                // ==============================================================
                 if (_errorMessage != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 16),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFFEE2E2),
                         borderRadius: BorderRadius.circular(12),
@@ -539,11 +862,15 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                       ),
                     ),
                   ),
+
                 if (_successMessage != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 16),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFDCFCE7),
                         borderRadius: BorderRadius.circular(12),
@@ -571,7 +898,9 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                       ),
                     ),
                   ),
+
                 const SizedBox(height: 24),
+
                 // Divider with "or"
                 Row(
                   children: [
@@ -601,7 +930,8 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                   ],
                 ),
                 const SizedBox(height: 24),
-                // Remember your password
+
+                // Remember your password? Log in
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -617,7 +947,9 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                       onTap: () {
                         Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (context) => const LoginPage()),
+                          MaterialPageRoute(
+                            builder: (context) => const LoginPage(),
+                          ),
                         );
                       },
                       child: Text(
@@ -631,7 +963,7 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 30),
+                const SizedBox(height: 35),
               ],
             ),
           ),

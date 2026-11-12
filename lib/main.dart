@@ -25,6 +25,9 @@ Future<void> main() async {
       url: supabaseUrl,
       // ignore: deprecated_member_use
       anonKey: supabaseAnonKey,
+      authOptions: const FlutterAuthClientOptions(
+        authFlowType: AuthFlowType.implicit,
+      ),
     );
     runApp(const MyApp());
   } catch (e) {

@@ -155,6 +155,19 @@ class AuthErrorHandler {
       return 'Unable to connect to the server. Please check your internet connection.';
     }
 
+    // Email delivery / SMTP / Template errors
+    if (message.contains('error sending recovery email') ||
+        message.contains('error sending') ||
+        message.contains('error sending email') ||
+        message.contains('error sending confirmation email') ||
+        message.contains('smtp') ||
+        message.contains('mailer') ||
+        message.contains('template') ||
+        message.contains('parse_error') ||
+        message.contains('template_body')) {
+      return 'Unable to send verification code right now. Please wait a moment and try again.';
+    }
+
     // Fallback: If message contains technical jargon, give a clean friendly message
     if (message.contains('{') ||
         message.contains('status code') ||

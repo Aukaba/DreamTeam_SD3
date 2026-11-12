@@ -49,4 +49,23 @@ class AuthService {
   Future<void> resetPassword({required String email}) async {
     await _supabase.auth.resetPasswordForEmail(email);
   }
+
+  // Verify OTP for password recovery
+  Future<AuthResponse> verifyPasswordResetOtp({
+    required String email,
+    required String token,
+  }) async {
+    return await _supabase.auth.verifyOTP(
+      email: email,
+      token: token,
+      type: OtpType.recovery,
+    );
+  }
+
+  // Update password for authenticated user (including recovery session)
+  Future<UserResponse> updatePassword({required String newPassword}) async {
+    return await _supabase.auth.updateUser(
+      UserAttributes(password: newPassword),
+    );
+  }
 }
