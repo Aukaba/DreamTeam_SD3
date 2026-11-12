@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
@@ -32,6 +33,8 @@ class MapScreen extends StatefulWidget {
   final TileProvider? tileProvider;
   final ImagePicker? imagePicker;
   final Future<XFile?> Function(BuildContext context)? cameraLauncher;
+  final String? tomtomApiKey;
+  final bool initialShowTraffic;
 
   const MapScreen({
     super.key,
@@ -46,6 +49,8 @@ class MapScreen extends StatefulWidget {
     this.tileProvider,
     this.imagePicker,
     this.cameraLauncher,
+    this.tomtomApiKey,
+    this.initialShowTraffic = false,
   });
 
   /// Maps any raw or emoji hazard category explicitly to a map filter index and icon.
@@ -263,6 +268,42 @@ class _MapScreenState extends State<MapScreen> {
   Timer? _simulationTimer;
   double _simulationProgressMeters = 0.0;
 
+  bool _showTraffic = false;
+  bool _hasTrafficTileError = false;
+
+  String get _tomTomApiKey {
+    if (widget.tomtomApiKey != null && widget.tomtomApiKey!.trim().isNotEmpty) {
+      final key = widget.tomtomApiKey!.trim().replaceAll('"', '').replaceAll("'", '');
+      if (key != 'YOUR_TOMTOM_API_KEY_HERE') return key;
+    }
+    try {
+      final key = dotenv.env['TOMTOM_API_KEY'];
+      if (key != null && key.trim().isNotEmpty) {
+        final clean = key.trim().replaceAll('"', '').replaceAll("'", '');
+        if (clean != 'YOUR_TOMTOM_API_KEY_HERE') return clean;
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  String get _tomTomTrafficUrlTemplate {
+    try {
+      final proxy = dotenv.env['TOMTOM_TRAFFIC_PROXY_URL'];
+      if (proxy != null && proxy.trim().isNotEmpty) {
+        return proxy.trim();
+      }
+    } catch (_) {}
+    return 'https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?key=$_tomTomApiKey&tileSize=256';
+  }
+
+  bool get _canLoadTraffic {
+    try {
+      final proxy = dotenv.env['TOMTOM_TRAFFIC_PROXY_URL'];
+      if (proxy != null && proxy.trim().isNotEmpty) return true;
+    } catch (_) {}
+    return _tomTomApiKey.isNotEmpty;
+  }
+
   List<_HazardItem> get _allHazards =>
       List<_HazardItem>.unmodifiable(_reportedHazards);
 
@@ -278,6 +319,7 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
+    _showTraffic = widget.initialShowTraffic && _canLoadTraffic;
     _selectedFilterIndex = widget.initialFilterIndex.clamp(0, 4);
     _currentLocation =
         widget.initialLocation ??
@@ -294,7 +336,10 @@ class _MapScreenState extends State<MapScreen> {
     _hazardReportService = widget.hazardReportService ?? HazardReportService();
     _safeRouteService =
         widget.safeRouteService ??
-        SafeRouteService(hazardReportService: _hazardReportService);
+        SafeRouteService(
+          hazardReportService: _hazardReportService,
+          tomtomApiKey: _tomTomApiKey,
+        );
 
     if (widget.initialRoute != null) {
       _activeRoute = widget.initialRoute;
@@ -1433,7 +1478,8 @@ class _MapScreenState extends State<MapScreen> {
               ),
               children: [
                 TileLayer(
-                  tileProvider: widget.tileProvider,
+                  tileProvider: widget.tileProvider ??
+                      NetworkTileProvider(silenceExceptions: true),
                   urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                   fallbackUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
                   userAgentPackageName: 'com.dreamteam.sd3',
@@ -1456,6 +1502,35 @@ class _MapScreenState extends State<MapScreen> {
                     }
                   },
                 ),
+                if (_showTraffic && _canLoadTraffic)
+                  TileLayer(
+                    key: const Key('tomtom_traffic_flow_layer'),
+                    tileProvider: widget.tileProvider ??
+                        NetworkTileProvider(silenceExceptions: true),
+                    urlTemplate: _tomTomTrafficUrlTemplate,
+                    userAgentPackageName: 'com.dreamteam.sd3',
+                    maxZoom: 19.0,
+                    evictErrorTileStrategy: EvictErrorTileStrategy.dispose,
+                    errorTileCallback: (tile, error, stackTrace) {
+                      if (!_hasTrafficTileError && mounted) {
+                        setState(() {
+                          _hasTrafficTileError = true;
+                        });
+                        ScaffoldMessenger.of(context).removeCurrentSnackBar();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Failed to load traffic tiles. Check network connection or API quota.',
+                              style: TextStyle(fontFamily: 'Poppins', fontSize: 12),
+                            ),
+                            duration: Duration(seconds: 4),
+                            behavior: SnackBarBehavior.floating,
+                            backgroundColor: Color(0xFFDC2626),
+                          ),
+                        );
+                      }
+                    },
+                  ),
                 if (_activeRoute != null)
                   CircleLayer(
                     circles: _buildHazardAvoidanceCircles(),
@@ -1464,11 +1539,13 @@ class _MapScreenState extends State<MapScreen> {
                   PolylineLayer(
                     polylines: _buildRoutePolylines(),
                   ),
-                const SimpleAttributionWidget(
+                SimpleAttributionWidget(
                   alignment: Alignment.bottomRight,
                   source: Text(
-                    '© OpenStreetMap contributors',
-                    style: TextStyle(fontSize: 9, color: Color(0xFF4B5563)),
+                    _showTraffic
+                        ? '© OpenStreetMap contributors | © TomTom Traffic'
+                        : '© OpenStreetMap contributors',
+                    style: const TextStyle(fontSize: 9, color: Color(0xFF4B5563)),
                   ),
                 ),
                 MarkerLayer(
@@ -1481,7 +1558,7 @@ class _MapScreenState extends State<MapScreen> {
           // -------------------------------------------------------------------
           // LAYER 2-4: ROUTE PREVIEW / TURN-BY-TURN HUD OR STANDARD MAP UI
           // -------------------------------------------------------------------
-          if (_activeRoute != null && _isNavigating)
+          if (_activeRoute != null && _isNavigating) ...[
             Positioned.fill(
               child: TurnByTurnNavigationHud(
                 routeResult: _activeRoute!,
@@ -1517,13 +1594,21 @@ class _MapScreenState extends State<MapScreen> {
                 },
                 onFocusStep: (step) => _jumpToStep(step.index),
               ),
-            )
-          else if (_activeRoute != null)
+            ),
+            Positioned(
+              right: 16,
+              top: MediaQuery.of(context).padding.top + 120,
+              child: _buildTrafficToggleFab(),
+            ),
+          ]
+          else if (_activeRoute != null) ...[
             Positioned.fill(
               child: RoutePreviewOverlay(
                 routeResult: _activeRoute!,
                 isRecalculating: _isRecalculatingRoute,
                 isRouteSaved: _isRouteSaved,
+                showTraffic: _showTraffic,
+                onToggleTraffic: _toggleTraffic,
                 onExitRoute: _exitRouteMode,
                 onTapOrigin: () => _pickRouteEndpoint(isOrigin: true),
                 onTapDestination: () => _pickRouteEndpoint(isOrigin: false),
@@ -1543,7 +1628,25 @@ class _MapScreenState extends State<MapScreen> {
                 onStartTurnByTurn: _startTurnByTurnNavigation,
                 onFocusStep: (step) => _mapController.move(step.location, 17.2),
               ),
-            )
+            ),
+            Positioned(
+              right: 20,
+              top: MediaQuery.of(context).padding.top + 155,
+              child: Column(
+                children: [
+                  _buildTrafficToggleFab(),
+                  const SizedBox(height: 10),
+                  _buildNorthCompassFab(),
+                ],
+              ),
+            ),
+            if (_showTraffic)
+              Positioned(
+                left: 20,
+                top: MediaQuery.of(context).padding.top + 155,
+                child: _buildTrafficLegendChip(),
+              ),
+          ]
           else ...[
             _buildTopControls(),
             if (_hasTileError)
@@ -2044,46 +2147,55 @@ class _MapScreenState extends State<MapScreen> {
 
           const SizedBox(height: 12),
 
-          // Live Map Badge
+          // Live Map Badge + Traffic Legend Chip
           Padding(
-            padding: const EdgeInsets.only(left: 20.0),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.06),
-                    blurRadius: 6,
-                    offset: const Offset(0, 2),
+            padding: const EdgeInsets.symmetric(horizontal: 20.0),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.06),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
                   ),
-                ],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 7,
-                    height: 7,
-                    decoration: const BoxDecoration(
-                      color: _accentOrange,
-                      shape: BoxShape.circle,
-                    ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: const BoxDecoration(
+                          color: _accentOrange,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text(
+                        'LIVE MAP',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: _primaryNavy,
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 6),
-                  const Text(
-                    'LIVE MAP',
-                    style: TextStyle(
-                      fontFamily: 'Poppins',
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      color: _primaryNavy,
-                      letterSpacing: 0.8,
-                    ),
-                  ),
-                ],
-              ),
+                ),
+                if (_showTraffic) _buildTrafficLegendChip(),
+              ],
             ),
           ),
         ],
@@ -3373,6 +3485,8 @@ class _MapScreenState extends State<MapScreen> {
               ),
               const SizedBox(height: 12),
               _buildNorthCompassFab(),
+              const SizedBox(height: 12),
+              _buildTrafficToggleFab(),
             ],
           ),
         ),
@@ -3473,6 +3587,179 @@ class _MapScreenState extends State<MapScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildTrafficToggleFab() {
+    return Container(
+      width: 44,
+      height: 44,
+      decoration: BoxDecoration(
+        color: _showTraffic ? const Color(0xFFEBF3FE) : Colors.white,
+        shape: BoxShape.circle,
+        border: _showTraffic
+            ? Border.all(color: _accentBlue, width: 1.5)
+            : null,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: IconButton(
+        key: const Key('toggle_traffic_layer_button'),
+        padding: EdgeInsets.zero,
+        icon: Icon(
+          Icons.traffic,
+          size: 22,
+          color: _showTraffic ? _accentBlue : _primaryNavy,
+        ),
+        tooltip: _showTraffic ? 'Hide Traffic' : 'Show Traffic',
+        onPressed: _toggleTraffic,
+      ),
+    );
+  }
+
+  void _toggleTraffic() {
+    if (!_canLoadTraffic) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).removeCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'TomTom API key not configured. Real-time traffic unavailable.',
+              style: TextStyle(fontFamily: 'Poppins', fontSize: 12),
+            ),
+            duration: Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: Color(0xFFDC2626),
+          ),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      _showTraffic = !_showTraffic;
+      if (_showTraffic) {
+        _hasTrafficTileError = false;
+      }
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).removeCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _showTraffic
+                ? 'Traffic layer enabled (TomTom)'
+                : 'Traffic layer disabled',
+          ),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Widget _buildTrafficLegendChip() {
+    if (_hasTrafficTileError) {
+      return Container(
+        key: const Key('traffic_legend_chip'),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFEF2F2),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFFFCA5A5)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.08),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.warning_amber_rounded,
+              size: 13,
+              color: Color(0xFFDC2626),
+            ),
+            SizedBox(width: 6),
+            Text(
+              'Traffic tiles unavailable',
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF991B1B),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      key: const Key('traffic_legend_chip'),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.traffic_rounded,
+            size: 13,
+            color: _primaryNavy,
+          ),
+          const SizedBox(width: 6),
+          _buildTrafficLegendDot(const Color(0xFF22C55E), 'Normal'),
+          const SizedBox(width: 8),
+          _buildTrafficLegendDot(const Color(0xFFF97316), 'Slow'),
+          const SizedBox(width: 8),
+          _buildTrafficLegendDot(const Color(0xFFEF4444), 'Heavy'),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTrafficLegendDot(Color color, String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 7,
+          height: 7,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text(
+          label,
+          style: const TextStyle(
+            fontFamily: 'Poppins',
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            color: _primaryNavy,
+          ),
+        ),
+      ],
     );
   }
 
