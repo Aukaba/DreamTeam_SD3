@@ -31,6 +31,7 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
   RealtimeChannel? _remoteReportsChannel;
 
   List<HazardReportData> _reports = const <HazardReportData>[];
+  int _resolutionPoints = 0;
   bool _isLoading = true;
   String _selectedFilter = 'All'; // All, Active, Resolved, High, Medium, Low
 
@@ -73,7 +74,12 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
       setState(() => _isLoading = true);
     }
     try {
-      final fetched = await _hazardReportService.fetchUserReports();
+      final results = await Future.wait<dynamic>(<Future<dynamic>>[
+        _hazardReportService.fetchUserReports(),
+        _hazardReportService.fetchUserResolutionPoints(),
+      ]);
+      final fetched = results[0] as List<HazardReportData>;
+      final resPts = results[1] as int;
       if (!mounted || fetchGen != _fetchGeneration) return;
       setState(() {
         // Only count & show accepted reports ('active' or 'resolved')
@@ -82,6 +88,7 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
               (r) => HazardReportStatuses.isAcceptedForUserReports(r.status),
             )
             .toList();
+        _resolutionPoints = resPts;
         _isLoading = false;
       });
     } catch (_) {
@@ -115,7 +122,7 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
   }
 
   int get _totalPoints {
-    int sum = 0;
+    int sum = _resolutionPoints;
     for (final r in _reports) {
       sum += r.pointsAwarded;
     }
@@ -397,7 +404,7 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
                 SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    'Points by severity: Low +1 pt · Medium +2 pts · High +3 pts',
+                    'Points: Low +1 · Medium +2 · High +3 · Resolve +1 pt',
                     style: TextStyle(
                       fontFamily: 'Poppins',
                       fontSize: 10.5,

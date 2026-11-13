@@ -99,6 +99,7 @@ class HazardResolutionReportData {
   final Uint8List? resolutionImageBytes;
   final String? resolutionNote;
   final String status; // 'pending', 'approved', 'rejected'
+  final int pointsAwarded;
   final DateTime createdAt;
 
   const HazardResolutionReportData({
@@ -116,8 +117,15 @@ class HazardResolutionReportData {
     this.resolutionImageBytes,
     this.resolutionNote,
     this.status = 'pending',
+    this.pointsAwarded = 1,
     required this.createdAt,
   });
+
+  /// Returns true when a resolution report status grants the +1 safety point.
+  static bool isAcceptedStatus(String? status) {
+    final normalized = status?.trim().toLowerCase() ?? '';
+    return normalized == 'approved' || normalized == 'resolved';
+  }
 
   factory HazardResolutionReportData.fromRow(Map<String, dynamic> row) {
     final lat = HazardReportData._parseCoordinate(row['latitude']);
@@ -137,10 +145,17 @@ class HazardResolutionReportData {
         : DateTime.now();
 
     final rawStatus = row['status']?.toString().trim().toLowerCase() ?? '';
-    final normalizedStatus =
-        (rawStatus == 'approved' || rawStatus == 'rejected')
-            ? rawStatus
-            : 'pending';
+    final String normalizedStatus;
+    if (isAcceptedStatus(rawStatus)) {
+      normalizedStatus = 'approved';
+    } else if (rawStatus == 'rejected') {
+      normalizedStatus = 'rejected';
+    } else {
+      normalizedStatus = 'pending';
+    }
+
+    final int parsedPoints =
+        (row['points_awarded'] as num?)?.toInt() ?? 1;
 
     return HazardResolutionReportData(
       id: row['id']?.toString() ?? generateUuidV4(),
@@ -161,6 +176,7 @@ class HazardResolutionReportData {
       resolutionImageUrl: row['resolution_image_url']?.toString() ?? '',
       resolutionNote: row['resolution_note']?.toString(),
       status: normalizedStatus,
+      pointsAwarded: parsedPoints > 0 ? parsedPoints : 1,
       createdAt: createdAt,
     );
   }
@@ -711,7 +727,22 @@ class HazardReportService {
           .insert(payload)
           .select()
           .maybeSingle();
-      final savedRow = response ?? payload;
+      var savedRow = response ?? payload;
+      final insertedId = savedRow['reportID']?.toString();
+      if (insertedId != null && insertedId.isNotEmpty) {
+        try {
+          // Re-read row so AFTER INSERT triggers (duplicate auto-activation)
+          // are reflected in savedRow['status'].
+          final refreshed = await _client
+              .from('ReportTable')
+              .select()
+              .eq('reportID', insertedId)
+              .maybeSingle();
+          if (refreshed != null) {
+            savedRow = refreshed;
+          }
+        } catch (_) {}
+      }
       final persistedStatus = HazardReportStatuses.normalize(
         savedRow['status']?.toString(),
         defaultStatus: HazardReportStatuses.pending,
@@ -1007,10 +1038,12 @@ class HazardReportService {
       ...unkeyed,
     ];
     combined.sort((a, b) => b.timestamp.compareTo(a.timestamp));
-    if (combined.length > limit) {
-      return combined.sublist(0, limit);
+    final deduplicated =
+        activeOnly ? deduplicateActiveByLocation(combined) : combined;
+    if (deduplicated.length > limit) {
+      return deduplicated.sublist(0, limit);
     }
-    return combined;
+    return deduplicated;
   }
 
   /// Fetches recent active hazard reports for the Home screen.
@@ -1128,6 +1161,109 @@ class HazardReportService {
       return combined.sublist(0, limit);
     }
     return combined;
+  }
+
+  /// Points awarded for an approved hazard resolution report.
+  static const int resolutionRewardPoints = 1;
+
+  /// Canonical spot key (`category|lat4|lng4`) using 4 decimal places (~11m grid)
+  /// to deduplicate overlapping active hazard reports on the map.
+  static String duplicateLocationKey({
+    required String category,
+    required double latitude,
+    required double longitude,
+  }) {
+    final normCat = HazardCategories.normalize(category).trim().toLowerCase();
+    return '$normCat|${latitude.toStringAsFixed(4)}|${longitude.toStringAsFixed(4)}';
+  }
+
+  /// Returns one representative report per `(category, lat4, lng4)` cell so
+  /// auto-accepted multi-user reports do not stack duplicate map markers.
+  static List<HazardReportData> deduplicateActiveByLocation(
+    List<HazardReportData> reports,
+  ) {
+    final seenKeys = <String>{};
+    final result = <HazardReportData>[];
+    for (final report in reports) {
+      final loc = report.location;
+      if (loc == null) {
+        result.add(report);
+        continue;
+      }
+      final key = duplicateLocationKey(
+        category: report.category,
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+      );
+      if (seenKeys.add(key)) {
+        result.add(report);
+      }
+    }
+    return result;
+  }
+
+  /// Fetches accepted (`approved` or `resolved`) resolution reports submitted by
+  /// [userId] (or the current authenticated user).
+  Future<List<HazardResolutionReportData>> fetchUserApprovedResolutions({
+    String? userId,
+    int limit = 200,
+  }) async {
+    final client = _tryGetClient();
+    final targetUserId = userId ?? client?.auth.currentUser?.id;
+    final List<HazardResolutionReportData> results =
+        <HazardResolutionReportData>[];
+    bool dbQuerySucceeded = false;
+
+    if (client != null && targetUserId != null && targetUserId.isNotEmpty) {
+      try {
+        final rawRows = await client
+            .from('hazard_resolution_reports')
+            .select()
+            .eq('reported_by', targetUserId)
+            .inFilter('status', const <String>['approved', 'resolved'])
+            .order('created_at', ascending: false)
+            .limit(limit);
+        dbQuerySucceeded = true;
+
+        for (final dynamic item in (rawRows as List<dynamic>)) {
+          if (item is Map<String, dynamic>) {
+            final parsed = HazardResolutionReportData.fromRow(item);
+            if (HazardResolutionReportData.isAcceptedStatus(parsed.status)) {
+              results.add(parsed);
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint(
+          'Warning: Failed to fetch approved resolution reports: $e',
+        );
+      }
+    }
+
+    if (!dbQuerySucceeded) {
+      for (final res in _sessionResolutionReports.values) {
+        if (!HazardResolutionReportData.isAcceptedStatus(res.status)) continue;
+        if (targetUserId == null ||
+            res.reportedBy == null ||
+            res.reportedBy == targetUserId) {
+          results.add(res);
+        }
+      }
+    }
+
+    return results;
+  }
+
+  /// Computes total safety points earned from approved hazard resolutions.
+  Future<int> fetchUserResolutionPoints({String? userId}) async {
+    final approved = await fetchUserApprovedResolutions(userId: userId);
+    int total = 0;
+    for (final res in approved) {
+      total += res.pointsAwarded > 0
+          ? res.pointsAwarded
+          : resolutionRewardPoints;
+    }
+    return total;
   }
 
   /// Deletes a user's own submitted report from `public.ReportTable` and local session cache.

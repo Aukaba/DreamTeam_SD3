@@ -27,8 +27,16 @@ class _FakeAuthService extends AuthService {
 
 class _FakeHazardReportService extends HazardReportService {
   final List<HazardReportData> userReports;
+  final int resolutionPoints;
 
-  _FakeHazardReportService(this.userReports);
+  _FakeHazardReportService(
+    this.userReports, {
+    this.resolutionPoints = 0,
+  });
+
+  @override
+  Future<int> fetchUserResolutionPoints({String? userId}) async =>
+      resolutionPoints;
 
   @override
   Future<List<HazardReportData>> fetchUserReports({
@@ -234,6 +242,7 @@ void main() {
       expect(find.text('Low severity hazard report'), findsOneWidget);
       expect(find.text('Medium severity hazard report'), findsOneWidget);
       expect(find.text('High severity hazard report'), findsOneWidget);
+      expect(find.text('Resolve an active hazard'), findsOneWidget);
 
       // Switch to Reports tab
       await tester.tap(find.text('Reports'));
@@ -372,6 +381,45 @@ void main() {
       expect(find.text('Home to University'), findsOneWidget);
       expect(find.text('Labangon → CIT-U Campus'), findsOneWidget);
       expect(find.text('Start Navigation'), findsOneWidget);
+    });
+
+    test('LeaderboardService and MyReportsScreen include +1 safety point per approved resolution', () async {
+      final reports = <HazardReportData>[
+        HazardReportData(
+          reportId: 'r-high',
+          category: 'Flood',
+          securityLevel: 'High',
+          title: 'Deep Flood',
+          description: '',
+          address: 'Cebu City',
+          status: 'active',
+          timestamp: DateTime.now(),
+        ),
+        HazardReportData(
+          reportId: 'r-pending',
+          category: 'Fire',
+          securityLevel: 'High',
+          title: 'Pending Fire',
+          description: '',
+          address: 'Cebu City',
+          status: 'pending',
+          timestamp: DateTime.now(),
+        ),
+      ];
+      final fakeHazardService = _FakeHazardReportService(
+        reports,
+        resolutionPoints: 2, // 2 resolved hazards * +1 pt each
+      );
+      final fakeSafeRouteService = _FakeSafeRouteService(<SavedRouteRecord>[]);
+      final leaderboardService = LeaderboardService(
+        hazardReportService: fakeHazardService,
+        safeRouteService: fakeSafeRouteService,
+      );
+
+      final stats = await leaderboardService.fetchCurrentUserGamificationStats();
+      expect(stats.reportCount, 1);
+      // 3 pts from accepted High report + 2 pts from approved resolutions
+      expect(stats.totalPoints, 5);
     });
   });
 }

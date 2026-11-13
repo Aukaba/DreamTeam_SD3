@@ -245,6 +245,91 @@ void main() {
       expect(data.resolutionImageUrl, 'https://example.com/res.jpg');
       expect(data.resolutionNote, 'Road is now clear');
       expect(data.status, 'pending');
+      expect(data.pointsAwarded, 1);
+    });
+
+    test('accepts both approved and resolved statuses for +1 safety point', () {
+      expect(HazardResolutionReportData.isAcceptedStatus('approved'), isTrue);
+      expect(HazardResolutionReportData.isAcceptedStatus('resolved'), isTrue);
+      expect(HazardResolutionReportData.isAcceptedStatus('RESOLVED'), isTrue);
+      expect(HazardResolutionReportData.isAcceptedStatus('pending'), isFalse);
+      expect(HazardResolutionReportData.isAcceptedStatus('rejected'), isFalse);
+
+      final resolvedRow = HazardResolutionReportData.fromRow({
+        'id': 'res-202',
+        'report_id': 'rep-888',
+        'reported_by': 'usr-123',
+        'hazard_category': 'Flood',
+        'detected_hazard': 'Drained Road',
+        'severity_level': 'High',
+        'location_address': 'Colon St, Cebu City',
+        'resolution_image_url': 'https://example.com/res2.jpg',
+        'status': 'resolved',
+        'points_awarded': 1,
+        'created_at': '2026-11-12T10:00:00Z',
+      });
+
+      expect(resolvedRow.status, 'approved');
+      expect(resolvedRow.pointsAwarded, 1);
+      expect(
+        HazardResolutionReportData.isAcceptedStatus(resolvedRow.status),
+        isTrue,
+      );
+    });
+
+    test('deduplicates active reports within same category and 4-decimal grid', () {
+      final now = DateTime.now();
+      final deduped = HazardReportService.deduplicateActiveByLocation([
+        HazardReportData(
+          reportId: 'dup-a',
+          category: 'Flood',
+          securityLevel: 'High',
+          title: 'Flood Report A',
+          description: '',
+          address: 'Cebu',
+          location: const LatLng(10.315712, 123.885412),
+          status: 'active',
+          timestamp: now,
+        ),
+        HazardReportData(
+          reportId: 'dup-b',
+          category: ' flood ',
+          securityLevel: 'Medium',
+          title: 'Flood Report B (GPS drift ~4m)',
+          description: '',
+          address: 'Cebu',
+          location: const LatLng(10.315741, 123.885441),
+          status: 'active',
+          timestamp: now.subtract(const Duration(minutes: 1)),
+        ),
+        HazardReportData(
+          reportId: 'diff-cat',
+          category: 'Fire',
+          securityLevel: 'High',
+          title: 'Fire at same spot',
+          description: '',
+          address: 'Cebu',
+          location: const LatLng(10.315712, 123.885412),
+          status: 'active',
+          timestamp: now,
+        ),
+        HazardReportData(
+          reportId: 'diff-loc',
+          category: 'Flood',
+          securityLevel: 'Low',
+          title: 'Flood 200m away',
+          description: '',
+          address: 'Cebu',
+          location: const LatLng(10.317500, 123.885412),
+          status: 'active',
+          timestamp: now,
+        ),
+      ]);
+
+      expect(
+        deduped.map((r) => r.reportId).toList(),
+        <String?>['dup-a', 'diff-cat', 'diff-loc'],
+      );
     });
   });
 }
