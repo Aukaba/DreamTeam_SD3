@@ -1126,7 +1126,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               if (i > 0) const SizedBox(height: 8),
               _CategoryMiniBar(
                 stat: topCategories[i],
-                maxTotal: topCategories.first.totalCount,
+                maxActive: topCategories.first.activeCount,
                 barColor: topCategories[i].highSeverityCount > 0
                     ? navy
                     : const Color(0xFF61B5AB),
@@ -1159,7 +1159,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Top hotspot: ${topHotspot.areaLabel} (${topHotspot.activeCount} active · ${topHotspot.totalCount} total)',
+                        'Top hotspot: ${topHotspot.areaLabel} (${topHotspot.activeCount} active)',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: GoogleFonts.inter(
@@ -1863,19 +1863,20 @@ class _AnalyticsMetricPill extends StatelessWidget {
 
 class _CategoryMiniBar extends StatelessWidget {
   final HazardCategoryStat stat;
-  final int maxTotal;
+  final int maxActive;
   final Color barColor;
 
   const _CategoryMiniBar({
     required this.stat,
-    required this.maxTotal,
+    required this.maxActive,
     required this.barColor,
   });
 
   @override
   Widget build(BuildContext context) {
-    final double ratio =
-        maxTotal > 0 ? (stat.totalCount / maxTotal).clamp(0.08, 1.0) : 0.0;
+    final double ratio = maxActive > 0 && stat.activeCount > 0
+        ? (stat.activeCount / maxActive).clamp(0.08, 1.0)
+        : 0.0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1897,9 +1898,7 @@ class _CategoryMiniBar extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             Text(
-              stat.activeCount > 0
-                  ? '${stat.activeCount} active · ${stat.totalCount} total'
-                  : '${stat.totalCount} total',
+              '${stat.activeCount} active',
               style: GoogleFonts.inter(
                 color: const Color(0xFF5B6B7A),
                 fontSize: 11,

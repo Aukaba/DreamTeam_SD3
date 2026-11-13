@@ -386,7 +386,8 @@ void main() {
           expect(find.text('Review Queue'), findsOneWidget);
           expect(find.text('Median Verify'), findsNothing);
           expect(find.text('Top Hazard Categories'), findsOneWidget);
-          expect(find.textContaining('Top hotspot: Colon Street'), findsOneWidget);
+          expect(find.text('Top hotspot: Colon Street (2 active)'), findsOneWidget);
+          expect(find.textContaining('total'), findsNothing);
           expect(tester.takeException(), isNull);
         }
         await tester.binding.setSurfaceSize(null);
@@ -420,6 +421,8 @@ void main() {
         expect(find.text('Top Hazard Hotspots by Area'), findsOneWidget);
         expect(find.text('AI Screening & Community Clearances'), findsOneWidget);
         expect(find.text('Colon Street'), findsOneWidget);
+        expect(find.textContaining('active /'), findsNothing);
+        expect(find.textContaining('cleared ·'), findsNothing);
 
         // All-time shows 2 cleared of 5 (40%)
         expect(find.text('40%'), findsOneWidget);

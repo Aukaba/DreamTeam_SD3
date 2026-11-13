@@ -1043,8 +1043,8 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
 
   Widget _buildCategoryAndPipelineCard() {
     final categories = _analytics.topCategories;
-    final int maxCategoryTotal =
-        categories.isNotEmpty ? categories.first.totalCount : 1;
+    final int maxCategoryActive =
+        categories.isNotEmpty ? categories.first.activeCount : 0;
 
     final int pipelineTotal = math.max(1, _analytics.scopedReportsCount);
 
@@ -1082,7 +1082,7 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
               if (i > 0) const SizedBox(height: 12),
               _DetailedCategoryRow(
                 stat: categories[i],
-                maxTotal: maxCategoryTotal,
+                maxActive: maxCategoryActive,
               ),
             ],
           const SizedBox(height: 20),
@@ -1254,7 +1254,7 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
                       borderRadius: BorderRadius.circular(999),
                     ),
                     child: Text(
-                      '${hotspots[i].activeCount} active / ${hotspots[i].totalCount}',
+                      '${hotspots[i].activeCount} active',
                       style: GoogleFonts.inter(
                         color: _navy,
                         fontSize: 11.5,
@@ -1540,18 +1540,18 @@ class _TrendBarColumn extends StatelessWidget {
 
 class _DetailedCategoryRow extends StatelessWidget {
   final HazardCategoryStat stat;
-  final int maxTotal;
+  final int maxActive;
 
   const _DetailedCategoryRow({
     required this.stat,
-    required this.maxTotal,
+    required this.maxActive,
   });
 
   @override
   Widget build(BuildContext context) {
-    final ratio =
-        maxTotal > 0 ? (stat.totalCount / maxTotal).clamp(0.06, 1.0) : 0.0;
-    final sharePct = (stat.share * 100).round();
+    final ratio = maxActive > 0 && stat.activeCount > 0
+        ? (stat.activeCount / maxActive).clamp(0.06, 1.0)
+        : 0.0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1573,7 +1573,7 @@ class _DetailedCategoryRow extends StatelessWidget {
             const SizedBox(width: 8),
             Flexible(
               child: Text(
-                '${stat.activeCount} active · ${stat.resolvedCount} cleared · ${stat.totalCount} ($sharePct%)',
+                '${stat.activeCount} active',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.end,
