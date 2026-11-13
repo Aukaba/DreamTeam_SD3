@@ -426,24 +426,6 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
         ),
         Row(
           children: [
-            Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                shape: BoxShape.circle,
-                border: Border.all(
-                  width: 1,
-                  color: const Color(0xFFE8EEF2),
-                ),
-              ),
-              child: const Icon(
-                Icons.notifications_outlined,
-                size: 20,
-                color: Color(0xFF5B6B7A),
-              ),
-            ),
-            SizedBox(width: isDesktop ? 16 : 12),
             InkWell(
               onTap: () {
                 Navigator.push(
