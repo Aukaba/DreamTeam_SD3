@@ -115,6 +115,40 @@ void main() {
       expect(result.securityLevel, HazardSecurityLevels.high);
       expect(result.isImpassable, isTrue);
     });
+
+    test('treats negated passable phrases as impassable when is_impassable is null', () {
+      final negatedJson = {
+        'is_hazard': true,
+        'hazard_category': '🌊 Flood',
+        'security_level': 'High',
+        'is_impassable': null,
+        'title': 'Flooded Main Road',
+        'description': 'Road is not passable and vehicles are unable to pass.',
+        'error_message': null,
+      };
+
+      final negatedResult = GeminiHazardResult.fromAiJson(
+        negatedJson,
+        model: 'gemini-3-flash-preview',
+      );
+      expect(negatedResult.securityLevel, HazardSecurityLevels.high);
+      expect(negatedResult.isImpassable, isTrue);
+
+      final notNavigableResult = GeminiHazardResult.fromAiJson(
+        {
+          'is_hazard': true,
+          'hazard_category': '🚫 Blocked road',
+          'security_level': 'High',
+          'is_impassable': null,
+          'title': 'Landslide Debris',
+          'description': 'Street is not navigable and closed to traffic.',
+          'error_message': null,
+        },
+        model: 'gemini-3-flash-preview',
+      );
+      expect(notNavigableResult.securityLevel, HazardSecurityLevels.high);
+      expect(notNavigableResult.isImpassable, isTrue);
+    });
   });
 
   group('GeminiHazardService API Mock Tests', () {

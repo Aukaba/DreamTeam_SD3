@@ -121,6 +121,14 @@ class GeminiHazardResult {
   final String? errorMessage;
   final String modelUsed;
 
+  static final RegExp _whitespacePattern = RegExp(r'\s+');
+  static final RegExp _impassableCuePattern = RegExp(
+    r"\b(?:impassable|not passable|unable to pass|not able to pass|cannot pass|can['\u2019]t pass|not navigable|completely blocked|closed to traffic)\b",
+  );
+  static final RegExp _passableCuePattern = RegExp(
+    r'(?<!\bnot )\b(?:(?:driving|drives|passing|passes|moving) through|passable|navigable|able to pass|can pass)\b',
+  );
+
   const GeminiHazardResult({
     required this.isHazard,
     required this.category,
@@ -199,18 +207,12 @@ class GeminiHazardResult {
         securityLevel = HazardSecurityLevels.medium;
       } else {
         // If is_impassable was omitted by the AI, inspect textual cues
-        final textCombined = ' ${rawTitle ?? ''} ${rawDesc ?? ''} '.toLowerCase();
-        final hasImpassable = textCombined.contains('impassable');
-        final indicatesPassable = !hasImpassable &&
-            (textCombined.contains('driving through') ||
-                textCombined.contains('drives through') ||
-                textCombined.contains('passing through') ||
-                textCombined.contains('passes through') ||
-                RegExp(r'\bpassable\b').hasMatch(textCombined) ||
-                textCombined.contains('navigable') ||
-                textCombined.contains('can pass') ||
-                textCombined.contains('moving through') ||
-                textCombined.contains('able to pass'));
+        final textCombined = ' ${rawTitle ?? ''} ${rawDesc ?? ''} '
+            .toLowerCase()
+            .replaceAll(_whitespacePattern, ' ');
+        final hasImpassable = _impassableCuePattern.hasMatch(textCombined);
+        final indicatesPassable =
+            !hasImpassable && _passableCuePattern.hasMatch(textCombined);
 
         if (indicatesPassable) {
           securityLevel = HazardSecurityLevels.medium;
