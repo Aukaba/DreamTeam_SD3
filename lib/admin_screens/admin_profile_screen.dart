@@ -268,31 +268,6 @@ class _AdminProfileScreenState extends State<AdminProfileScreen> {
             ],
           ),
         ),
-        SizedBox(width: gap),
-        InkWell(
-          customBorder: const CircleBorder(),
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => const AdminReportsScreen(),
-              ),
-            );
-          },
-          child: Container(
-            width: 40,
-            height: 40,
-            decoration: const BoxDecoration(
-              color: Color(0xFFEEF4F8),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(
-              Icons.notifications_outlined,
-              size: 24,
-              color: Color(0xFF5B6B7A),
-            ),
-          ),
-        ),
       ],
     );
   }
