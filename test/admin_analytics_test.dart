@@ -189,6 +189,175 @@ void main() {
       expect(sevenDay.scopedReportsCount, 6);
       expect(sevenDay.scopedResolvedCount, 1);
     });
+
+    test(
+      'deduplicates active hazards by 4-decimal (lat, lng, category) and filters resolution proofs by timeframe',
+      () {
+        final anchor = DateTime(2026, 11, 13, 15, 0);
+        final snapshot = AdminAnalyticsRawSnapshot(
+          reports: <Map<String, dynamic>>[
+            // Primary active Flooding on Colon Street
+            {
+              'reportID': 'd1',
+              'hazard_category': 'flooding',
+              'detected_hazard': 'Flooding',
+              'severity_level': 'High',
+              'confidence': 92,
+              'latitude': 10.29811,
+              'longitude': 123.89811,
+              'location_address': 'Colon Street, Cebu City',
+              'status': 'active',
+              'created_at':
+                  anchor.subtract(const Duration(hours: 2)).toIso8601String(),
+            },
+            // Duplicate active Flooding within same 4-decimal grid (10.2981, 123.8981)
+            {
+              'reportID': 'd2',
+              'hazard_category': 'Flooding',
+              'detected_hazard': 'Waterlogging',
+              'severity_level': 'High',
+              'confidence': 85,
+              'latitude': 10.29814,
+              'longitude': 123.89814,
+              'location_address': 'Colon Street, Cebu City',
+              'status': 'active',
+              'created_at':
+                  anchor.subtract(const Duration(hours: 1)).toIso8601String(),
+            },
+            // Distinct coordinate active Flooding on Mango Avenue
+            {
+              'reportID': 'd3',
+              'hazard_category': 'Flooding',
+              'detected_hazard': 'Street Flood',
+              'severity_level': 'Medium',
+              'confidence': 80,
+              'latitude': 10.3105,
+              'longitude': 123.8912,
+              'location_address': 'General Maxilom Avenue, Cebu City',
+              'status': 'active',
+              'created_at':
+                  anchor.subtract(const Duration(hours: 3)).toIso8601String(),
+            },
+            // Same coordinates as d1/d2, but different category (Roadwork) -> counts separately
+            {
+              'reportID': 'd4',
+              'hazard_category': 'Roadwork',
+              'detected_hazard': 'Road Excavation',
+              'severity_level': 'Low',
+              'confidence': 70,
+              'latitude': 10.29812,
+              'longitude': 123.89812,
+              'location_address': 'Colon Street, Cebu City',
+              'status': 'active',
+              'created_at':
+                  anchor.subtract(const Duration(hours: 4)).toIso8601String(),
+            },
+            // Active report with missing coordinates -> still counts normally
+            {
+              'reportID': 'd5',
+              'hazard_category': 'Pothole',
+              'detected_hazard': 'Deep Pothole',
+              'severity_level': 'Low',
+              'confidence': 65,
+              'location_address': 'Gorordo Avenue, Cebu City',
+              'status': 'active',
+              'resolution_status': 'pending',
+              'created_at':
+                  anchor.subtract(const Duration(hours: 5)).toIso8601String(),
+            },
+            // Active report carrying fallback resolution_status='pending'
+            {
+              'reportID': 'd6',
+              'hazard_category': 'Other',
+              'detected_hazard': 'Debris',
+              'severity_level': 'Low',
+              'confidence': 60,
+              'latitude': 10.3201,
+              'longitude': 123.9055,
+              'location_address': 'Banilad Road, Cebu City',
+              'status': 'active',
+              'resolution_status': 'pending',
+              'created_at':
+                  anchor.subtract(const Duration(days: 10)).toIso8601String(),
+            },
+          ],
+          resolutions: <Map<String, dynamic>>[
+            // Recent approved proof (2 days ago -> in 7D, 30D, ALL)
+            {
+              'id': 'p1',
+              'report_id': 'd1',
+              'status': 'approved',
+              'created_at':
+                  anchor.subtract(const Duration(days: 2)).toIso8601String(),
+              'verified_at':
+                  anchor.subtract(const Duration(days: 2)).toIso8601String(),
+            },
+            // Older rejected proof (20 days ago -> in 30D and ALL, excluded from 7D)
+            {
+              'id': 'p2',
+              'report_id': 'd3',
+              'status': 'rejected',
+              'created_at':
+                  anchor.subtract(const Duration(days: 20)).toIso8601String(),
+              'verified_at':
+                  anchor.subtract(const Duration(days: 20)).toIso8601String(),
+            },
+            // Older pending proof (45 days ago -> in ALL only, excluded from 7D/30D card,
+            // yet live pendingResolutionProofsCount keeps max(all-time proofs, fallback))
+            {
+              'id': 'p3',
+              'report_id': 'd4',
+              'status': 'pending',
+              'created_at':
+                  anchor.subtract(const Duration(days: 45)).toIso8601String(),
+            },
+          ],
+        );
+
+        final allTime = snapshot.compute(
+          timeframe: AnalyticsTimeframe.allTime,
+          now: anchor,
+        );
+
+        // d1 & d2 collapse into 1 active incident -> 5 unique active hazards total
+        expect(allTime.activeHazardsCount, 5);
+        expect(allTime.activeHighCount, 1); // d1+d2 combined once
+        expect(allTime.activeMediumCount, 1); // d3
+        expect(allTime.activeLowCount, 3); // d4, d5, d6
+
+        final floodingStat =
+            allTime.topCategories.firstWhere((c) => c.category == 'Flooding');
+        expect(floodingStat.activeCount, 2); // (d1/d2) + d3
+
+        final colonHotspot =
+            allTime.topHotspots.firstWhere((h) => h.areaLabel == 'Colon Street');
+        expect(colonHotspot.activeCount, 2); // (d1/d2 flooding) + d4 roadwork
+
+        // Live queue takes max(proofsPendingAllTime=1, fallbackPendingResolutions=2) = 2
+        expect(allTime.pendingResolutionProofsCount, 2);
+        expect(allTime.resolutionProofsApproved, 1);
+        expect(allTime.resolutionProofsPending, 1);
+        expect(allTime.resolutionProofsRejected, 1);
+
+        // Switching to 7D filters Resolution Proofs card counts while preserving live queue
+        final sevenDays = snapshot.compute(
+          timeframe: AnalyticsTimeframe.sevenDays,
+          now: anchor,
+        );
+        expect(sevenDays.pendingResolutionProofsCount, 2);
+        expect(sevenDays.resolutionProofsApproved, 1);
+        expect(sevenDays.resolutionProofsPending, 0);
+        expect(sevenDays.resolutionProofsRejected, 0);
+
+        final thirtyDays = snapshot.compute(
+          timeframe: AnalyticsTimeframe.thirtyDays,
+          now: anchor,
+        );
+        expect(thirtyDays.resolutionProofsApproved, 1);
+        expect(thirtyDays.resolutionProofsPending, 0);
+        expect(thirtyDays.resolutionProofsRejected, 1);
+      },
+    );
   });
 
   group('Admin Analytics UI Widget Tests', () {
@@ -236,7 +405,6 @@ void main() {
           MaterialApp(
             home: AdminAnalyticsScreen(
               initialSnapshot: snapshot,
-              analyticsLoader: () async => snapshot,
             ),
           ),
         );

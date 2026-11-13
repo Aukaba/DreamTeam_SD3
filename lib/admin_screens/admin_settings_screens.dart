@@ -605,7 +605,9 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
     if (_snapshot != null) {
       _isLoading = false;
     }
-    _loadAnalytics();
+    if (widget.initialSnapshot == null || widget.analyticsLoader != null) {
+      _loadAnalytics();
+    }
   }
 
   Future<void> _loadAnalytics() async {

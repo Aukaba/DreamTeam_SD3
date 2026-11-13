@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'hazard_report_service.dart';
@@ -279,6 +281,8 @@ class AdminSafetyAnalytics {
         <String, _CategoryAccumulator>{};
     final Map<String, _HotspotAccumulator> hotspotAcc =
         <String, _HotspotAccumulator>{};
+    final Set<String> seenActiveIncidentKeys = <String>{};
+    final Set<String> seenScopedActiveKeys = <String>{};
 
     // Prepare 7-day trend buckets ([today - 6] through [today])
     final List<DateTime> trendDates = List<DateTime>.generate(
@@ -299,20 +303,39 @@ class AdminSafetyAnalytics {
       final createdAt = _parseLocalDateTime(row['created_at']);
       final verifiedAt = _parseLocalDateTime(row['verified_at']);
       final resolvedAt = _parseLocalDateTime(row['resolved_at']);
+      final double? lat = _parseCoordinate(row['latitude']);
+      final double? lng = _parseCoordinate(row['longitude']);
 
-      // All-time / live queue counts
+      String? activeSpotKey;
+      if (status == HazardReportStatuses.active && lat != null && lng != null) {
+        final rawCat =
+            (row['hazard_category']?.toString().trim().isNotEmpty == true)
+                ? row['hazard_category'].toString()
+                : (row['detected_hazard']?.toString() ?? 'Other');
+        activeSpotKey = HazardReportService.duplicateLocationKey(
+          category: rawCat,
+          latitude: lat,
+          longitude: lng,
+        );
+      }
+
+      // All-time / live queue counts (deduplicated per active spot on map)
       if (status == HazardReportStatuses.active) {
-        activeAll++;
-        switch (severity) {
-          case HazardSeverityBucket.high:
-            activeHigh++;
-            break;
-          case HazardSeverityBucket.medium:
-            activeMedium++;
-            break;
-          case HazardSeverityBucket.low:
-            activeLow++;
-            break;
+        final bool isUniqueActiveIncident =
+            activeSpotKey == null || seenActiveIncidentKeys.add(activeSpotKey);
+        if (isUniqueActiveIncident) {
+          activeAll++;
+          switch (severity) {
+            case HazardSeverityBucket.high:
+              activeHigh++;
+              break;
+            case HazardSeverityBucket.medium:
+              activeMedium++;
+              break;
+            case HazardSeverityBucket.low:
+              activeLow++;
+              break;
+          }
         }
         final resStatus =
             row['resolution_status']?.toString().trim().toLowerCase() ?? '';
@@ -357,9 +380,14 @@ class AdminSafetyAnalytics {
           (createdAt != null && !createdAt.isBefore(cutoff));
       if (!inScope) continue;
 
+      final bool isUniqueScopedActive = status == HazardReportStatuses.active &&
+          (activeSpotKey == null || seenScopedActiveKeys.add(activeSpotKey));
+
       scopedTotal++;
       if (status == HazardReportStatuses.active) {
-        scopedActive++;
+        if (isUniqueScopedActive) {
+          scopedActive++;
+        }
       } else if (status == HazardReportStatuses.pending) {
         scopedPending++;
       } else if (status == HazardReportStatuses.resolved) {
@@ -414,7 +442,7 @@ class AdminSafetyAnalytics {
           () => _CategoryAccumulator(categoryLabel),
         );
         catEntry.total++;
-        if (status == HazardReportStatuses.active) catEntry.active++;
+        if (isUniqueScopedActive) catEntry.active++;
         if (status == HazardReportStatuses.resolved) catEntry.resolved++;
         if (severity == HazardSeverityBucket.high) catEntry.highSeverity++;
 
@@ -426,7 +454,7 @@ class AdminSafetyAnalytics {
             () => _HotspotAccumulator(areaLabel),
           );
           spot.total++;
-          if (status == HazardReportStatuses.active) spot.active++;
+          if (isUniqueScopedActive) spot.active++;
           if (severity == HazardSeverityBucket.high) spot.highSeverity++;
           spot.categoryCounts[categoryLabel] =
               (spot.categoryCounts[categoryLabel] ?? 0) + 1;
@@ -435,11 +463,25 @@ class AdminSafetyAnalytics {
     }
 
     // Resolution proofs from `hazard_resolution_reports`
+    int proofsPendingAllTime = 0;
     int proofsApproved = 0;
     int proofsPending = 0;
     int proofsRejected = 0;
     for (final res in resolutions) {
       final resStatus = res['status']?.toString().trim().toLowerCase() ?? '';
+      if (resStatus == 'pending') {
+        proofsPendingAllTime++;
+      }
+
+      if (cutoff != null) {
+        final proofTimestamp =
+            _parseLocalDateTime(res['verified_at']) ??
+            _parseLocalDateTime(res['created_at']);
+        if (proofTimestamp == null || proofTimestamp.isBefore(cutoff)) {
+          continue;
+        }
+      }
+
       if (resStatus == 'pending') {
         proofsPending++;
       } else if (resStatus == 'approved' || resStatus == 'resolved') {
@@ -450,7 +492,7 @@ class AdminSafetyAnalytics {
     }
 
     final int effectivePendingProofs =
-        resolutions.isNotEmpty ? proofsPending : fallbackPendingResolutions;
+        math.max(proofsPendingAllTime, fallbackPendingResolutions);
 
     // Ratios & Medians
     final int resDenom = scopedActive + scopedResolved;
@@ -571,7 +613,7 @@ class AdminSafetyAnalytics {
       mediumConfidenceCount: medConf,
       lowConfidenceCount: lowConf,
       resolutionProofsApproved: proofsApproved,
-      resolutionProofsPending: effectivePendingProofs,
+      resolutionProofsPending: proofsPending,
       resolutionProofsRejected: proofsRejected,
       topCategories: sortedCategories,
       topHotspots: sortedHotspots,
@@ -656,6 +698,18 @@ class AdminSafetyAnalytics {
     return DateTime.tryParse(value.toString().trim())?.toLocal();
   }
 
+  static double? _parseCoordinate(dynamic value) {
+    if (value is num) {
+      final d = value.toDouble();
+      return d.isFinite ? d : null;
+    }
+    if (value is String) {
+      final d = double.tryParse(value.trim());
+      if (d != null && d.isFinite) return d;
+    }
+    return null;
+  }
+
   static int? _medianInt(List<int> values) {
     if (values.isEmpty) return null;
     final sorted = List<int>.from(values)..sort();
@@ -705,15 +759,38 @@ class AdminAnalyticsService {
   }) async {
     final client = clientOverride ?? Supabase.instance.client;
 
-    final dynamic rawReports = await client
+    final Future<dynamic> reportsFuture = client
         .from('ReportTable')
         .select(
           'reportID, hazard_category, detected_hazard, severity_level, '
-          'confidence, location_address, status, resolution_status, '
-          'resolution_count, created_at, verified_at, resolved_at',
-        );
+          'confidence, latitude, longitude, location_address, status, '
+          'resolution_status, resolution_count, created_at, verified_at, resolved_at',
+        )
+        .order('created_at', ascending: false)
+        .limit(2000);
+
+    Future<dynamic> fetchResolutionsSafe() async {
+      try {
+        return await client
+            .from('hazard_resolution_reports')
+            .select(
+              'id, report_id, hazard_category, status, created_at, verified_at',
+            )
+            .order('created_at', ascending: false)
+            .limit(2000);
+      } catch (e) {
+        debugPrint('Warning: resolution analytics query skipped: $e');
+        return const <dynamic>[];
+      }
+    }
+
+    final List<dynamic> results = await Future.wait<dynamic>(<Future<dynamic>>[
+      reportsFuture,
+      fetchResolutionsSafe(),
+    ]);
 
     final List<Map<String, dynamic>> reportRows = <Map<String, dynamic>>[];
+    final dynamic rawReports = results[0];
     if (rawReports is List) {
       for (final row in rawReports) {
         if (row is Map<String, dynamic>) {
@@ -723,19 +800,13 @@ class AdminAnalyticsService {
     }
 
     final List<Map<String, dynamic>> resolutionRows = <Map<String, dynamic>>[];
-    try {
-      final dynamic rawRes = await client
-          .from('hazard_resolution_reports')
-          .select('id, report_id, hazard_category, status, created_at, verified_at');
-      if (rawRes is List) {
-        for (final row in rawRes) {
-          if (row is Map<String, dynamic>) {
-            resolutionRows.add(row);
-          }
+    final dynamic rawRes = results[1];
+    if (rawRes is List) {
+      for (final row in rawRes) {
+        if (row is Map<String, dynamic>) {
+          resolutionRows.add(row);
         }
       }
-    } catch (e) {
-      debugPrint('Warning: resolution analytics query skipped: $e');
     }
 
     return AdminAnalyticsRawSnapshot(
