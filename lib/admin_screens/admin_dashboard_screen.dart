@@ -408,19 +408,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             onTap: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(
-                  builder: (context) => const AdminReportsScreen(),
-                ),
-              );
-            },
-            borderRadius: BorderRadius.circular(20),
-            child: const _BellIcon(),
-          ),
-          SizedBox(width: isTablet ? 12 : 10),
-          InkWell(
-            onTap: () {
-              Navigator.push(
-                context,
                 MaterialPageRoute(builder: (context) => const AdminProfileScreen()),
               );
             },
@@ -1281,27 +1268,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           ),
         ],
       ],
-    );
-  }
-}
-
-class _BellIcon extends StatelessWidget {
-  const _BellIcon();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 40,
-      height: 40,
-      decoration: const BoxDecoration(
-        color: Color(0xFFEEF4F8),
-        shape: BoxShape.circle,
-      ),
-      child: const Icon(
-        Icons.notifications_outlined,
-        size: 24,
-        color: Color(0xFF5B6B7A),
-      ),
     );
   }
 }
