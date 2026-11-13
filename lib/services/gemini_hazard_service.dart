@@ -114,16 +114,26 @@ class GeminiHazardResult {
   final bool isHazard;
   final String category;
   final String securityLevel;
+  final bool isImpassable;
   final int confidence;
   final String title;
   final String description;
   final String? errorMessage;
   final String modelUsed;
 
+  static final RegExp _whitespacePattern = RegExp(r'\s+');
+  static final RegExp _impassableCuePattern = RegExp(
+    r"\b(?:impassable|not passable|unable to pass|not able to pass|cannot pass|can['\u2019]t pass|not navigable|completely blocked|closed to traffic)\b",
+  );
+  static final RegExp _passableCuePattern = RegExp(
+    r'(?<!\bnot )\b(?:(?:driving|drives|passing|passes|moving) through|passable|navigable|able to pass|can pass)\b',
+  );
+
   const GeminiHazardResult({
     required this.isHazard,
     required this.category,
     required this.securityLevel,
+    this.isImpassable = false,
     this.confidence = 95,
     required this.title,
     required this.description,
@@ -139,6 +149,7 @@ class GeminiHazardResult {
       isHazard: false,
       category: HazardCategories.other,
       securityLevel: HazardSecurityLevels.low,
+      isImpassable: false,
       confidence: 0,
       title: 'Not a Hazard',
       description: reason,
@@ -168,6 +179,15 @@ class GeminiHazardResult {
     final rawTitle = json['title']?.toString();
     final rawDesc = json['description']?.toString();
     final rawConfidence = json['confidence'];
+    final rawIsImpassable = json['is_impassable'];
+
+    final bool? isImpassable = rawIsImpassable is bool
+        ? rawIsImpassable
+        : (rawIsImpassable?.toString().trim().toLowerCase() == 'true'
+            ? true
+            : (rawIsImpassable?.toString().trim().toLowerCase() == 'false'
+                ? false
+                : null));
 
     int confidence = 95;
     if (rawConfidence is num) {
@@ -175,7 +195,31 @@ class GeminiHazardResult {
     }
 
     final category = HazardCategories.normalize(rawCategory);
-    final securityLevel = HazardSecurityLevels.normalize(rawSecurity);
+    var securityLevel = HazardSecurityLevels.normalize(rawSecurity);
+
+    // Enforce toned-down severity rule:
+    // Only use High if the road is completely impassable.
+    if (securityLevel == HazardSecurityLevels.high) {
+      if (isImpassable == true) {
+        // Road is explicitly impassable -> keep High
+      } else if (isImpassable == false) {
+        // Road is explicitly not impassable -> tone down to Medium
+        securityLevel = HazardSecurityLevels.medium;
+      } else {
+        // If is_impassable was omitted by the AI, inspect textual cues
+        final textCombined = ' ${rawTitle ?? ''} ${rawDesc ?? ''} '
+            .toLowerCase()
+            .replaceAll(_whitespacePattern, ' ');
+        final hasImpassable = _impassableCuePattern.hasMatch(textCombined);
+        final indicatesPassable =
+            !hasImpassable && _passableCuePattern.hasMatch(textCombined);
+
+        if (indicatesPassable) {
+          securityLevel = HazardSecurityLevels.medium;
+        }
+      }
+    }
+
     final title = (rawTitle != null && rawTitle.trim().isNotEmpty)
         ? rawTitle.trim()
         : _defaultTitleForCategory(category);
@@ -187,6 +231,7 @@ class GeminiHazardResult {
       isHazard: true,
       category: category,
       securityLevel: securityLevel,
+      isImpassable: isImpassable ?? (securityLevel == HazardSecurityLevels.high),
       confidence: confidence,
       title: title,
       description: description,
@@ -270,10 +315,10 @@ ALLOWED HAZARD CATEGORIES (MUST BE EXACTLY ONE OF THESE):
 - 🚫 Blocked road
 - ⚠️ Other
 
-SECURITY LEVEL (MUST BE ONE OF):
-- "High" (imminent threat to life/property, fire, severe accident, impassable road, deep water, live downed electrical wires)
-- "Medium" (significant obstruction, deep pothole, fallen large branch, broken traffic signal on busy road)
-- "Low" (minor pothole/crack, minor puddling, burnt-out streetlight on quiet street, damaged curb)
+SECURITY LEVEL GUIDELINES (TONE DOWN SEVERITY - CONSERVATIVE THRESHOLD):
+- "High": ONLY use "High" if the road or route is completely IMPASSABLE to traffic/vehicles (e.g. road completely washed away or submerged in impassable deep floodwaters, collapsed bridge, total blockage where vehicles cannot pass, active fire engulfing the roadway, catastrophic multi-lane collision). If vehicles or pedestrians can still pass through, navigate around, or drive through (such as cars driving through floodwater/puddles, partial blockages, single-lane obstructions), DO NOT use "High".
+- "Medium": Significant obstruction, warning, or slowdown where the road remains PASSABLE (e.g. vehicles are driving through or can drive through standing water/flooding with caution, potholes, partial lane obstruction, fallen branch with room to pass, malfunctioning traffic signals).
+- "Low": Minor hazard with minimal impact to traffic flow (e.g. shallow puddling, minor potholes/cracks, roadside debris, burnt-out streetlight on a quiet street, damaged curb).
 
 CRITICAL HAZARD VALIDATION RULES:
 1. If the photo does NOT depict an actual road, traffic, public safety, or community hazard (e.g. selfies, portraits, pets, food, indoor furniture, normal intact cars, clean undamaged roads, logos, memes, computer screenshots, landscapes without danger):
@@ -282,7 +327,8 @@ CRITICAL HAZARD VALIDATION RULES:
 2. If the photo DOES depict a valid hazard:
    Set "is_hazard": true.
    Set "hazard_category" to one of the 8 exact emojis + labels above.
-   Set "security_level" to "Low", "Medium", or "High".
+   Set "is_impassable": true ONLY if the road/route is completely closed or impassable to traffic; set false if vehicles or pedestrians can still pass through or drive across.
+   Set "security_level" to "Low", "Medium", or "High" following the rule: ONLY use "High" if "is_impassable" is true. If "is_impassable" is false, you MUST choose "Medium" or "Low" (tone down severity).
    Set "confidence" to an integer between 1 and 100 (e.g. 98, 100) indicating detection certainty.
    Set "title" to a concise summary (under 45 characters, e.g. "Deep Pothole on Lane").
    Set "description" to a clear 1-2 sentence description of what is seen.
@@ -293,6 +339,7 @@ Return your answer strictly as a JSON object matching this schema:
   "is_hazard": boolean,
   "hazard_category": string or null,
   "security_level": string or null,
+  "is_impassable": boolean or null,
   "confidence": integer or null,
   "title": string or null,
   "description": string or null,
