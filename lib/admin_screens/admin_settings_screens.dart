@@ -1042,7 +1042,8 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
   }
 
   Widget _buildCategoryAndPipelineCard() {
-    final categories = _analytics.topCategories;
+    final categories =
+        _analytics.topCategories.where((c) => c.activeCount > 0).toList();
     final int maxCategoryActive =
         categories.isNotEmpty ? categories.first.activeCount : 0;
 
@@ -1073,7 +1074,7 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 12),
               child: Text(
-                'No hazard reports recorded in ${_selectedTimeframe.displayLabel.toLowerCase()}.',
+                'No active hazards in ${_selectedTimeframe.displayLabel.toLowerCase()}.',
                 style: GoogleFonts.inter(color: _muted, fontSize: 13),
               ),
             )
@@ -1154,7 +1155,10 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
   }
 
   Widget _buildHotspotsCard() {
-    final hotspots = _analytics.topHotspots.take(6).toList();
+    final hotspots = _analytics.topHotspots
+        .where((h) => h.activeCount > 0)
+        .take(6)
+        .toList();
 
     return Container(
       width: double.infinity,
@@ -1181,7 +1185,7 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 12),
               child: Text(
-                'No barangay-level hotspot data recorded in this timeframe yet.',
+                'No active barangay hotspots in this timeframe.',
                 style: GoogleFonts.inter(color: _muted, fontSize: 13),
               ),
             )

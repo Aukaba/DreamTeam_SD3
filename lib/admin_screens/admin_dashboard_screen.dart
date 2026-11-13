@@ -848,9 +848,14 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             ? const Color(0xFFB91C1C)
             : const Color(0xFFB45309));
 
-    final topCategories = _analytics.topCategories.take(3).toList();
+    final topCategories = _analytics.topCategories
+        .where((c) => c.activeCount > 0)
+        .take(3)
+        .toList();
+    final activeHotspots =
+        _analytics.topHotspots.where((h) => h.activeCount > 0);
     final topHotspot =
-        _analytics.topHotspots.isNotEmpty ? _analytics.topHotspots.first : null;
+        activeHotspots.isNotEmpty ? activeHotspots.first : null;
 
     void openFullAnalytics() {
       Navigator.push(

@@ -410,5 +410,129 @@ void main() {
         expect(find.text('Traffic tiles unavailable'), findsOneWidget);
       },
     );
+
+    testWidgets(
+      'Route polylines stay blue and avoid TomTom green/yellow/red traffic colors even with hazards on route',
+      (tester) async {
+        final fakeService = _FakeHazardReportService();
+        final sampleHazard = HazardReportData(
+          reportId: 'haz-route-1',
+          location: const LatLng(10.3050, 123.8700),
+          category: 'Flooding',
+          title: 'Street Flooding',
+          description: 'Flooded lane',
+          securityLevel: 'High',
+          address: 'N. Bacalso Ave, Cebu City',
+          status: 'active',
+          timestamp: DateTime(2026, 11, 13, 12, 0),
+        );
+        final hazardExposure = RouteHazardExposure(
+          hazard: sampleHazard,
+          distanceFromRouteMeters: 10.0,
+          avoidanceRadiusMeters: 60.0,
+          severityWeight: 120.0,
+        );
+        const poly = <LatLng>[
+          LatLng(10.2982, 123.8615),
+          LatLng(10.3050, 123.8700),
+          LatLng(10.3157, 123.8854),
+        ];
+        final hazardPrimary = RouteCandidate(
+          id: 'primary_with_hazard',
+          provider: 'tomtom-live-traffic',
+          summary: 'Via N. Bacalso Ave',
+          polyline: poly,
+          steps: const <RouteStep>[
+            RouteStep(
+              index: 0,
+              instruction: 'Head north on N. Bacalso Ave',
+              streetName: 'N. Bacalso Ave',
+              distanceMeters: 2500,
+              durationSeconds: 300,
+              maneuverType: ManeuverType.depart,
+              location: LatLng(10.2982, 123.8615),
+              startPolylineIndex: 0,
+              endPolylineIndex: 1,
+            ),
+          ],
+          distanceMeters: 5000,
+          durationSeconds: 600,
+          hazardsOnRoute: <RouteHazardExposure>[hazardExposure],
+        );
+        final hazardAlt = RouteCandidate(
+          id: 'alt_with_hazard',
+          provider: 'tomtom-live-traffic',
+          summary: 'Via Osmena Blvd',
+          polyline: const <LatLng>[
+            LatLng(10.2982, 123.8615),
+            LatLng(10.3090, 123.8750),
+            LatLng(10.3157, 123.8854),
+          ],
+          steps: const <RouteStep>[],
+          distanceMeters: 5400,
+          durationSeconds: 660,
+          hazardsOnRoute: <RouteHazardExposure>[hazardExposure],
+        );
+        const cleanAlt = RouteCandidate(
+          id: 'alt_clean',
+          provider: 'tomtom-live-traffic',
+          summary: 'Via SRP',
+          polyline: <LatLng>[
+            LatLng(10.2982, 123.8615),
+            LatLng(10.3020, 123.8820),
+            LatLng(10.3157, 123.8854),
+          ],
+          steps: <RouteStep>[],
+          distanceMeters: 5600,
+          durationSeconds: 690,
+        );
+
+        final plannedWithHazards = PlannedRouteResult(
+          origin: const LatLng(10.2982, 123.8615),
+          originLabel: 'Origin',
+          destination: const LatLng(10.3157, 123.8854),
+          destinationLabel: 'Destination',
+          travelMode: RouteTravelMode.driving,
+          avoidHazards: true,
+          primaryRoute: hazardPrimary,
+          alternatives: <RouteCandidate>[hazardPrimary, hazardAlt, cleanAlt],
+          corridorHazards: <HazardReportData>[sampleHazard],
+          hazardsAvoided: 1,
+        );
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: MapScreen(
+              initialLocation: const LatLng(10.2982, 123.8615),
+              hazardReportService: fakeService,
+              initialRoute: plannedWithHazards,
+              initialShowTraffic: true,
+              tomtomApiKey: 'VALID_KEY',
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        final polylineLayer = tester.widget<PolylineLayer>(
+          find.byType(PolylineLayer),
+        );
+        final colors = polylineLayer.polylines.map((p) => p.color).toList();
+
+        // Primary route uses blue inner stroke + white casing (never yellow/amber/red/green at any opacity)
+        expect(colors, contains(const Color(0xFF2563EB)));
+        expect(colors, contains(Colors.white));
+        expect(
+          colors.any((c) {
+            final rgb = c.toARGB32() & 0x00FFFFFF;
+            return rgb == 0xD97706 ||
+                rgb == 0xF59E0B ||
+                rgb == 0x22C55E ||
+                rgb == 0xEF4444;
+          }),
+          isFalse,
+        );
+      },
+    );
   });
 }

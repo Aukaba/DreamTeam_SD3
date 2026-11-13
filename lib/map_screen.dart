@@ -1307,6 +1307,7 @@ class _MapScreenState extends State<MapScreen> {
     final polylines = <Polyline>[];
 
     // 1. Alternative candidate routes (only in preview mode so turn-by-turn stays uncluttered)
+    // Avoid green/yellow/red so route polylines remain distinct from TomTom traffic flow tiles.
     if (!_isNavigating && active.alternatives.length > 1) {
       for (final alt in active.alternatives) {
         if (alt.id == active.primaryRoute.id || alt.polyline.length < 2) {
@@ -1318,14 +1319,14 @@ class _MapScreenState extends State<MapScreen> {
             points: alt.polyline,
             strokeWidth: 5.0,
             color: hasHazard
-                ? const Color(0xFFF59E0B).withValues(alpha: 0.65)
-                : const Color(0xFF64748B).withValues(alpha: 0.55),
+                ? const Color(0xFF64748B).withValues(alpha: 0.55)
+                : const Color(0xFF60A5FA).withValues(alpha: 0.65),
           ),
         );
       }
     }
 
-    // 2. Primary SafeRoute polyline (with outer white casing + bright inner path)
+    // 2. Primary SafeRoute polyline (with outer white casing + bright blue inner path)
     final primaryPoly = active.primaryRoute.polyline;
     if (primaryPoly.length >= 2) {
       if (_isNavigating &&
@@ -1355,9 +1356,6 @@ class _MapScreenState extends State<MapScreen> {
           ),
         );
       } else {
-        final primaryColor = active.primaryRoute.hazardsOnRoute.isEmpty
-            ? const Color(0xFF2563EB)
-            : const Color(0xFFD97706);
         polylines.add(
           Polyline(
             points: primaryPoly,
@@ -1369,7 +1367,7 @@ class _MapScreenState extends State<MapScreen> {
           Polyline(
             points: primaryPoly,
             strokeWidth: 5.5,
-            color: primaryColor,
+            color: const Color(0xFF2563EB),
           ),
         );
       }

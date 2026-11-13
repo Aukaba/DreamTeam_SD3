@@ -443,9 +443,13 @@ class AdminSafetyAnalytics {
           () => _CategoryAccumulator(categoryLabel),
         );
         catEntry.total++;
-        if (isUniqueScopedActive) catEntry.active++;
+        if (isUniqueScopedActive) {
+          catEntry.active++;
+          if (severity == HazardSeverityBucket.high) {
+            catEntry.highSeverity++;
+          }
+        }
         if (status == HazardReportStatuses.resolved) catEntry.resolved++;
-        if (severity == HazardSeverityBucket.high) catEntry.highSeverity++;
 
         // Barangay hotspot aggregation
         final areaLabel = extractBarangayLabel(
@@ -459,8 +463,14 @@ class AdminSafetyAnalytics {
             () => _HotspotAccumulator(areaLabel),
           );
           spot.total++;
-          if (isUniqueScopedActive) spot.active++;
-          if (severity == HazardSeverityBucket.high) spot.highSeverity++;
+          if (isUniqueScopedActive) {
+            spot.active++;
+            if (severity == HazardSeverityBucket.high) {
+              spot.highSeverity++;
+            }
+            spot.activeCategoryCounts[categoryLabel] =
+                (spot.activeCategoryCounts[categoryLabel] ?? 0) + 1;
+          }
           spot.categoryCounts[categoryLabel] =
               (spot.categoryCounts[categoryLabel] ?? 0) + 1;
         }
@@ -540,12 +550,16 @@ class AdminSafetyAnalytics {
         return a.category.compareTo(b.category);
       });
 
-    // Sort hotspots by Active first, then High-severity, then Total
+    // Sort hotspots by Active first, then active High-severity, then Total
     final List<HazardHotspotStat> sortedHotspots = hotspotAcc.values
         .map((h) {
           String topCat = 'Hazard';
           int topCatCount = -1;
-          h.categoryCounts.forEach((cat, count) {
+          final Map<String, int> countsToRank =
+              h.active > 0 && h.activeCategoryCounts.isNotEmpty
+                  ? h.activeCategoryCounts
+                  : h.categoryCounts;
+          countsToRank.forEach((cat, count) {
             if (count > topCatCount) {
               topCatCount = count;
               topCat = cat;
@@ -796,30 +810,36 @@ class AdminSafetyAnalytics {
       RegExp(r'^(#?\d+[a-zA-Z]?|blk\b|lot\b|phase\b|purok\b)', caseSensitive: false)
           .hasMatch(segment.trim());
 
-  static String? _matchKnownBarangaySegment(String segment) {
-    final cleanedKey = _stripBarangayPrefix(segment).toLowerCase();
-    if (cleanedKey.isEmpty) return null;
+  static final Map<String, String> _knownBarangayLookup =
+      _buildKnownBarangayLookup();
 
-    final aliasHit = _barangayCanonicalAliases[cleanedKey];
-    if (aliasHit != null) return aliasHit;
-
-    final suppHit = _supplementalBarangays[cleanedKey];
-    if (suppHit != null) return suppHit.name;
-
+  static Map<String, String> _buildKnownBarangayLookup() {
+    final map = <String, String>{};
+    map.addAll(_barangayCanonicalAliases);
+    for (final entry in _supplementalBarangays.entries) {
+      map.putIfAbsent(entry.key, () => entry.value.name);
+    }
     for (final landmark in CebuLandmarkService.landmarks) {
       if (landmark.category != LandmarkCategory.barangay) continue;
-      final landmarkKey = _stripBarangayPrefix(landmark.name).toLowerCase();
-      if (landmarkKey == cleanedKey) {
-        return _canonicalizeBarangay(landmark.name);
+      final canonical = _canonicalizeBarangay(landmark.name);
+      final nameKey = _stripBarangayPrefix(landmark.name).toLowerCase();
+      if (nameKey.isNotEmpty) {
+        map.putIfAbsent(nameKey, () => canonical);
       }
       for (final alias in landmark.aliases) {
         final aliasKey = _stripBarangayPrefix(alias).toLowerCase();
-        if (aliasKey == cleanedKey) {
-          return _canonicalizeBarangay(landmark.name);
+        if (aliasKey.isNotEmpty) {
+          map.putIfAbsent(aliasKey, () => canonical);
         }
       }
     }
-    return null;
+    return Map<String, String>.unmodifiable(map);
+  }
+
+  static String? _matchKnownBarangaySegment(String segment) {
+    final cleanedKey = _stripBarangayPrefix(segment).toLowerCase();
+    if (cleanedKey.isEmpty) return null;
+    return _knownBarangayLookup[cleanedKey];
   }
 
   static String _stripBarangayPrefix(String raw) {
@@ -1077,6 +1097,7 @@ class _HotspotAccumulator {
   int total = 0;
   int active = 0;
   int highSeverity = 0;
+  final Map<String, int> activeCategoryCounts = <String, int>{};
   final Map<String, int> categoryCounts = <String, int>{};
 
   _HotspotAccumulator(this.displayLabel);

@@ -382,6 +382,102 @@ void main() {
         expect(thirtyDays.resolutionProofsRejected, 1);
       },
     );
+
+    test(
+      'highSeverityCount and hotspot topCategory stay scoped to active hazards with fallback when inactive',
+      () {
+        final anchor = DateTime(2026, 11, 13, 12, 0);
+        final snapshot = AdminAnalyticsRawSnapshot(
+          reports: <Map<String, dynamic>>[
+            // Two resolved High Flooding reports in Kalubihan (should not inflate active risk or Primary threat)
+            {
+              'reportID': 'h1',
+              'hazard_category': 'Flooding',
+              'severity_level': 'High',
+              'confidence': 90,
+              'latitude': 10.2951,
+              'longitude': 123.8961,
+              'location_address': 'Colon St, Kalubihan, Cebu City',
+              'status': 'resolved',
+              'created_at':
+                  anchor.subtract(const Duration(days: 2)).toIso8601String(),
+              'resolved_at':
+                  anchor.subtract(const Duration(days: 1)).toIso8601String(),
+            },
+            {
+              'reportID': 'h2',
+              'hazard_category': 'Flooding',
+              'severity_level': 'High',
+              'confidence': 88,
+              'latitude': 10.2952,
+              'longitude': 123.8962,
+              'location_address': 'Leon Kilat St, Barangay Kalubihan, Cebu City',
+              'status': 'resolved',
+              'created_at':
+                  anchor.subtract(const Duration(days: 3)).toIso8601String(),
+              'resolved_at':
+                  anchor.subtract(const Duration(days: 2)).toIso8601String(),
+            },
+            // One active Low Roadwork report in Kalubihan -> Primary threat should be Roadwork, highSeverityCount == 0
+            {
+              'reportID': 'h3',
+              'hazard_category': 'Roadwork',
+              'severity_level': 'Low',
+              'confidence': 75,
+              'latitude': 10.2959,
+              'longitude': 123.8969,
+              'location_address': 'Kalubihan, Cebu City',
+              'status': 'active',
+              'created_at':
+                  anchor.subtract(const Duration(hours: 4)).toIso8601String(),
+            },
+            // Resolved-only barangay (Lahug) should keep fallback topCategory and highSeverityCount == 0
+            {
+              'reportID': 'h4',
+              'hazard_category': 'Pothole',
+              'severity_level': 'High',
+              'confidence': 85,
+              'latitude': 10.3311,
+              'longitude': 123.9021,
+              'location_address': 'Gorordo Ave, lahug, Cebu City',
+              'status': 'resolved',
+              'created_at':
+                  anchor.subtract(const Duration(days: 1)).toIso8601String(),
+              'resolved_at':
+                  anchor.subtract(const Duration(hours: 6)).toIso8601String(),
+            },
+          ],
+          resolutions: const <Map<String, dynamic>>[],
+        );
+
+        final analytics = snapshot.compute(
+          timeframe: AnalyticsTimeframe.allTime,
+          now: anchor,
+        );
+
+        final flooding =
+            analytics.topCategories.firstWhere((c) => c.category == 'Flooding');
+        expect(flooding.activeCount, 0);
+        expect(flooding.highSeverityCount, 0);
+
+        final roadwork =
+            analytics.topCategories.firstWhere((c) => c.category == 'Roadwork');
+        expect(roadwork.activeCount, 1);
+        expect(roadwork.highSeverityCount, 0);
+
+        final kalubihan = analytics.topHotspots
+            .firstWhere((h) => h.areaLabel == 'Barangay Kalubihan');
+        expect(kalubihan.activeCount, 1);
+        expect(kalubihan.highSeverityCount, 0);
+        expect(kalubihan.topCategory, 'Roadwork');
+
+        final lahug = analytics.topHotspots
+            .firstWhere((h) => h.areaLabel == 'Barangay Lahug');
+        expect(lahug.activeCount, 0);
+        expect(lahug.highSeverityCount, 0);
+        expect(lahug.topCategory, 'Pothole');
+      },
+    );
   });
 
   group('Admin Analytics UI Widget Tests', () {
@@ -415,6 +511,8 @@ void main() {
             findsOneWidget,
           );
           expect(find.textContaining('total'), findsNothing);
+          expect(find.textContaining('0 active'), findsNothing);
+          expect(find.text('Pothole'), findsNothing);
           expect(tester.takeException(), isNull);
         }
         await tester.binding.setSurfaceSize(null);
@@ -448,6 +546,9 @@ void main() {
         expect(find.text('Top Hazard Hotspots by Barangay'), findsOneWidget);
         expect(find.text('AI Screening & Community Clearances'), findsOneWidget);
         expect(find.text('Barangay Kalubihan'), findsOneWidget);
+        expect(find.text('Barangay Capitol Site'), findsNothing);
+        expect(find.text('Pothole'), findsNothing);
+        expect(find.textContaining('0 active'), findsNothing);
         expect(find.textContaining('active /'), findsNothing);
         expect(find.textContaining('cleared ·'), findsNothing);
 
@@ -458,6 +559,63 @@ void main() {
         await tester.tap(find.text('Last 7 days'));
         await tester.pumpAndSettle();
         expect(find.text('25%'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'AdminAnalyticsScreen and AdminDashboardScreen hide 0-active rows cleanly when no hazards are active',
+      (tester) async {
+        final anchor = DateTime.now();
+        final resolvedOnlySnapshot = AdminAnalyticsRawSnapshot(
+          reports: <Map<String, dynamic>>[
+            {
+              'reportID': 'ro1',
+              'hazard_category': 'Flooding',
+              'severity_level': 'High',
+              'confidence': 91,
+              'latitude': 10.2951,
+              'longitude': 123.8961,
+              'location_address': 'Barangay Kalubihan, Cebu City',
+              'status': 'resolved',
+              'created_at':
+                  anchor.subtract(const Duration(days: 2)).toIso8601String(),
+              'resolved_at':
+                  anchor.subtract(const Duration(days: 1)).toIso8601String(),
+            },
+          ],
+          resolutions: const <Map<String, dynamic>>[],
+        );
+
+        await tester.binding.setSurfaceSize(const Size(390, 844));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: AdminDashboardScreen(
+              analyticsLoader: () async => resolvedOnlySnapshot,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Top Hazard Categories'), findsNothing);
+        expect(find.textContaining('Top hotspot:'), findsNothing);
+        expect(find.textContaining('0 active'), findsNothing);
+        expect(tester.takeException(), isNull);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: AdminAnalyticsScreen(
+              initialSnapshot: resolvedOnlySnapshot,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.textContaining('0 active'), findsNothing);
+        expect(find.text('Barangay Kalubihan'), findsNothing);
+        expect(find.textContaining('No active'), findsAtLeastNWidgets(2));
         expect(tester.takeException(), isNull);
       },
     );
