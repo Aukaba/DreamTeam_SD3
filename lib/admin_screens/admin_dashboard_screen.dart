@@ -3,13 +3,16 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../services/admin_analytics_service.dart';
 import 'admin_reports_screen.dart';
 import 'admin_profile_screen.dart';
 import 'admin_settings_screens.dart';
 import 'admin_report_detail_modal.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
-  const AdminDashboardScreen({super.key});
+  final Future<AdminAnalyticsRawSnapshot> Function()? analyticsLoader;
+
+  const AdminDashboardScreen({super.key, this.analyticsLoader});
 
   @override
   State<AdminDashboardScreen> createState() => _AdminDashboardScreenState();
@@ -24,9 +27,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   bool _isLoadingReportsToday = true;
   int? _verifiedThisWeekCount;
   bool _isLoadingVerifiedThisWeek = true;
-  int? _reportsVerifiedPercent;
-  int? _reportsWithin1HrPercent;
-  bool _isLoadingAreasCovered = true;
+  AdminAnalyticsRawSnapshot? _analyticsSnapshot;
+  AdminSafetyAnalytics _analytics = AdminSafetyAnalytics.empty();
+  bool _isLoadingAnalytics = true;
   List<AdminReportItem> _latestReports = <AdminReportItem>[];
   bool _isLoadingReports = true;
 
@@ -43,7 +46,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       _fetchOverallReportsCount(),
       _fetchReportsTodayCount(),
       _fetchVerifiedThisWeekCount(),
-      _fetchAreasCoveredAnalytics(),
+      _fetchSafetyAnalytics(),
     ]);
   }
 
@@ -217,84 +220,26 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     return (_verifiedThisWeekCount ?? 0).toString();
   }
 
-  Future<void> _fetchAreasCoveredAnalytics() async {
+  Future<void> _fetchSafetyAnalytics() async {
     try {
-      final client = Supabase.instance.client;
-      final dynamic rawData = await client
-          .from('ReportTable')
-          .select('created_at, verified_at, status');
+      final snapshot = widget.analyticsLoader != null
+          ? await widget.analyticsLoader!()
+          : await const AdminAnalyticsService().fetchRawSnapshot();
+      final computed = snapshot.compute(
+        timeframe: AnalyticsTimeframe.allTime,
+      );
 
-      if (rawData is List) {
-        final total = rawData.length;
-        int verified = 0;
-        int within1Hr = 0;
-
-        for (final item in rawData) {
-          if (item is Map<String, dynamic>) {
-            final status = item['status']?.toString().toLowerCase().trim();
-            final rawVerifiedAt = item['verified_at']?.toString().trim();
-            final rawCreatedAt = item['created_at']?.toString().trim();
-
-            final isVerified = status == 'active' ||
-                status == 'resolved' ||
-                status == 'archived' ||
-                (rawVerifiedAt != null && rawVerifiedAt.isNotEmpty);
-
-            if (isVerified) {
-              verified++;
-              if (rawCreatedAt != null &&
-                  rawCreatedAt.isNotEmpty &&
-                  rawVerifiedAt != null &&
-                  rawVerifiedAt.isNotEmpty) {
-                final created = DateTime.tryParse(rawCreatedAt);
-                final verifiedAt = DateTime.tryParse(rawVerifiedAt);
-                if (created != null && verifiedAt != null) {
-                  final diff = verifiedAt.difference(created);
-                  if (!diff.isNegative && diff.inMinutes <= 60) {
-                    within1Hr++;
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        final verifiedPct = total > 0 ? ((verified / total) * 100).round() : 0;
-        final within1HrPct =
-            verified > 0 ? ((within1Hr / verified) * 100).round() : 0;
-
-        if (!mounted) return;
-        setState(() {
-          _reportsVerifiedPercent = verifiedPct;
-          _reportsWithin1HrPercent = within1HrPct;
-          _isLoadingAreasCovered = false;
-        });
-      }
-    } catch (e) {
-      debugPrint('Error fetching areas covered analytics: $e');
       if (!mounted) return;
-      setState(() => _isLoadingAreasCovered = false);
+      setState(() {
+        _analyticsSnapshot = snapshot;
+        _analytics = computed;
+        _isLoadingAnalytics = false;
+      });
+    } catch (e) {
+      debugPrint('Error fetching safety analytics: $e');
+      if (!mounted) return;
+      setState(() => _isLoadingAnalytics = false);
     }
-  }
-
-  String get _reportsVerifiedDisplay {
-    if (_isLoadingAreasCovered) return '...';
-    return '${_reportsVerifiedPercent ?? 0}%';
-  }
-
-  String get _reportsWithin1HrDisplay {
-    if (_isLoadingAreasCovered) return '...';
-    return '${_reportsWithin1HrPercent ?? 0}%';
-  }
-
-  double get _reportsVerifiedProgress {
-    if (_isLoadingAreasCovered) return 0.0;
-    return ((_reportsVerifiedPercent ?? 0) / 100.0).clamp(0.0, 1.0);
-  }
-
-  double get _reportsWithin1HrProgress {
-    if (_isLoadingAreasCovered) return 0.0;
-    return ((_reportsWithin1HrPercent ?? 0) / 100.0).clamp(0.0, 1.0);
   }
 
   String get _activeUsersDisplay {
@@ -347,7 +292,14 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          _buildSafeRouteLogo(isDesktop: isDesktop),
+                          Flexible(
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerLeft,
+                              child: _buildSafeRouteLogo(isDesktop: isDesktop),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
                           _buildHeaderIcons(
                             isTablet: isTablet,
                             context: context,
@@ -381,7 +333,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                         isDesktop: isDesktop,
                       ),
                       SizedBox(height: verticalSpacing),
-                      _buildAreasCoveredSection(
+                      _buildSafetyAnalyticsSection(
                         context: context,
                         isSmallScreen: isSmallScreen,
                         isMediumScreen: isMediumScreen,
@@ -870,20 +822,142 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     );
   }
 
-  Widget _buildAreasCoveredSection({
+  Widget _buildSafetyAnalyticsSection({
     required BuildContext context,
     required bool isSmallScreen,
     required bool isMediumScreen,
     required bool isTablet,
     required bool isDesktop,
   }) {
-    final padding = isDesktop ? 32.0 : (isTablet ? 24.0 : (isSmallScreen ? 12.0 : 16.0));
+    final padding =
+        isDesktop ? 32.0 : (isTablet ? 24.0 : (isSmallScreen ? 12.0 : 16.0));
     final spacing = isDesktop ? 24.0 : (isTablet ? 20.0 : 16.0);
-    final innerSpacing = isDesktop ? 16.0 : 12.0;
+    final innerSpacing = isDesktop ? 14.0 : 10.0;
 
-    // Colors shared by the ring and the legend so they always match.
     const navy = Color(0xFF1F3A5F);
-    const teal = Color(0xFF61B5AB);
+    const highRiskColor = Color(0xFFDC2626);
+    const mediumRiskColor = Color(0xFFF59E0B);
+    const lowRiskColor = Color(0xFF10B981);
+
+    final activeTotal = _analytics.activeHazardsCount;
+    final String activeCountLabel =
+        _isLoadingAnalytics ? '...' : '$activeTotal';
+
+    String formatSeverityValue(int count) {
+      if (_isLoadingAnalytics) return '...';
+      if (activeTotal == 0) return '0';
+      final pct = ((count / activeTotal) * 100).round();
+      return '$count ($pct%)';
+    }
+
+    final riskBadgeColor = activeTotal == 0
+        ? const Color(0xFFE8F7F0)
+        : (_analytics.activeHighCount > 0
+            ? const Color(0xFFFEE2E2)
+            : const Color(0xFFFEF3C7));
+    final riskBadgeTextColor = activeTotal == 0
+        ? const Color(0xFF047857)
+        : (_analytics.activeHighCount > 0
+            ? const Color(0xFFB91C1C)
+            : const Color(0xFFB45309));
+
+    final topCategories = _analytics.topCategories.take(3).toList();
+    final topHotspot =
+        _analytics.topHotspots.isNotEmpty ? _analytics.topHotspots.first : null;
+
+    void openFullAnalytics() {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => AdminAnalyticsScreen(
+            initialSnapshot: _analyticsSnapshot,
+          ),
+        ),
+      ).then((_) => _fetchDashboardData());
+    }
+
+    Widget buildSeverityBreakdownColumn() {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Active hazard severity',
+            style: GoogleFonts.inter(
+              color: navy,
+              fontSize: isDesktop ? 18 : (isTablet ? 16 : 14),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          SizedBox(height: innerSpacing),
+          _LegendItem(
+            color: highRiskColor,
+            label: 'High severity',
+            value: formatSeverityValue(_analytics.activeHighCount),
+            isSmallScreen: isSmallScreen,
+            isTablet: isTablet,
+            isDesktop: isDesktop,
+          ),
+          SizedBox(height: innerSpacing * 0.75),
+          _LegendItem(
+            color: mediumRiskColor,
+            label: 'Medium severity',
+            value: formatSeverityValue(_analytics.activeMediumCount),
+            isSmallScreen: isSmallScreen,
+            isTablet: isTablet,
+            isDesktop: isDesktop,
+          ),
+          SizedBox(height: innerSpacing * 0.75),
+          _LegendItem(
+            color: lowRiskColor,
+            label: 'Low severity',
+            value: formatSeverityValue(_analytics.activeLowCount),
+            isSmallScreen: isSmallScreen,
+            isTablet: isTablet,
+            isDesktop: isDesktop,
+          ),
+        ],
+      );
+    }
+
+    final clearedPill = _AnalyticsMetricPill(
+      label: 'Cleared Rate',
+      value: _isLoadingAnalytics
+          ? '...'
+          : (_analytics.hasResolutionDenominator
+              ? '${_analytics.resolutionRatePercent}%'
+              : '—'),
+      sublabel: _isLoadingAnalytics
+          ? 'Resolved vs active'
+          : '${_analytics.resolvedReportsAllTime} resolved',
+      accentColor: const Color(0xFF0F766E),
+      bgColor: const Color(0xFFE8F7F0),
+    );
+
+    final reviewQueuePill = InkWell(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => const AdminReportsScreen(),
+          ),
+        ).then((_) => _fetchDashboardData());
+      },
+      borderRadius: BorderRadius.circular(14),
+      child: _AnalyticsMetricPill(
+        label: 'Review Queue',
+        value: _isLoadingAnalytics ? '...' : '${_analytics.totalActionQueue}',
+        sublabel: _isLoadingAnalytics
+            ? 'Pending triage'
+            : '${_analytics.pendingReportsCount} new · ${_analytics.pendingResolutionProofsCount} clear',
+        accentColor: _analytics.totalActionQueue > 0
+            ? const Color(0xFFB45309)
+            : navy,
+        bgColor: _analytics.totalActionQueue > 0
+            ? const Color(0xFFFFF1E6)
+            : const Color(0xFFF8FAFC),
+      ),
+    );
 
     return Container(
       width: double.infinity,
@@ -913,14 +987,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             iconColor: const Color(0xFFEEF4F8),
             label: 'ANALYTICS',
             showViewAll: true,
-            onViewAll: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => const AdminAnalyticsScreen(),
-                ),
-              );
-            },
+            onViewAll: openFullAnalytics,
             isSmallScreen: isSmallScreen,
             isTablet: isTablet,
             isDesktop: isDesktop,
@@ -928,112 +995,204 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             iconSizeMultiplier: 1.3,
           ),
           SizedBox(height: spacing),
-          Text(
-            'Areas covered.',
-            style: GoogleFonts.inter(
-              color: navy,
-              fontSize: isDesktop ? 28 : (isTablet ? 24 : (isSmallScreen ? 18 : 20)),
-              fontWeight: FontWeight.w700,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Hazard operations.',
+                  style: GoogleFonts.inter(
+                    color: navy,
+                    fontSize: isDesktop
+                        ? 28
+                        : (isTablet ? 24 : (isSmallScreen ? 18 : 20)),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 5,
+                ),
+                decoration: BoxDecoration(
+                  color: riskBadgeColor,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: riskBadgeTextColor,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      _isLoadingAnalytics
+                          ? 'Loading'
+                          : _analytics.overallRiskLabel,
+                      style: GoogleFonts.inter(
+                        color: riskBadgeTextColor,
+                        fontSize: isSmallScreen ? 10 : 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
           SizedBox(height: spacing),
           if (isSmallScreen)
             Column(
               children: [
-                _DualCircularProgress(
-                  percentage: _reportsVerifiedDisplay,
-                  verifiedProgress: _reportsVerifiedProgress,
-                  within1HrProgress: _reportsWithin1HrProgress,
+                _HazardSeverityDonut(
+                  centerValue: activeCountLabel,
+                  centerSubtitle: activeTotal == 0 && !_isLoadingAnalytics
+                      ? 'all clear'
+                      : 'active',
+                  highCount: _analytics.activeHighCount,
+                  mediumCount: _analytics.activeMediumCount,
+                  lowCount: _analytics.activeLowCount,
                   isSmallScreen: true,
                   isTablet: false,
                   isDesktop: false,
                 ),
                 SizedBox(height: spacing),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Analytics',
-                      style: GoogleFonts.inter(
-                        color: navy,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    SizedBox(height: innerSpacing),
-                    _LegendItem(
-                      color: navy,
-                      label: 'Reports verified',
-                      value: _reportsVerifiedDisplay,
-                      isSmallScreen: true,
-                      isTablet: false,
-                      isDesktop: false,
-                    ),
-                    SizedBox(height: innerSpacing),
-                    _LegendItem(
-                      color: teal,
-                      label: 'Reports within 1 hr',
-                      value: _reportsWithin1HrDisplay,
-                      isSmallScreen: true,
-                      isTablet: false,
-                      isDesktop: false,
-                    ),
-                  ],
-                ),
+                buildSeverityBreakdownColumn(),
               ],
             )
           else
             Row(
-              mainAxisSize: MainAxisSize.min,
               mainAxisAlignment: MainAxisAlignment.start,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                _DualCircularProgress(
-                  percentage: _reportsVerifiedDisplay,
-                  verifiedProgress: _reportsVerifiedProgress,
-                  within1HrProgress: _reportsWithin1HrProgress,
+                _HazardSeverityDonut(
+                  centerValue: activeCountLabel,
+                  centerSubtitle: activeTotal == 0 && !_isLoadingAnalytics
+                      ? 'all clear'
+                      : 'active',
+                  highCount: _analytics.activeHighCount,
+                  mediumCount: _analytics.activeMediumCount,
+                  lowCount: _analytics.activeLowCount,
                   isSmallScreen: false,
                   isTablet: isTablet,
                   isDesktop: isDesktop,
                 ),
                 SizedBox(width: spacing),
-                Expanded(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    mainAxisAlignment: MainAxisAlignment.start,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Analytics',
-                        style: GoogleFonts.inter(
-                          color: navy,
-                          fontSize: isDesktop ? 20 : (isTablet ? 18 : 15),
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      SizedBox(height: innerSpacing),
-                      _LegendItem(
-                        color: navy,
-                        label: 'Reports verified',
-                        value: _reportsVerifiedDisplay,
-                        isSmallScreen: false,
-                        isTablet: isTablet,
-                        isDesktop: isDesktop,
-                      ),
-                      SizedBox(height: innerSpacing),
-                      _LegendItem(
-                        color: teal,
-                        label: 'Reports within 1 hr',
-                        value: _reportsWithin1HrDisplay,
-                        isSmallScreen: false,
-                        isTablet: isTablet,
-                        isDesktop: isDesktop,
-                      ),
-                    ],
+                Expanded(child: buildSeverityBreakdownColumn()),
+              ],
+            ),
+          SizedBox(height: spacing),
+          // Symmetric operational health & triage queue row
+          Row(
+            children: [
+              Expanded(child: clearedPill),
+              SizedBox(width: isSmallScreen ? 8 : 12),
+              Expanded(child: reviewQueuePill),
+            ],
+          ),
+          if (topCategories.isNotEmpty) ...[
+            SizedBox(height: spacing),
+            const Divider(height: 1, color: Color(0xFFE6EDF5)),
+            SizedBox(height: innerSpacing),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Flexible(
+                  child: Text(
+                    'Top Hazard Categories',
+                    style: GoogleFonts.inter(
+                      color: navy,
+                      fontSize: isSmallScreen ? 12.5 : 13.5,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF0F4F8),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    '7d: ${_analytics.sevenDayReportedTotal} new · ${_analytics.sevenDayResolvedTotal} cleared',
+                    style: GoogleFonts.inter(
+                      color: navy,
+                      fontSize: isSmallScreen ? 10 : 11,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ],
             ),
+            const SizedBox(height: 10),
+            for (var i = 0; i < topCategories.length; i++) ...[
+              if (i > 0) const SizedBox(height: 8),
+              _CategoryMiniBar(
+                stat: topCategories[i],
+                maxTotal: topCategories.first.totalCount,
+                barColor: topCategories[i].highSeverityCount > 0
+                    ? navy
+                    : const Color(0xFF61B5AB),
+              ),
+            ],
+          ],
+          if (topHotspot != null) ...[
+            SizedBox(height: innerSpacing),
+            InkWell(
+              onTap: openFullAnalytics,
+              borderRadius: BorderRadius.circular(14),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFFE6EDF5)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.location_on_outlined,
+                      size: 16,
+                      color: Color(0xFFDC2626),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Top hotspot: ${topHotspot.areaLabel} (${topHotspot.activeCount} active · ${topHotspot.totalCount} total)',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.inter(
+                          color: navy,
+                          fontSize: isSmallScreen ? 11 : 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    const Icon(
+                      Icons.chevron_right_rounded,
+                      size: 18,
+                      color: Color(0xFF5B6B7A),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -1055,42 +1214,45 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          mainAxisAlignment: MainAxisAlignment.start,
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Container(
-              width: (isDesktop ? 44 : (isTablet ? 36 : (isSmallScreen ? 24 : 28))) * iconSizeMultiplier,
-              height: (isDesktop ? 44 : (isTablet ? 36 : (isSmallScreen ? 24 : 28))) * iconSizeMultiplier,
-              decoration: BoxDecoration(
-                color: iconColor,
-                shape: BoxShape.circle,
-              ),
-              child: icon != null
-                  ? Icon(
-                      icon,
-                      size: (isDesktop ? 22 : (isTablet ? 18 : (isSmallScreen ? 12 : 14))) * iconSizeMultiplier,
-                      color: const Color(0xFF1F3A5F),
-                    )
-                  : null,
-            ),
-            SizedBox(width: isDesktop ? 14 : (isTablet ? 12 : (isSmallScreen ? 8 : 10))),
-            Flexible(
-              child: Text(
-                label,
-                style: GoogleFonts.inter(
-                  color: const Color(0xFF1F3A5F),
-                  fontSize: isDesktop ? 15 : (isTablet ? 13 : (isSmallScreen ? 10 : 11)),
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.60,
+        Expanded(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Container(
+                width: (isDesktop ? 44 : (isTablet ? 36 : (isSmallScreen ? 24 : 28))) * iconSizeMultiplier,
+                height: (isDesktop ? 44 : (isTablet ? 36 : (isSmallScreen ? 24 : 28))) * iconSizeMultiplier,
+                decoration: BoxDecoration(
+                  color: iconColor,
+                  shape: BoxShape.circle,
                 ),
-                overflow: TextOverflow.ellipsis,
+                child: icon != null
+                    ? Icon(
+                        icon,
+                        size: (isDesktop ? 22 : (isTablet ? 18 : (isSmallScreen ? 12 : 14))) * iconSizeMultiplier,
+                        color: const Color(0xFF1F3A5F),
+                      )
+                    : null,
               ),
-            ),
-          ],
+              SizedBox(width: isDesktop ? 14 : (isTablet ? 12 : (isSmallScreen ? 8 : 10))),
+              Flexible(
+                child: Text(
+                  label,
+                  style: GoogleFonts.inter(
+                    color: const Color(0xFF1F3A5F),
+                    fontSize: isDesktop ? 15 : (isTablet ? 13 : (isSmallScreen ? 10 : 11)),
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.60,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
         ),
-        if (showViewAll)
+        if (showViewAll) ...[
+          const SizedBox(width: 8),
           InkWell(
             onTap: onViewAll,
             borderRadius: BorderRadius.circular(8),
@@ -1117,6 +1279,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               ),
             ),
           ),
+        ],
       ],
     );
   }
@@ -1515,53 +1678,24 @@ class _ReportItem extends StatelessWidget {
   }
 }
 
-/// Kept with its exact original fields for Flutter hot reload compatibility:
-// ignore: unused_element
-class _CircularProgress extends StatelessWidget {
-  final String percentage;
-  final double progress; // 0.0 - 1.0
+/// Segmented donut showing active road hazards grouped by severity
+/// (High = Red, Medium = Amber, Low = Emerald) with center active count.
+class _HazardSeverityDonut extends StatelessWidget {
+  final String centerValue;
+  final String centerSubtitle;
+  final int highCount;
+  final int mediumCount;
+  final int lowCount;
   final bool isSmallScreen;
   final bool isTablet;
   final bool isDesktop;
 
-  const _CircularProgress({
-    required this.percentage,
-    // ignore: unused_element_parameter
-    this.progress = 0.92,
-    required this.isSmallScreen,
-    required this.isTablet,
-    required this.isDesktop,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return _DualCircularProgress(
-      percentage: percentage,
-      verifiedProgress: progress,
-      within1HrProgress: 0.18,
-      isSmallScreen: isSmallScreen,
-      isTablet: isTablet,
-      isDesktop: isDesktop,
-    );
-  }
-}
-
-/// Dual-ring chart reflecting real Supabase data:
-/// - Outer ring: [verifiedProgress] (Dark Blue / Navy) for Reports Verified.
-/// - Inner ring: [within1HrProgress] (Green / Teal) for Reports within 1 hr.
-/// - Center text: [percentage] (overall verified percentage).
-class _DualCircularProgress extends StatelessWidget {
-  final String percentage;
-  final double verifiedProgress; // 0.0 - 1.0 (Dark Blue)
-  final double within1HrProgress; // 0.0 - 1.0 (Green)
-  final bool isSmallScreen;
-  final bool isTablet;
-  final bool isDesktop;
-
-  const _DualCircularProgress({
-    required this.percentage,
-    required this.verifiedProgress,
-    required this.within1HrProgress,
+  const _HazardSeverityDonut({
+    required this.centerValue,
+    required this.centerSubtitle,
+    required this.highCount,
+    required this.mediumCount,
+    required this.lowCount,
     required this.isSmallScreen,
     required this.isTablet,
     required this.isDesktop,
@@ -1570,11 +1704,11 @@ class _DualCircularProgress extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final size = isDesktop
-        ? 180.0
-        : (isTablet ? 160.0 : (isSmallScreen ? 120.0 : 140.0));
+        ? 168.0
+        : (isTablet ? 148.0 : (isSmallScreen ? 116.0 : 132.0));
     final fontSize = isDesktop
-        ? 34.0
-        : (isTablet ? 30.0 : (isSmallScreen ? 22.0 : 26.0));
+        ? 32.0
+        : (isTablet ? 28.0 : (isSmallScreen ? 22.0 : 26.0));
 
     return SizedBox(
       width: size,
@@ -1584,19 +1718,18 @@ class _DualCircularProgress extends StatelessWidget {
         children: [
           CustomPaint(
             size: Size(size, size),
-            painter: _DualRingPainter(
-              verifiedProgress: verifiedProgress,
-              within1HrProgress: within1HrProgress,
-              verifiedColor: const Color(0xFF1F3A5F), // Dark Blue
-              within1HrColor: const Color(0xFF61B5AB), // Green / Teal
-              trackColor: const Color(0xFFE8EEF2), // Light neutral track
+            painter: _SeverityDonutPainter(
+              highCount: highCount,
+              mediumCount: mediumCount,
+              lowCount: lowCount,
+              trackColor: const Color(0xFFE8EEF2),
             ),
           ),
           Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                percentage,
+                centerValue,
                 textAlign: TextAlign.center,
                 style: GoogleFonts.inter(
                   color: const Color(0xFF1F3A5F),
@@ -1605,9 +1738,9 @@ class _DualCircularProgress extends StatelessWidget {
                   height: 1.0,
                 ),
               ),
-              const SizedBox(height: 2),
+              const SizedBox(height: 3),
               Text(
-                'verified',
+                centerSubtitle,
                 style: GoogleFonts.inter(
                   color: const Color(0xFF7B9BAD),
                   fontSize: isSmallScreen ? 9.5 : 11,
@@ -1622,92 +1755,220 @@ class _DualCircularProgress extends StatelessWidget {
   }
 }
 
-class _DualRingPainter extends CustomPainter {
-  final double verifiedProgress;
-  final double within1HrProgress;
-  final Color verifiedColor;
-  final Color within1HrColor;
+class _SeverityDonutPainter extends CustomPainter {
+  final int highCount;
+  final int mediumCount;
+  final int lowCount;
   final Color trackColor;
 
-  _DualRingPainter({
-    required this.verifiedProgress,
-    required this.within1HrProgress,
-    required this.verifiedColor,
-    required this.within1HrColor,
+  _SeverityDonutPainter({
+    required this.highCount,
+    required this.mediumCount,
+    required this.lowCount,
     required this.trackColor,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = size.center(Offset.zero);
-    final strokeWidth = size.width * 0.088;
-    final ringGap = strokeWidth * 0.35;
+    final strokeWidth = size.width * 0.125;
+    final radius = (size.width - strokeWidth) / 2;
+    final rect = Rect.fromCircle(center: center, radius: radius);
 
     final trackPaint = Paint()
       ..color = trackColor
       ..style = PaintingStyle.stroke
       ..strokeWidth = strokeWidth;
+    canvas.drawCircle(center, radius, trackPaint);
 
-    // 1. Outer Ring: Reports Verified (Dark Blue)
-    final outerRadius = (size.width - strokeWidth) / 2;
-    final outerRect = Rect.fromCircle(center: center, radius: outerRadius);
+    final total = highCount + mediumCount + lowCount;
+    if (total <= 0) {
+      final clearPaint = Paint()
+        ..color = const Color(0xFF10B981).withValues(alpha: 0.35)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = strokeWidth;
+      canvas.drawCircle(center, radius, clearPaint);
+      return;
+    }
 
-    // Draw outer background track
-    canvas.drawCircle(center, outerRadius, trackPaint);
+    final segments = <(int, Color)>[
+      (highCount, const Color(0xFFDC2626)),
+      (mediumCount, const Color(0xFFF59E0B)),
+      (lowCount, const Color(0xFF10B981)),
+    ].where((s) => s.$1 > 0).toList();
 
-    if (verifiedProgress > 0) {
-      final verifiedPaint = Paint()
-        ..color = verifiedColor
+    final double gapRad = segments.length > 1 ? 0.06 : 0.0;
+    final double totalGap = gapRad * segments.length;
+    final double usableArc = (2 * math.pi) - totalGap;
+
+    double startAngle = -math.pi / 2;
+    for (final seg in segments) {
+      final double sweep = usableArc * (seg.$1 / total);
+      final paint = Paint()
+        ..color = seg.$2
         ..style = PaintingStyle.stroke
         ..strokeWidth = strokeWidth
         ..strokeCap = StrokeCap.round;
 
-      final double outerSweep =
-          (2 * math.pi * verifiedProgress.clamp(0.0, 1.0)).toDouble();
       canvas.drawArc(
-        outerRect,
-        -math.pi / 2,
-        outerSweep,
+        rect,
+        startAngle + (gapRad / 2),
+        math.max(0.02, sweep),
         false,
-        verifiedPaint,
+        paint,
       );
-    }
-
-    // 2. Inner Ring: Reports within 1 hr (Green)
-    final innerRadius = outerRadius - strokeWidth - ringGap;
-    if (innerRadius > 0) {
-      final innerRect = Rect.fromCircle(center: center, radius: innerRadius);
-
-      // Draw inner background track
-      canvas.drawCircle(center, innerRadius, trackPaint);
-
-      if (within1HrProgress > 0) {
-        final within1HrPaint = Paint()
-          ..color = within1HrColor
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = strokeWidth
-          ..strokeCap = StrokeCap.round;
-
-        final double innerSweep =
-            (2 * math.pi * within1HrProgress.clamp(0.0, 1.0)).toDouble();
-        canvas.drawArc(
-          innerRect,
-          -math.pi / 2,
-          innerSweep,
-          false,
-          within1HrPaint,
-        );
-      }
+      startAngle += sweep + gapRad;
     }
   }
 
   @override
-  bool shouldRepaint(covariant _DualRingPainter old) =>
-      old.verifiedProgress != verifiedProgress ||
-      old.within1HrProgress != within1HrProgress ||
-      old.verifiedColor != verifiedColor ||
-      old.within1HrColor != within1HrColor ||
+  bool shouldRepaint(covariant _SeverityDonutPainter old) =>
+      old.highCount != highCount ||
+      old.mediumCount != mediumCount ||
+      old.lowCount != lowCount ||
       old.trackColor != trackColor;
+}
+
+class _AnalyticsMetricPill extends StatelessWidget {
+  final String label;
+  final String value;
+  final String sublabel;
+  final Color accentColor;
+  final Color bgColor;
+
+  const _AnalyticsMetricPill({
+    required this.label,
+    required this.value,
+    required this.sublabel,
+    required this.accentColor,
+    required this.bgColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE6EDF5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.inter(
+              color: const Color(0xFF5B6B7A),
+              fontSize: 10.5,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.inter(
+              color: accentColor,
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            sublabel,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.inter(
+              color: const Color(0xFF7B8794),
+              fontSize: 10,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CategoryMiniBar extends StatelessWidget {
+  final HazardCategoryStat stat;
+  final int maxTotal;
+  final Color barColor;
+
+  const _CategoryMiniBar({
+    required this.stat,
+    required this.maxTotal,
+    required this.barColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final double ratio =
+        maxTotal > 0 ? (stat.totalCount / maxTotal).clamp(0.08, 1.0) : 0.0;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                stat.category,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.inter(
+                  color: const Color(0xFF1F3A5F),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              stat.activeCount > 0
+                  ? '${stat.activeCount} active · ${stat.totalCount} total'
+                  : '${stat.totalCount} total',
+              style: GoogleFonts.inter(
+                color: const Color(0xFF5B6B7A),
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 5),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(999),
+          child: SizedBox(
+            height: 7,
+            child: Stack(
+              children: [
+                Container(
+                  width: double.infinity,
+                  color: const Color(0xFFE8EEF2),
+                ),
+                FractionallySizedBox(
+                  widthFactor: ratio,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: barColor,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _LegendItem extends StatelessWidget {
@@ -1729,12 +1990,12 @@ class _LegendItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dotSize = isDesktop ? 14.0 : (isTablet ? 12.0 : (isSmallScreen ? 8.0 : 10.0));
-    final spacing = isDesktop ? 14.0 : (isTablet ? 12.0 : (isSmallScreen ? 8.0 : 10.0));
-    final fontSize = isDesktop ? 13.0 : (isTablet ? 12.0 : (isSmallScreen ? 10.0 : 11.0));
+    final dotSize = isDesktop ? 12.0 : (isTablet ? 11.0 : (isSmallScreen ? 8.0 : 10.0));
+    final spacing = isDesktop ? 12.0 : (isTablet ? 10.0 : (isSmallScreen ? 6.0 : 8.0));
+    final fontSize = isDesktop ? 13.0 : (isTablet ? 12.0 : (isSmallScreen ? 10.5 : 11.5));
 
     return Row(
-      mainAxisSize: MainAxisSize.min,
+      mainAxisSize: MainAxisSize.max,
       mainAxisAlignment: MainAxisAlignment.start,
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
@@ -1750,10 +2011,12 @@ class _LegendItem extends StatelessWidget {
         Expanded(
           child: Text(
             label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: GoogleFonts.inter(
               color: const Color(0xFF5B6B7A),
               fontSize: fontSize,
-              fontWeight: FontWeight.w400,
+              fontWeight: FontWeight.w500,
             ),
           ),
         ),
