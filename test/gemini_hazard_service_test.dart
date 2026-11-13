@@ -79,6 +79,42 @@ void main() {
       expect(result.isHazard, isFalse);
       expect(result.errorMessage, contains('plate of pasta'));
     });
+
+    test('tones down High security level to Medium when road is passable or vehicles are driving through', () {
+      final json = {
+        'is_hazard': true,
+        'hazard_category': '🌊 Flood',
+        'security_level': 'High',
+        'is_impassable': false,
+        'title': 'Flooded Roadway',
+        'description': 'A vehicle is driving through a significant amount of standing water covering the road surface.',
+        'error_message': null,
+      };
+
+      final result = GeminiHazardResult.fromAiJson(json, model: 'gemini-3-flash-preview');
+      expect(result.isHazard, isTrue);
+      expect(result.category, HazardCategories.flood);
+      expect(result.securityLevel, HazardSecurityLevels.medium);
+      expect(result.isImpassable, isFalse);
+    });
+
+    test('preserves High security level when road is strictly impassable', () {
+      final json = {
+        'is_hazard': true,
+        'hazard_category': '🌊 Flood',
+        'security_level': 'High',
+        'is_impassable': true,
+        'title': 'Completely Submerged Highway',
+        'description': 'Water levels exceed roof height, road is completely impassable and closed to all vehicles.',
+        'error_message': null,
+      };
+
+      final result = GeminiHazardResult.fromAiJson(json, model: 'gemini-3-flash-preview');
+      expect(result.isHazard, isTrue);
+      expect(result.category, HazardCategories.flood);
+      expect(result.securityLevel, HazardSecurityLevels.high);
+      expect(result.isImpassable, isTrue);
+    });
   });
 
   group('GeminiHazardService API Mock Tests', () {
