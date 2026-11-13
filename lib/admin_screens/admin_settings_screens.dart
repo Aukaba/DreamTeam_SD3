@@ -1164,7 +1164,7 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Top Hazard Hotspots by Area',
+            'Top Hazard Hotspots by Barangay',
             style: GoogleFonts.inter(
               color: _navy,
               fontSize: 16,
@@ -1173,7 +1173,7 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Streets & barangays ranked by active incidents and severe hazard density',
+            'Barangays ranked by active incidents and severe hazard density',
             style: GoogleFonts.inter(color: _muted, fontSize: 12),
           ),
           const SizedBox(height: 16),
@@ -1181,7 +1181,7 @@ class _AdminAnalyticsScreenState extends State<AdminAnalyticsScreen> {
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 12),
               child: Text(
-                'No street-level hotspot addresses recorded in this timeframe yet.',
+                'No barangay-level hotspot data recorded in this timeframe yet.',
                 style: GoogleFonts.inter(color: _muted, fontSize: 13),
               ),
             )

@@ -33,14 +33,14 @@ void main() {
           'verified_at':
               now.subtract(const Duration(hours: 4, minutes: 40)).toIso8601String(),
         },
-        // Active Medium Flooding on Colon Street (verified in 40m)
+        // Active Medium Flooding on Legaspi Street in Barangay Kalubihan (verified in 40m)
         {
           'reportID': 'r2',
           'hazard_category': 'Flooding',
           'detected_hazard': 'Waterlogging',
           'severity_level': 'Medium',
           'confidence': 82,
-          'location_address': 'Colon Street, Cebu City, Philippines',
+          'location_address': 'Legaspi Street, Brgy. Kalubihan, Cebu City, Philippines',
           'status': 'active',
           'created_at': now.subtract(const Duration(days: 1, hours: 3)).toIso8601String(),
           'verified_at':
@@ -158,10 +158,14 @@ void main() {
       expect(analytics.topCategories.first.activeCount, 2);
       expect(analytics.topCategories.first.totalCount, 2);
 
-      // Hotspots extract Colon Street cleanly, ignore "Current location" & raw coords
-      expect(analytics.topHotspots.first.areaLabel, 'Colon Street');
+      // Hotspots group by barangay across multiple streets, ignoring raw coords / placeholders without coords
+      expect(analytics.topHotspots.first.areaLabel, 'Barangay Kalubihan');
       expect(analytics.topHotspots.first.activeCount, 2);
       expect(analytics.topHotspots.first.totalCount, 2);
+      expect(
+        analytics.topHotspots.any((h) => h.areaLabel.contains('Colon Street')),
+        isFalse,
+      );
       expect(
         analytics.topHotspots.any((h) => h.areaLabel.contains('10.3157')),
         isFalse,
@@ -169,6 +173,26 @@ void main() {
       expect(
         analytics.topHotspots.any((h) => h.areaLabel == 'Current location'),
         isFalse,
+      );
+      expect(
+        AdminSafetyAnalytics.extractBarangayLabel(
+          'Colon Street, Cebu City, Philippines',
+        ),
+        isNull,
+      );
+      expect(
+        AdminSafetyAnalytics.extractBarangayLabel(
+          'Gorordo Ave, Camputhaw, Cebu City',
+        ),
+        'Barangay Kamputhaw',
+      );
+      expect(
+        AdminSafetyAnalytics.extractBarangayLabel(
+          'Current Location',
+          latitude: 10.2972,
+          longitude: 123.8982,
+        ),
+        'Barangay Kalubihan',
       );
 
       // AI confidence buckets (>=80: 3, 50..79: 2, <50: 2)
@@ -329,9 +353,9 @@ void main() {
             allTime.topCategories.firstWhere((c) => c.category == 'Flooding');
         expect(floodingStat.activeCount, 2); // (d1/d2) + d3
 
-        final colonHotspot =
-            allTime.topHotspots.firstWhere((h) => h.areaLabel == 'Colon Street');
-        expect(colonHotspot.activeCount, 2); // (d1/d2 flooding) + d4 roadwork
+        final kalubihanHotspot = allTime.topHotspots
+            .firstWhere((h) => h.areaLabel == 'Barangay Kalubihan');
+        expect(kalubihanHotspot.activeCount, 2); // (d1/d2 flooding) + d4 roadwork
 
         // Live queue takes max(proofsPendingAllTime=1, fallbackPendingResolutions=2) = 2
         expect(allTime.pendingResolutionProofsCount, 2);
@@ -386,7 +410,10 @@ void main() {
           expect(find.text('Review Queue'), findsOneWidget);
           expect(find.text('Median Verify'), findsNothing);
           expect(find.text('Top Hazard Categories'), findsOneWidget);
-          expect(find.text('Top hotspot: Colon Street (2 active)'), findsOneWidget);
+          expect(
+            find.text('Top hotspot: Barangay Kalubihan (2 active)'),
+            findsOneWidget,
+          );
           expect(find.textContaining('total'), findsNothing);
           expect(tester.takeException(), isNull);
         }
@@ -418,9 +445,9 @@ void main() {
         expect(find.text('Clearance Time'), findsOneWidget);
         expect(find.textContaining('Median verify'), findsNothing);
         expect(find.text('7-Day Incident & Clearance Trend'), findsOneWidget);
-        expect(find.text('Top Hazard Hotspots by Area'), findsOneWidget);
+        expect(find.text('Top Hazard Hotspots by Barangay'), findsOneWidget);
         expect(find.text('AI Screening & Community Clearances'), findsOneWidget);
-        expect(find.text('Colon Street'), findsOneWidget);
+        expect(find.text('Barangay Kalubihan'), findsOneWidget);
         expect(find.textContaining('active /'), findsNothing);
         expect(find.textContaining('cleared ·'), findsNothing);
 

@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'cebu_landmark_service.dart';
 import 'hazard_report_service.dart';
 
 /// Timeframe windows supported on the full Admin Analytics screen.
@@ -446,8 +447,12 @@ class AdminSafetyAnalytics {
         if (status == HazardReportStatuses.resolved) catEntry.resolved++;
         if (severity == HazardSeverityBucket.high) catEntry.highSeverity++;
 
-        // Area hotspot aggregation
-        final areaLabel = extractAreaLabel(row['location_address']?.toString());
+        // Barangay hotspot aggregation
+        final areaLabel = extractBarangayLabel(
+          row['location_address']?.toString(),
+          latitude: lat,
+          longitude: lng,
+        );
         if (areaLabel != null) {
           final spot = hotspotAcc.putIfAbsent(
             areaLabel.toLowerCase(),
@@ -621,59 +626,292 @@ class AdminSafetyAnalytics {
     );
   }
 
-  /// Extracts a clean street/barangay area label from a raw address string,
-  /// filtering out generic placeholders and raw lat/lng pairs.
-  static String? extractAreaLabel(String? rawAddress) {
-    final trimmed = rawAddress?.trim() ?? '';
-    if (trimmed.isEmpty) return null;
+  /// Supplemental downtown/urban Cebu City barangays not listed as standalone
+  /// centroids in [CebuLandmarkService.landmarks].
+  static const Map<String, ({double lat, double lng, String name})>
+      _supplementalBarangays = {
+    'kalubihan': (lat: 10.2972, lng: 123.8982, name: 'Barangay Kalubihan'),
+    'santo nino': (lat: 10.2943, lng: 123.9016, name: 'Barangay Santo Niño'),
+    'san antonio': (lat: 10.3005, lng: 123.8998, name: 'Barangay San Antonio'),
+    'day-as': (lat: 10.3045, lng: 123.9005, name: 'Barangay Day-as'),
+    'cogon ramos': (lat: 10.3075, lng: 123.8988, name: 'Barangay Cogon Ramos'),
+    'kamagayan': (lat: 10.3025, lng: 123.8972, name: 'Barangay Kamagayan'),
+    'san roque': (lat: 10.2958, lng: 123.9045, name: 'Barangay San Roque'),
+    'kalunasan': (lat: 10.3300, lng: 123.8780, name: 'Barangay Kalunasan'),
+    'luz': (lat: 10.3185, lng: 123.9055, name: 'Barangay Luz'),
+    'hipodromo': (lat: 10.3155, lng: 123.9095, name: 'Barangay Hipodromo'),
+    'carreta': (lat: 10.3085, lng: 123.9115, name: 'Barangay Carreta'),
+    'duljo fatima': (lat: 10.2895, lng: 123.8830, name: 'Barangay Duljo Fatima'),
+    'inayawan': (lat: 10.2755, lng: 123.8565, name: 'Barangay Inayawan'),
+    'cogon pardo': (lat: 10.2810, lng: 123.8580, name: 'Barangay Cogon Pardo'),
+    'bulacao': (lat: 10.2715, lng: 123.8480, name: 'Barangay Bulacao'),
+    'pari-an': (lat: 10.3002, lng: 123.9032, name: 'Barangay Pari-an'),
+    't. padilla': (lat: 10.3036, lng: 123.9052, name: 'Barangay T. Padilla'),
+    'pahina san nicolas': (
+      lat: 10.2932,
+      lng: 123.8910,
+      name: 'Barangay Pahina San Nicolas',
+    ),
+  };
 
+  static const Map<String, String> _barangayCanonicalAliases = {
+    'camputhaw': 'Barangay Kamputhaw',
+    'kamputhaw': 'Barangay Kamputhaw',
+    'quiot': 'Barangay Quiot Pardo',
+    'quiot pardo': 'Barangay Quiot Pardo',
+    'bayanihan quiot': 'Barangay Quiot Pardo',
+    'bayanihan': 'Barangay Quiot Pardo',
+    'pardo': 'Barangay Poblacion Pardo',
+    'poblacion pardo': 'Barangay Poblacion Pardo',
+    'sambag 1': 'Barangay Sambag I',
+    'sambag i': 'Barangay Sambag I',
+    'sambag 2': 'Barangay Sambag II',
+    'sambag ii': 'Barangay Sambag II',
+    'san nicolas': 'Barangay San Nicolas Proper',
+    'san nicolas proper': 'Barangay San Nicolas Proper',
+    'lorega': 'Barangay Lorega San Miguel',
+    'lorega san miguel': 'Barangay Lorega San Miguel',
+    'sta cruz': 'Barangay Santa Cruz',
+    'sta. cruz': 'Barangay Santa Cruz',
+    'santa cruz': 'Barangay Santa Cruz',
+    'sto nino': 'Barangay Santo Niño',
+    'sto. nino': 'Barangay Santo Niño',
+    'santo nino': 'Barangay Santo Niño',
+    'santo niño': 'Barangay Santo Niño',
+    'banawa': 'Barangay Guadalupe',
+    'panagdait': 'Barangay Kasambagan',
+    'it park lahug': 'Barangay Lahug',
+    'duljo': 'Barangay Duljo Fatima',
+    'barrio luz': 'Barangay Luz',
+  };
+
+  static final RegExp _streetOrBuildingRegex = RegExp(
+    r'\b(street|st\.?|avenue|ave\.?|road|rd\.?|boulevard|blvd\.?|highway|hwy\.?|drive|dr\.?|lane|ln\.?|alley|ext\.?|extension|bridge|flyover|underpass|expressway|rotunda|corner|junction|mall|market|hospital|school|university|college|church|terminal|port|plaza|park|center|centre|bldg\.?|building)\b',
+    caseSensitive: false,
+  );
+
+  static final RegExp _cityOrMunicipalityRegex = RegExp(
+    r'(\bcity\b|^(cebu|mandaue|lapu-lapu|talisay|consolacion|liloan|minglanilla|cordova|compostela|naga|carcar|danao|toledo|san fernando|central visayas|region vii|philippines)$)',
+    caseSensitive: false,
+  );
+
+  /// Extracts a normalized barangay name (`Barangay <Name>`) from
+  /// [rawAddress] and/or falls back to the nearest barangay centroid for
+  /// `[latitude, longitude]`. Street-only addresses, placeholders, and
+  /// unmappable raw coordinate pairs return `null`.
+  static String? extractBarangayLabel(
+    String? rawAddress, {
+    double? latitude,
+    double? longitude,
+  }) {
+    final trimmed = rawAddress?.trim() ?? '';
     final lower = trimmed.toLowerCase();
-    if (lower == 'current location' ||
+    final bool isPlaceholder = trimmed.isEmpty ||
+        lower == 'current location' ||
         lower == 'unknown location' ||
         lower == 'unknown' ||
-        lower == 'selected location') {
-      return null;
-    }
+        lower == 'selected location' ||
+        RegExp(r'^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$').hasMatch(trimmed);
 
-    // Ignore raw coordinate strings such as "10.3157, 123.8854"
-    final coordPattern = RegExp(r'^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$');
-    if (coordPattern.hasMatch(trimmed)) return null;
+    if (!isPlaceholder) {
+      final segments = trimmed
+          .split(',')
+          .map((s) => s.trim())
+          .where((s) {
+            if (s.isEmpty) return false;
+            final sLower = s.toLowerCase();
+            if (sLower == 'philippines' ||
+                sLower == 'central visayas' ||
+                sLower == 'region vii' ||
+                sLower == 'region 7' ||
+                sLower == 'cebu' ||
+                sLower == 'cebu province') {
+              return false;
+            }
+            if (RegExp(r'^\d{4,5}$').hasMatch(s)) return false;
+            return true;
+          })
+          .toList();
 
-    final segments = trimmed
-        .split(',')
-        .map((s) => s.trim())
-        .where((s) {
-          if (s.isEmpty) return false;
-          final sLower = s.toLowerCase();
-          if (sLower == 'philippines' ||
-              sLower == 'central visayas' ||
-              sLower == 'region vii' ||
-              sLower == 'cebu') {
-            return false;
+      // 1. Explicit "Barangay ..." / "Brgy. ..." prefix in any segment
+      for (final seg in segments) {
+        final match = RegExp(
+          r'^(?:brgy\.?|barangay)\s+(.+)$',
+          caseSensitive: false,
+        ).firstMatch(seg);
+        if (match != null) {
+          final body = match.group(1)?.trim() ?? '';
+          if (body.isNotEmpty) {
+            return _canonicalizeBarangay(body);
           }
-          // Skip standalone postal codes (e.g., "6000")
-          if (RegExp(r'^\d{4,5}$').hasMatch(s)) return false;
-          return true;
-        })
-        .toList();
+        }
+      }
 
-    if (segments.isEmpty) {
-      return trimmed.length > 36 ? '${trimmed.substring(0, 33)}...' : trimmed;
+      // 2. Match known Metro Cebu barangays (right-to-left so barangay wins over street)
+      for (var i = segments.length - 1; i >= 0; i--) {
+        final seg = segments[i];
+        if (_isCityOrProvinceSegment(seg) || _looksLikeStreetOrBuilding(seg)) {
+          continue;
+        }
+        final matched = _matchKnownBarangaySegment(seg);
+        if (matched != null) {
+          return matched;
+        }
+      }
+
+      // 3. City-anchored segment immediately preceding "<City>" (supports any barangay)
+      for (var i = 1; i < segments.length; i++) {
+        if (_isCityOrProvinceSegment(segments[i])) {
+          final candidate = segments[i - 1];
+          if (!_isCityOrProvinceSegment(candidate) &&
+              !_looksLikeStreetOrBuilding(candidate) &&
+              !_looksLikeHouseOrLotPrefix(candidate)) {
+            return _canonicalizeBarangay(candidate);
+          }
+        }
+      }
     }
 
-    // Keep primary street/landmark segment; only append second segment when
-    // the first is a short house/lot prefix (e.g., "12" or "Blk 2").
-    final bool firstIsShortPrefix = segments[0].length <= 5 ||
-        RegExp(r'^(#?\d+[a-zA-Z]?|blk\b|lot\b)', caseSensitive: false)
-            .hasMatch(segments[0]);
-    final picked = segments.length >= 2 && firstIsShortPrefix
-        ? '${segments[0]}, ${segments[1]}'
-        : segments.first;
-
-    if (picked.length > 40) {
-      return '${picked.substring(0, 37)}...';
+    // 4. Coordinate fallback against known barangay centroids when address text omits barangay
+    if (latitude != null && longitude != null) {
+      return _nearestBarangayByCoordinates(latitude, longitude);
     }
-    return picked;
+
+    return null;
+  }
+
+  /// Legacy alias kept for backwards compatibility; delegates to
+  /// [extractBarangayLabel].
+  static String? extractAreaLabel(String? rawAddress) =>
+      extractBarangayLabel(rawAddress);
+
+  static bool _isCityOrProvinceSegment(String segment) =>
+      _cityOrMunicipalityRegex.hasMatch(segment.trim());
+
+  static bool _looksLikeStreetOrBuilding(String segment) =>
+      _streetOrBuildingRegex.hasMatch(segment.trim());
+
+  static bool _looksLikeHouseOrLotPrefix(String segment) =>
+      segment.trim().length <= 2 ||
+      RegExp(r'^(#?\d+[a-zA-Z]?|blk\b|lot\b|phase\b|purok\b)', caseSensitive: false)
+          .hasMatch(segment.trim());
+
+  static String? _matchKnownBarangaySegment(String segment) {
+    final cleanedKey = _stripBarangayPrefix(segment).toLowerCase();
+    if (cleanedKey.isEmpty) return null;
+
+    final aliasHit = _barangayCanonicalAliases[cleanedKey];
+    if (aliasHit != null) return aliasHit;
+
+    final suppHit = _supplementalBarangays[cleanedKey];
+    if (suppHit != null) return suppHit.name;
+
+    for (final landmark in CebuLandmarkService.landmarks) {
+      if (landmark.category != LandmarkCategory.barangay) continue;
+      final landmarkKey = _stripBarangayPrefix(landmark.name).toLowerCase();
+      if (landmarkKey == cleanedKey) {
+        return _canonicalizeBarangay(landmark.name);
+      }
+      for (final alias in landmark.aliases) {
+        final aliasKey = _stripBarangayPrefix(alias).toLowerCase();
+        if (aliasKey == cleanedKey) {
+          return _canonicalizeBarangay(landmark.name);
+        }
+      }
+    }
+    return null;
+  }
+
+  static String _stripBarangayPrefix(String raw) {
+    var out = raw.trim();
+    out = out.replaceFirst(
+      RegExp(r'^(?:brgy\.?|barangay)\s+', caseSensitive: false),
+      '',
+    );
+    // Strip trailing parenthetical synonym like "Camputhaw (Kamputhaw)"
+    out = out.replaceFirst(RegExp(r'\s*\([^)]*\)\s*$'), '');
+    return out.trim();
+  }
+
+  static String _canonicalizeBarangay(String raw) {
+    final stripped = _stripBarangayPrefix(raw);
+    final lower = stripped.toLowerCase();
+    final aliasHit = _barangayCanonicalAliases[lower];
+    if (aliasHit != null) return aliasHit;
+
+    final suppHit = _supplementalBarangays[lower];
+    if (suppHit != null) return suppHit.name;
+
+    final titled = _titleCasePreserveRoman(stripped);
+    if (titled.isEmpty) return 'Barangay Unknown';
+    return 'Barangay $titled';
+  }
+
+  static String _titleCasePreserveRoman(String input) {
+    final words = input.trim().split(RegExp(r'\s+'));
+    return words.where((w) => w.isNotEmpty).map((w) {
+      final upper = w.toUpperCase();
+      if (upper == 'I' || upper == 'II' || upper == 'III' || upper == 'IV') {
+        return upper;
+      }
+      if (w.length == 1) return w.toUpperCase();
+      // Preserve hyphenated parts such as "Day-as" or "San-Nicolas"
+      if (w.contains('-')) {
+        return w.split('-').map((part) {
+          if (part.isEmpty) return '';
+          if (part.length == 1) return part.toUpperCase();
+          return '${part[0].toUpperCase()}${part.substring(1).toLowerCase()}';
+        }).join('-');
+      }
+      return '${w[0].toUpperCase()}${w.substring(1).toLowerCase()}';
+    }).join(' ');
+  }
+
+  static String? _nearestBarangayByCoordinates(double lat, double lng) {
+    String? bestName;
+    double bestMeters = 3500.0; // Max 3.5 km centroid match
+
+    for (final landmark in CebuLandmarkService.landmarks) {
+      if (landmark.category != LandmarkCategory.barangay) continue;
+      final dist = _haversineMeters(
+        lat,
+        lng,
+        landmark.location.latitude,
+        landmark.location.longitude,
+      );
+      if (dist < bestMeters) {
+        bestMeters = dist;
+        bestName = _canonicalizeBarangay(landmark.name);
+      }
+    }
+
+    for (final entry in _supplementalBarangays.values) {
+      final dist = _haversineMeters(lat, lng, entry.lat, entry.lng);
+      if (dist < bestMeters) {
+        bestMeters = dist;
+        bestName = entry.name;
+      }
+    }
+
+    return bestName;
+  }
+
+  static double _haversineMeters(
+    double lat1,
+    double lng1,
+    double lat2,
+    double lng2,
+  ) {
+    const earthRadiusM = 6371000.0;
+    final dLat = (lat2 - lat1) * math.pi / 180.0;
+    final dLng = (lng2 - lng1) * math.pi / 180.0;
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(lat1 * math.pi / 180.0) *
+            math.cos(lat2 * math.pi / 180.0) *
+            math.sin(dLng / 2) *
+            math.sin(dLng / 2);
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return earthRadiusM * c;
   }
 
   static String _normalizeCategory(String? raw, {String? fallback}) {
